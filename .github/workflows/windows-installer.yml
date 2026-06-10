@@ -45,6 +45,11 @@ jobs:
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: packaging/windows/out/DouyinRecallSetup.exe
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${env:GITHUB_REF_NAME}" `
+            "packaging/windows/out/DouyinRecallSetup.exe" `
+            --title "${env:GITHUB_REF_NAME}" `
+            --notes "Windows installer for Douyin Recall ${env:GITHUB_REF_NAME}."

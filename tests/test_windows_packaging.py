@@ -49,8 +49,9 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("tags:", workflow)
         self.assertIn("'v*'", workflow)
         self.assertIn("contents: write", workflow)
-        self.assertIn("softprops/action-gh-release", workflow)
-        self.assertIn("files: packaging/windows/out/DouyinRecallSetup.exe", workflow)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
+        self.assertIn("gh release create", workflow)
+        self.assertIn("packaging/windows/out/DouyinRecallSetup.exe", workflow)
 
 
 if __name__ == "__main__":
