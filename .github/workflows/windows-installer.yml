@@ -1,0 +1,39 @@
+name: Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/windows-installer.yml"
+      - "packaging/windows/**"
+      - "src/**"
+      - "scripts/**"
+      - "docs/**"
+      - "README.md"
+      - ".env.example"
+      - "pyproject.toml"
+      - "uv.lock"
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: .\packaging\windows\build-installer.ps1
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DouyinRecallSetup
+          path: packaging/windows/out/DouyinRecallSetup.exe
+          if-no-files-found: error

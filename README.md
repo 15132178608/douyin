@@ -122,6 +122,32 @@ uv run recall digest --dry-run      # 预览 HTML
 
 ---
 
+## Windows 安装包
+
+项目带了 Inno Setup 安装器工程，可以生成给非技术用户双击安装的 `DouyinRecallSetup.exe`：
+
+```powershell
+.\packaging\windows\build-installer.ps1
+```
+
+构建机需要先安装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)。生成的安装包在 `packaging\windows\out\DouyinRecallSetup.exe`。
+
+仓库也包含 GitHub Actions 工作流：推送到 `main` 或手动运行 **Windows Installer** 后，会上传 `DouyinRecallSetup` artifact，里面就是可分发的安装包。
+
+安装包采用当前 Windows 用户目录安装，不需要管理员权限。首次启动会自动：
+
+- 复制 `.env.example` 为 `.env`
+- 准备本地 `data/` 目录和日志目录
+- 检查并安装 `uv`
+- 执行 `uv sync`
+- 执行 `uv run playwright install chromium`
+- 初始化 SQLite 数据库
+- 启动本地 Web 服务并打开 `http://127.0.0.1:8000`
+
+安装包不会打包 `.env`、`data/`、浏览器登录态、数据库、日志、`.venv`、`.git` 或本地 Codex/Claude 配置。
+
+---
+
 ## CLI 命令一览（17 个）
 
 | 命令 | 阶段 | 说明 |
