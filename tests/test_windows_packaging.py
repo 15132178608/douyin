@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGING = ROOT / "packaging" / "windows"
+WORKFLOW = ROOT / ".github" / "workflows" / "windows-installer.yml"
 
 
 def read(name: str) -> str:
@@ -41,6 +42,15 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("DouyinRecall.iss", build)
         self.assertIn("DouyinRecallSetup.exe", build)
         self.assertIn("packaging\\windows\\out", build)
+
+    def test_workflow_publishes_setup_exe_to_github_release_on_version_tags(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("tags:", workflow)
+        self.assertIn("'v*'", workflow)
+        self.assertIn("contents: write", workflow)
+        self.assertIn("softprops/action-gh-release", workflow)
+        self.assertIn("files: packaging/windows/out/DouyinRecallSetup.exe", workflow)
 
 
 if __name__ == "__main__":
