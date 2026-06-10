@@ -837,7 +837,7 @@ def backfill_raw_cmd(dry_run: bool) -> None:
     """
     [一次性] 从现有 favorites.raw_json 反填 video_created_at + digg_count。
 
-    给历史上抓的 973 条用——它们的 raw_json 是完整的，但当时 parser 还没抽
+    给历史首抓数据用——它们的 raw_json 是完整的，但当时 parser 还没抽
     video_created_at / digg_count 这两个字段。跑一次就够。
     """
     import json as _json

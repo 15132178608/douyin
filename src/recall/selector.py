@@ -34,7 +34,7 @@ from src.db import get_connection
 from src.tenancy import DEFAULT_USER_ID, normalize_user_id
 
 
-# 首次抓取那 973 条都没 favorited_at，用 discovery_index 估龄时假设的"散布天数"。
+# 首次抓取的历史数据可能没有 favorited_at，用 discovery_index 估龄时假设的"散布天数"。
 # 即：discovery_index=0（最老）→ 视为 ASSUMED_FIRST_CRAWL_SPREAD_DAYS 天前收藏；
 #     discovery_index=max → 视为很接近 first_seen_at（30 天前）收藏。
 ASSUMED_FIRST_CRAWL_SPREAD_DAYS = 730  # 2 年
@@ -118,7 +118,7 @@ def _estimate_age_days(
     """
     估算"这条收藏到现在多少天"。
     - 有 favorited_at：直接算
-    - 没有（首抓 973 条）：用 discovery_index 在 [今天, 今天-ASSUMED_SPREAD] 之间线性插值
+    - 没有（首抓历史数据）：用 discovery_index 在 [今天, 今天-ASSUMED_SPREAD] 之间线性插值
       * di=0 → 视为 ASSUMED_SPREAD 天前
       * di=max → 视为 first_seen_at 那天（不再加额外天数）
     """
@@ -424,7 +424,7 @@ def pick_milestone(
 ) -> list[Candidate]:
     """
     挑"你正好 30/90/180/365/730 天前收藏的"条目（±4 天）。
-    只对有真实 favorited_at 的条目有效（首抓的 973 条 favorited_at 是 NULL，不参与）。
+    只对有真实 favorited_at 的条目有效（首抓历史数据 favorited_at 是 NULL，不参与）。
     """
     excluded = set(exclude_ids or ())
     kind = get_content_kind(content_kind)
