@@ -152,6 +152,15 @@ def test_setup_page_contains_first_run_sections_and_reuses_existing_endpoints() 
     assert "get_onboarding_status" in app_source
 
 
+def test_home_empty_state_links_to_setup() -> None:
+    index = read_template("index.html")
+    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+
+    assert 'href="/setup"' in index
+    assert "开始设置" in index
+    assert "onboarding_status" in app_source
+
+
 def test_desktop_pagination_blocks_mobile_load_more_trigger() -> None:
     base = read_template("base.html")
     load_more = read_template("_load_more.html")
@@ -299,6 +308,7 @@ if __name__ == "__main__":
         test_navigation_separates_modules_from_views,
         test_auth_page_links_to_background_queue_with_conditional_status,
         test_setup_page_contains_first_run_sections_and_reuses_existing_endpoints,
+        test_home_empty_state_links_to_setup,
         test_desktop_pagination_blocks_mobile_load_more_trigger,
         test_desktop_pagination_has_number_links_and_direct_edges,
         test_desktop_pagination_page_size_follows_grid_columns,

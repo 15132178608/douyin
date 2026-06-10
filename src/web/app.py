@@ -1242,6 +1242,7 @@ async def _index_for_kind(request: Request, content_kind: str,
         "current_category_label": cat_label,
         "current_author": author,
         "current_author_label": f"@{author}" if author else None,
+        "onboarding_status": onboarding.get_onboarding_status(user_id),
     }
     return templates.TemplateResponse(request, "index.html", ctx)
 
