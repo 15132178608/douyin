@@ -1,0 +1,31 @@
+<div class="setup-status-grid">
+  <div class="setup-metric">
+    <span class="setup-metric-label">收藏</span>
+    <strong>{{ status.favorites.total }}</strong>
+    <span>{{ status.favorites.indexed }} 已索引</span>
+  </div>
+  <div class="setup-metric">
+    <span class="setup-metric-label">喜欢</span>
+    <strong>{{ status.likes.total }}</strong>
+    <span>{{ status.likes.indexed }} 已索引</span>
+  </div>
+  <div class="setup-metric">
+    <span class="setup-metric-label">后台任务</span>
+    <strong>{{ status.jobs.pending + status.jobs.running }}</strong>
+    <span>{% if status.jobs.failed %}{{ status.jobs.failed }} 个失败{% else %}暂无失败{% endif %}</span>
+  </div>
+</div>
+
+<div class="setup-next-step {% if status.jobs.failed %}is-warning{% endif %}">
+  {% if not status.has_profile %}
+    下一步：先扫码绑定抖音账号。
+  {% elif not status.has_any_items %}
+    下一步：选择同步收藏或喜欢，后台任务会自动执行。
+  {% elif status.favorites.needs_index or status.likes.needs_index %}
+    下一步：已有数据，可以生成搜索索引；也可以先进入首页浏览。
+  {% elif status.jobs.failed %}
+    有任务失败，请打开后台队列查看原因，通常重新绑定后再同步即可。
+  {% else %}
+    已有可用数据，可以进入首页开始浏览和搜索。
+  {% endif %}
+</div>

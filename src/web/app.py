@@ -43,6 +43,7 @@ from src.config import settings
 from src.db import get_connection, init_schema
 from src import accounts
 from src import jobs
+from src import onboarding
 from src.tenancy import DEFAULT_USER_ID, normalize_user_id
 from src.web.authors import cached_author_avatar_url_from_raw_json
 from src.uncollector.douyin import PersistentUncollectWorker
@@ -485,6 +486,39 @@ async def auth_qr_image(request: Request):
             return FileResponse(str(qr_path), media_type="image/png",
                                 headers={"Cache-Control": "no-store"})
     return JSONResponse({"error": "no qr"}, status_code=404)
+
+
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_page(request: Request):
+    user_id = _current_user_id(request)
+    session = _douyin_auth_sessions.get(user_id, {})
+    status = onboarding.get_onboarding_status(user_id)
+    profile_exists = bool(status.get("profile_path_exists") or status.get("has_profile"))
+    return templates.TemplateResponse(
+        request,
+        "setup.html",
+        {
+            "page": "setup",
+            "status": status,
+            "auth_status": session.get("status", "idle"),
+            "auth_message": session.get("message", ""),
+            "qr_ready": session.get("status") == "qr_ready",
+            "profile_exists": profile_exists,
+            **_stats("favorites", user_id=user_id),
+        },
+    )
+
+
+@app.get("/setup/status", response_class=HTMLResponse)
+async def setup_status_fragment(request: Request):
+    user_id = _current_user_id(request)
+    return templates.TemplateResponse(
+        request,
+        "_setup_status.html",
+        {
+            "status": onboarding.get_onboarding_status(user_id),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

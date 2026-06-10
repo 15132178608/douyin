@@ -132,6 +132,26 @@ def test_auth_page_links_to_background_queue_with_conditional_status() -> None:
     assert '"job_summary": _job_queue_summary(user_id)' in app_source
 
 
+def test_setup_page_contains_first_run_sections_and_reuses_existing_endpoints() -> None:
+    setup = read_template("setup.html") + read_template("_auth_status.html")
+    setup_status = read_template("_setup_status.html")
+    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+
+    assert "本地环境" in setup
+    assert "绑定抖音账号" in setup
+    assert "同步数据" in setup
+    assert "生成搜索索引" in setup
+    assert "完成" in setup
+    assert 'hx-post="/auth/start"' in setup
+    assert 'hx-post="/jobs/sync"' in setup
+    assert 'hx-post="/jobs/index"' in setup
+    assert 'hx-get="/setup/status"' in setup
+    assert "favorites.total" in setup_status
+    assert "likes.total" in setup_status
+    assert '"/setup"' in app_source
+    assert "get_onboarding_status" in app_source
+
+
 def test_desktop_pagination_blocks_mobile_load_more_trigger() -> None:
     base = read_template("base.html")
     load_more = read_template("_load_more.html")
@@ -278,6 +298,7 @@ if __name__ == "__main__":
         test_topbar_does_not_show_or_poll_uncollect_bridge_status,
         test_navigation_separates_modules_from_views,
         test_auth_page_links_to_background_queue_with_conditional_status,
+        test_setup_page_contains_first_run_sections_and_reuses_existing_endpoints,
         test_desktop_pagination_blocks_mobile_load_more_trigger,
         test_desktop_pagination_has_number_links_and_direct_edges,
         test_desktop_pagination_page_size_follows_grid_columns,
