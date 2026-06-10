@@ -1,6 +1,6 @@
 # 架构概览
 
-> 写于 v0.x（M0-M5 + UI 重设计 + 多用户骨架完成时）。如果你看到这份文档过期，看 git log 找最近的改动。
+> 写于 v0.x（M0-M5 + UI 重设计 + 多用户骨架完成时）。当前产品定位是个人本地工具；多用户相关模块只是实验骨架，不是近期主线。如果你看到这份文档过期，看 git log 找最近的改动。
 
 ## 1. 技术栈
 
@@ -64,8 +64,8 @@
         │       templates/    抖音黑暗色主题（玻璃 nav + 渐变品牌）
         │
         └──→ jobs.py         (后台任务队列, SQLite-backed)
-                accounts.py  (users/invite/session 管理)
-                tenancy.py   (user_id 规范化 + per-user 路径)
+                accounts.py  (users/invite/session 管理，实验骨架)
+                tenancy.py   (user_id 规范化 + per-user 路径，实验骨架)
                 content/kinds.py  (favorites/likes 注册)
                 config.py    (settings)
                 db.py        (连接 + schema)
@@ -74,12 +74,12 @@
 
 ## 3. 数据库 schema
 
-### 业务表（每张都有 `user_id` 列做租户隔离）
+### 业务表（每张都有 `user_id` 列；当前个人工具默认使用单用户）
 
 | 表 | 干啥 |
 |---|---|
-| `users` | 私有云用户（id, display_name, created_at） |
-| `invite_codes` | 邀请码（code_hash, max_uses, used_count, created_at） |
+| `users` | 实验用户表（id, display_name, created_at） |
+| `invite_codes` | 实验邀请码表（code_hash, max_uses, used_count, created_at） |
 | `web_sessions` | cookie session（token_hash, user_id, expires_at） |
 | `favorites` | 收藏（aweme_id, title, author, video_url, cover_url, favorited_at, raw_json, video_created_at, digg_count, category_id, user_note, is_removed, …） |
 | `likes` | 点赞（同 favorites 结构，独立表） |
@@ -193,7 +193,7 @@ HTMX 把卡片 outerHTML 替换为空，淡出消失
 
 喜欢镜像（`/likes/*` 前缀，行为一致）。
 
-私有云：
+登录 / 授权（实验骨架；个人本地使用通常不需要）：
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
@@ -214,5 +214,5 @@ HTMX 把卡片 outerHTML 替换为空，淡出消失
 - **FTS5 + 向量 RRF 融合**：单纯语义会漏 hashtag/作者名；纯关键词会漏「emo」搜不到「失恋」。
 - **KMeans 默认而非 HDBSCAN**：你的真实数据上 HDBSCAN 把 77% 塞进噪声，KMeans 强制每条都进簇 + UI 让你改名 是更实用的妥协。
 - **持久化 bridge worker**：开 web 时预热好 Chrome bridge，🗑 点击响应快；老进程退出时 graceful close。
-- **多用户的 user_id 列已铺**：所有业务表都有 `user_id`，未来加 SSO/OAuth 时不用改 schema。
+- **用户隔离骨架已铺**：所有业务表都有 `user_id`，但当前产品主线仍是个人本地工具。
 - **抖音 UI 黑色基调 + 渐变品牌**：跟原 app 风格呼应，让用户切过来不违和。

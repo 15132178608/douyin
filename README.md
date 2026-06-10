@@ -2,12 +2,12 @@
 
 把抖音收藏夹和点赞列表从「永久黑洞」变成「随时能逛、能搜、能清理」的私人内容库。
 
-> **当前形态**：本地优先 + 可选私有云的小工具。用 SQLite + bge-m3 向量检索 + KMeans 自动分类 + FastAPI/HTMX 抖音黑 web UI。支持 收藏 / 点赞 两种内容线，多用户场景已接入。
+> **当前定位**：个人本地工具。用 SQLite + bge-m3 向量检索 + KMeans 自动分类 + FastAPI/HTMX 抖音黑 web UI，把自己的抖音收藏和喜欢整理成可搜索、可回忆、可清理的私人内容库。
 >
 > 详细设计见 [`douyin-recall-spec.md`](./douyin-recall-spec.md)；架构看 [`docs/architecture.md`](./docs/architecture.md)；路线图看 [`docs/roadmap.md`](./docs/roadmap.md)。
 
 > [!IMPORTANT]
-> 当前是 alpha / 自用开放源码版本。它会在本地保存抖音登录态、收藏/喜欢数据、头像缓存和 SQLite 数据库；默认适合本机使用。公网部署前必须开启访问控制并自行评估账号、隐私和平台规则风险。
+> 当前是 alpha / 个人本地开放源码版本。它会在本地保存抖音登录态、收藏/喜欢数据、头像缓存和 SQLite 数据库；默认只建议在自己的电脑上使用。公网部署和多人使用不是当前产品方向。
 
 ---
 
@@ -20,7 +20,7 @@
 - **写备注**：「为啥要存它」——3 个月后再翻还能记得
 - **取消收藏**：在 web UI 点 🗑，直接调用抖音 API 取消，不用打开 app 找
 - **每周 digest 邮件**：周末自动推几条「被遗忘的宝贝」+ 1 条 N 年前的视频周年 + 1 条 N 月前的收藏纪念
-- **私有云模式**：邀请码 + cookie session，邀朋友进来用同一台服务器，各自数据隔离
+- **本地备份 / 导出**：把内容库导出成 JSON / Markdown / SQLite 备份，方便迁移和留档
 
 ---
 
@@ -38,13 +38,13 @@
 | **取消收藏 / 取消喜欢** | ✅ | 持久化 CDP bridge worker，API 调用代替点击 |
 | **Web UI 抖音黑** | ✅ | 玻璃质感 nav + cyan-pink 渐变品牌 + 卡片瀑布动画 |
 | **页面内播放** | ✅ | `/<id>/stream` 路由 + 玻璃质感播放按钮 + modal 弹窗 |
-| **多用户私有云** | 🚧 部分 | users / invite_codes / web_sessions / per-user profile 已就位；`web_auth_required` 默认关 |
+| **多用户骨架（实验）** | 🚧 暂缓 | users / invite_codes / web_sessions / per-user profile 已就位，但当前产品定位仍是个人本地工具 |
 | **后台 jobs 队列** | ✅ | SQLite 队列 + Web worker + 重试退避 + stale running 恢复 + `/jobs` 状态页 |
 | **导出 / 备份** | ✅ | `recall export` 支持 JSON / Markdown / SQLite backup |
 | **每周自动化** | ✅ | Windows 计划任务脚本：crawl + index + digest + backup |
 | **整理 / 清理** | ✅ | 分类合并、单条移动分类、批量取消、收藏/喜欢重复视图 |
 | **体验增强** | ✅ | 头像缓存代理、folder 信号注入、Web 回忆角、主题 digest、Ollama/本地二级标签 |
-| **服务器部署** | ❌ | 还没正式上 |
+| **服务器部署** | ⏸ 暂缓 | 不作为当前个人工具路线的优先事项 |
 
 ---
 
@@ -71,7 +71,7 @@ uv run playwright install chromium
 
 ```powershell
 copy .env.example .env
-notepad .env   # 至少填邮箱 SMTP；服务器部署改 WEB_HOST=0.0.0.0
+notepad .env   # 邮件 digest 才需要填 SMTP；本地自用保持 WEB_HOST=127.0.0.1
 ```
 
 ### 4. 建库
@@ -172,7 +172,7 @@ uv run recall digest --dry-run      # 预览 HTML
 | `tag` | 体验增强 | 给指定条目生成/写入二级标签（本地 fallback 或 Ollama LLM） |
 | `backfill-raw` | 一次性 | 从 raw_json 反填新字段 |
 | `repair-favorited-at` | 一次性 | 修 partial-first-crawl 误填的 favorited_at |
-| `create-invite` | 私有云 | 生成朋友内测邀请码 |
+| `create-invite` | 实验 | 生成内测邀请码；个人本地使用通常不需要 |
 
 ---
 
@@ -180,7 +180,8 @@ uv run recall digest --dry-run      # 预览 HTML
 
 - 不要提交 `.env`、`data/`、浏览器 profile、SQLite 数据库、日志、导出文件或模型缓存。
 - `data/playwright_profile` 和 `data/users/*/playwright_profile` 会保存浏览器登录态，等同于敏感本地数据。
-- 对外开放 Web 服务时，必须设置 `WEB_AUTH_REQUIRED=true`，并只发放可信邀请码。
+- 个人本地使用请保持 `WEB_HOST=127.0.0.1`，不要把 Web 服务暴露到公网。
+- 如果你自行对外开放 Web 服务，必须设置 `WEB_AUTH_REQUIRED=true`，并只发放可信邀请码；这不是当前推荐使用方式。
 - 抓取、取消收藏和取消喜欢依赖抖音 Web 接口和浏览器登录态；接口变化、风控或平台规则变化都可能导致功能失效。
 - 建议先在本机跑通 `uv run recall doctor`、`uv run recall init-db` 和一次小规模抓取，再配置自动任务。
 
@@ -210,7 +211,7 @@ src/
   config.py               # pydantic-settings
   db.py                   # SQLite schema + 迁移
   models.py               # Favorite dataclass
-  tenancy.py              # 多用户 user_id / 路径辅助
+  tenancy.py              # 用户隔离 / 路径辅助（实验骨架）
   accounts.py             # users / invite / session 管理
   jobs.py                 # SQLite 后台任务队列
   exporter.py             # JSON / Markdown / SQLite 导出
@@ -228,7 +229,7 @@ docs/
   architecture.md         # 模块 + 数据流图
   roadmap.md              # 已完成 + 进行中 + 计划
   windows-task-scheduler.md # Windows 每周自动化
-  multi-tenant-roadmap.md # 多租户旧备忘
+  multi-tenant-roadmap.md # 多账号 / 多用户旧备忘
 
 scripts/
   run-weekly-maintenance.ps1 # crawl + index + digest + backup
@@ -241,7 +242,7 @@ scripts/
 
 - **[`docs/architecture.md`](./docs/architecture.md)** —— 模块依赖图、数据流、技术栈
 - **[`docs/roadmap.md`](./docs/roadmap.md)** —— 已完成里程碑 + 当前进行中 + 后续 3-6 个月
-- **[`docs/multi-tenant-roadmap.md`](./docs/multi-tenant-roadmap.md)** —— 多租户设计早期备忘
+- **[`docs/multi-tenant-roadmap.md`](./docs/multi-tenant-roadmap.md)** —— 多账号 / 多用户设计早期备忘（非当前优先方向）
 - **[`douyin-recall-spec.md`](./douyin-recall-spec.md)** —— 最原始的产品 spec
 
 ## 许可证
