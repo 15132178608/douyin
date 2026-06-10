@@ -128,6 +128,16 @@ uv run recall digest --dry-run      # 预览 HTML
 
 - [Releases 下载页](https://github.com/15132178608/douyin/releases)
 
+首次启动会自动打开本地 Web 页面。没有数据时首页会提示进入 `/setup` 首次设置向导，按顺序完成：
+
+1. 检查本地环境
+2. 扫码绑定抖音账号
+3. 同步收藏 / 喜欢
+4. 生成搜索索引
+5. 进入首页浏览和搜索
+
+首次同步和首次索引可能需要较长时间；索引阶段会下载本地模型。数据仍保存在本机 `data/` 目录，安装包不会上传你的数据库、登录资料或浏览器 profile。
+
 维护者发布新版时，推送 `v*` 标签会自动生成 Release，并把 `DouyinRecallSetup.exe` 作为下载附件上传。
 
 本地也可以用 Inno Setup 手动生成安装包：
