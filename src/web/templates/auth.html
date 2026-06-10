@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>抖音回忆 · 账号绑定</title>
+  <script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js"></script>
+  <style>
+    :root {
+      --bg-base: #0a0a0f; --bg-card: #1a1a23;
+      --border-subtle: rgba(255,255,255,0.06);
+      --border-emphasis: rgba(255,255,255,0.14);
+      --text-primary: #f5f5f7; --text-secondary: #9b9baa; --text-tertiary: #5e5e6e;
+      --brand-cyan: #25F4EE; --brand-pink: #FE2C55;
+      --brand-grad: linear-gradient(135deg,#25F4EE 0%,#FE2C55 100%);
+      --accent-success: #30D158; --accent-danger: #FF453A; --accent-yellow: #FFD60A;
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      background: var(--bg-base); color: var(--text-primary);
+      min-height: 100vh;
+    }
+    nav.topbar {
+      background: rgba(10,10,15,0.9); border-bottom: 1px solid var(--border-subtle);
+      padding: 0 28px;
+    }
+    .topbar-inner {
+      max-width: 980px; margin: 0 auto; height: 64px;
+      display: flex; align-items: center; gap: 14px;
+    }
+    .brand {
+      font-weight: 700; font-size: 17px;
+      background: var(--brand-grad); -webkit-background-clip: text;
+      background-clip: text; -webkit-text-fill-color: transparent;
+      text-decoration: none;
+    }
+    .topbar-spacer { flex: 1; }
+    .back-link {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      color: var(--text-primary); font-size: 13px; font-weight: 600; text-decoration: none;
+      padding: 9px 14px; border-radius: 8px;
+      border: 1px solid var(--border-emphasis);
+      background: rgba(255,255,255,0.06);
+      transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    }
+    .back-link:hover { background: rgba(37,244,238,0.08); border-color: rgba(37,244,238,0.4); transform: translateY(-1px); }
+    .page { max-width: 980px; margin: 40px auto; padding: 0 28px; }
+    .page-header { margin-bottom: 24px; }
+    h1 { font-size: 26px; font-weight: 700; margin: 0 0 8px; letter-spacing: 0; }
+    .subtitle { color: var(--text-secondary); font-size: 14px; line-height: 1.55; margin: 0 0 24px; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(280px, 0.95fr); gap: 18px; align-items: start; }
+    .panel {
+      background: var(--bg-card); border: 1px solid var(--border-subtle);
+      border-radius: 12px; padding: 22px;
+    }
+    .profile-card { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+    .profile-avatar {
+      width: 56px; height: 56px; border-radius: 50%; object-fit: cover;
+      background: var(--brand-grad); display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 18px; font-weight: 700; border: 1px solid var(--border-emphasis);
+    }
+    .profile-avatar[hidden] { display: none; }
+    .profile-main { min-width: 0; }
+    .profile-kicker { color: var(--text-tertiary); font-size: 12px; margin-bottom: 4px; }
+    .profile-name { font-size: 21px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .profile-id { color: var(--text-secondary); font-size: 13px; margin-top: 5px; line-height: 1.45; }
+    .profile-refresh-btn { margin: 0 0 18px; }
+    .profile-refresh-message {
+      margin: 0 0 12px; color: var(--text-secondary); font-size: 13px;
+    }
+    .profile-refresh-message.success { color: var(--accent-success); }
+    .profile-refresh-message.failed { color: #ff8a85; }
+    .quick-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .quick-actions form { margin: 0; }
+    .queue-link {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      margin-top: 14px; padding: 14px 16px;
+      border-radius: 10px; border: 1px solid var(--border-subtle);
+      background: rgba(255,255,255,0.035);
+      color: var(--text-primary); text-decoration: none;
+      transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    }
+    .queue-link:hover {
+      background: rgba(255,255,255,0.07);
+      border-color: var(--border-emphasis);
+      transform: translateY(-1px);
+    }
+    .queue-link.queue-alert {
+      border-color: rgba(255,214,10,0.35);
+      background: rgba(255,214,10,0.06);
+    }
+    .queue-title { display: block; font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+    .queue-desc { display: block; font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
+    .queue-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .queue-badge {
+      display: inline-flex; align-items: center; white-space: nowrap;
+      padding: 4px 8px; border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+      color: var(--text-secondary); font-size: 12px;
+    }
+    .queue-badge.danger { background: rgba(255,69,58,0.12); color: #ff8a85; }
+    .queue-badge.live { background: rgba(255,214,10,0.12); color: var(--accent-yellow); }
+    .queue-badge.quiet { color: var(--text-tertiary); }
+    .status-box {
+      background: rgba(255,255,255,0.03); border: 1px solid var(--border-subtle);
+      border-radius: 10px; padding: 16px;
+    }
+    /* QR image */
+    .qr-wrap {
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+      margin: 0 0 20px;
+    }
+    .qr-img {
+      width: 220px; height: 220px; border-radius: 10px;
+      border: 2px solid var(--border-emphasis);
+      background: #fff;
+      image-rendering: pixelated;
+    }
+    .qr-hint { font-size: 13px; color: var(--text-secondary); text-align: center; }
+    /* status badges */
+    .status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+    .status-dot {
+      width: 10px; height: 10px; border-radius: 50%; flex: 0 0 10px;
+    }
+    .dot-idle    { background: var(--text-tertiary); }
+    .dot-starting{ background: var(--accent-yellow); animation: pulse 1.2s ease-in-out infinite; }
+    .dot-qr      { background: var(--brand-cyan); animation: pulse 1.2s ease-in-out infinite; }
+    .dot-success { background: var(--accent-success); }
+    .dot-failed  { background: var(--accent-danger); }
+    @keyframes pulse {
+      0%,100% { opacity:1; transform:scale(1); }
+      50%      { opacity:0.4; transform:scale(0.7); }
+    }
+    .status-msg { font-size: 14px; color: var(--text-primary); }
+    /* button */
+    .btn {
+      display: inline-block; width: 100%;
+      padding: 12px; font-size: 15px; font-weight: 600;
+      border: none; border-radius: 8px; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-primary { background: var(--brand-grad); color: #fff; }
+    .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+    .btn-secondary {
+      background: rgba(255,255,255,0.06); color: var(--text-primary);
+      border: 1px solid var(--border-subtle);
+    }
+    .btn-secondary:hover { background: rgba(255,255,255,0.10); }
+    .btn:disabled { opacity: 0.5; cursor: default; transform: none; }
+    /* already-bound banner */
+    .bound-banner {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 16px;
+      background: rgba(48,209,88,0.08);
+      border: 1px solid rgba(48,209,88,0.25);
+      border-radius: 8px; margin-bottom: 18px;
+      font-size: 13px; color: #6be08a;
+    }
+    /* steps */
+    .steps { margin: 22px 0 0; border-top: 1px solid var(--border-subtle); padding-top: 20px; }
+    .steps h3 { font-size: 13px; color: var(--text-secondary); margin: 0 0 12px; font-weight: 500; }
+    .step { display: flex; gap: 10px; margin-bottom: 10px; align-items: flex-start; }
+    .step-num {
+      width: 20px; height: 20px; border-radius: 50%; flex: 0 0 20px;
+      background: rgba(255,255,255,0.08);
+      font-size: 11px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--text-secondary);
+    }
+    .step-text { font-size: 13px; color: var(--text-secondary); line-height: 1.5; padding-top: 1px; }
+    @media (max-width: 760px) {
+      .layout { grid-template-columns: 1fr; }
+      .quick-actions { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<nav class="topbar">
+  <div class="topbar-inner">
+    <a href="/" class="brand">📌 抖音回忆</a>
+    <span class="topbar-spacer"></span>
+    <a href="/" class="back-link back-home">← 返回首页</a>
+  </div>
+</nav>
+
+<div class="page">
+  <div class="page-header">
+    <h1>账号与同步</h1>
+    <p class="subtitle">管理抖音登录态，发起收藏、喜欢和索引任务。</p>
+  </div>
+
+  <div class="layout">
+    <section class="panel">
+      {% include "_profile_summary.html" %}
+      <div id="auth-status-area">
+        {% include "_auth_status.html" %}
+      </div>
+    </section>
+
+    <section class="panel">
+      <h1>同步操作</h1>
+      <p class="subtitle">绑定后可以在这里发起后台任务，不用守着页面等它跑完。</p>
+      <div class="quick-actions">
+        <form hx-post="/jobs/sync" hx-swap="none">
+          <input type="hidden" name="kind" value="favorites">
+          <button class="btn btn-secondary" type="submit">同步收藏</button>
+        </form>
+        <form hx-post="/jobs/sync" hx-swap="none">
+          <input type="hidden" name="kind" value="likes">
+          <button class="btn btn-secondary" type="submit">同步喜欢</button>
+        </form>
+        <form hx-post="/jobs/index" hx-swap="none">
+          <input type="hidden" name="kind" value="favorites">
+          <button class="btn btn-secondary" type="submit">索引收藏</button>
+        </form>
+        <form hx-post="/jobs/index" hx-swap="none">
+          <input type="hidden" name="kind" value="likes">
+          <button class="btn btn-secondary" type="submit">索引喜欢</button>
+        </form>
+      </div>
+      <a class="queue-link {% if job_summary.failed or job_summary.running %}queue-alert{% endif %}" href="/jobs">
+        <span>
+          <span class="queue-title">后台队列</span>
+          <span class="queue-desc">查看同步、索引和批量移除的执行状态</span>
+        </span>
+        <span class="queue-badges">
+          {% if job_summary.failed %}
+          <span class="queue-badge danger">{{ job_summary.failed }} 失败</span>
+          {% endif %}
+          {% if job_summary.running %}
+          <span class="queue-badge live">{{ job_summary.running }} 运行中</span>
+          {% endif %}
+          {% if not job_summary.failed and not job_summary.running %}
+          <span class="queue-badge quiet">暂无异常</span>
+          {% endif %}
+        </span>
+      </a>
+      <div id="job-feedback" class="subtitle" style="margin:14px 0 0;">后台队列会自动排队执行。</div>
+    </section>
+  </div>
+
+  <div class="steps">
+    <h3>步骤说明</h3>
+    <div class="step">
+      <span class="step-num">1</span>
+      <span class="step-text">点击「开始绑定」，等待二维码出现（约 5-10 秒）</span>
+    </div>
+    <div class="step">
+      <span class="step-num">2</span>
+      <span class="step-text">打开抖音 App → 点右上角相机或扫一扫，扫描页面上的二维码</span>
+    </div>
+    <div class="step">
+      <span class="step-num">3</span>
+      <span class="step-text">手机上点「确认登录」，页面会自动跳转显示成功</span>
+    </div>
+    <div class="step">
+      <span class="step-num">4</span>
+      <span class="step-text">绑定成功后，回到首页点「同步」开始抓取你的收藏</span>
+    </div>
+  </div>
+</div>
+<script>
+  document.body.addEventListener("htmx:beforeRequest", function (event) {
+    var form = event.detail && event.detail.elt;
+    if (!form || !form.closest || !form.closest(".quick-actions")) return;
+    var feedback = document.getElementById("job-feedback");
+    if (feedback) feedback.textContent = "正在加入后台队列...";
+  });
+  document.body.addEventListener("htmx:afterRequest", function (event) {
+    var form = event.detail && event.detail.elt;
+    if (!form || !form.closest || !form.closest(".quick-actions")) return;
+    var feedback = document.getElementById("job-feedback");
+    if (!feedback) return;
+    var ok = event.detail && event.detail.xhr && event.detail.xhr.status < 400;
+    feedback.textContent = ok ? "已加入后台队列，可以继续浏览页面。" : "加入队列失败，请稍后重试。";
+  });
+</script>
+</body>
+</html>

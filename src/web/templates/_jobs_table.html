@@ -1,0 +1,38 @@
+{% if jobs %}
+<div style="overflow-x:auto;">
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="color:var(--text-secondary); text-align:left; border-bottom:1px solid var(--border-subtle);">
+        <th style="padding:10px 8px;">ID</th>
+        <th style="padding:10px 8px;">任务</th>
+        <th style="padding:10px 8px;">状态</th>
+        <th style="padding:10px 8px;">次数</th>
+        <th style="padding:10px 8px;">下次运行</th>
+        <th style="padding:10px 8px;">创建时间</th>
+        <th style="padding:10px 8px;">错误</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr style="border-bottom:1px solid var(--border-subtle);">
+        <td style="padding:10px 8px; color:var(--text-tertiary); font-variant-numeric:tabular-nums;">#{{ job.id }}</td>
+        <td style="padding:10px 8px;">{{ job.kind }}</td>
+        <td style="padding:10px 8px;">
+          <span style="display:inline-block; padding:3px 8px; border-radius:999px; background:rgba(255,255,255,0.06);">
+            {{ job.status }}
+          </span>
+        </td>
+        <td style="padding:10px 8px; font-variant-numeric:tabular-nums;">{{ job.attempts }}/{{ job.max_attempts }}</td>
+        <td style="padding:10px 8px; color:var(--text-secondary);">{{ job.next_run_at or "—" }}</td>
+        <td style="padding:10px 8px; color:var(--text-secondary);">{{ job.created_at }}</td>
+        <td style="padding:10px 8px; color:#ff8a85; max-width:360px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+          {{ job.error_message or "" }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="empty" style="text-align:left;">后台队列里还没有记录。</div>
+{% endif %}

@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ subject }}</title>
+</head>
+<body style="margin:0; padding:0; background:#f5f5f7; font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei', sans-serif; color: #1d1d1f;">
+
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f5f5f7; padding: 24px 0;">
+  <tr>
+    <td align="center">
+      <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="max-width:600px; background:#ffffff; border-radius:12px; overflow:hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.04);">
+
+        <!-- Header -->
+        <tr>
+          <td style="padding: 28px 32px 16px;">
+            <div style="font-size: 13px; color: #86868b; letter-spacing: 0.5px;">你的抖音{{ content_label }} · {{ generated_at }}</div>
+            <h1 style="margin: 8px 0 0; font-size: 22px; font-weight: 600; color: #1d1d1f;">本周翻出来这几条</h1>
+            <p style="margin: 8px 0 0; font-size: 14px; color: #515154;">从你 {{ total_count }} 条{{ content_label }}里随机挑了 {{ items|length }} 条——年代越久、你写过备注的、当年越热门的，越容易被翻出来。</p>
+          </td>
+        </tr>
+
+        <!-- Items（主选取） -->
+        {% for item in items %}
+        <tr>
+          <td style="padding: 8px 32px;">
+            <a href="{{ item.video_url }}" style="text-decoration: none; color: inherit; display: block;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#fafafc; border-radius: 10px; overflow:hidden;">
+                <tr>
+                  <td width="160" style="vertical-align: top;">
+                    {% if item.cover_url %}
+                    <img src="{{ item.cover_url }}" alt="" width="160" height="213" style="display:block; width:160px; height:213px; object-fit: cover; border:0;">
+                    {% else %}
+                    <div style="width:160px; height:213px; background:#e8e8ed; display:flex; align-items:center; justify-content:center; color:#86868b; font-size:12px;">无封面</div>
+                    {% endif %}
+                  </td>
+                  <td style="padding: 14px 16px; vertical-align: top;">
+                    <div style="font-size: 15px; font-weight: 500; line-height: 1.4; color:#1d1d1f; max-height: 88px; overflow:hidden;">
+                      {{ item.title or '(无标题)' }}
+                    </div>
+                    <div style="margin-top: 10px; font-size: 13px; color: #515154;">
+                      @{{ item.author or '未知作者' }}
+                    </div>
+                    {% if item.user_note %}
+                    <div style="margin-top: 8px; padding: 8px 10px; background:#fff8e1; border-left:3px solid #f5a623; font-size: 12px; color:#5d4037; border-radius: 4px;">
+                      📝 {{ item.user_note }}
+                    </div>
+                    {% endif %}
+                    <div style="margin-top: 12px; font-size: 12px; color:#86868b;">
+                      {% if item.favorited_at %}
+                        约 {{ item.days_since_favorited }} 天前{{ content_label }}
+                      {% else %}
+                        首抓那批·时间未知
+                      {% endif %}
+                      {% if item.digg_count and item.digg_count > 10000 %}
+                        · 当年 {{ (item.digg_count / 10000)|round(1) }}w 赞
+                      {% endif %}
+                    </div>
+                  </td>
+                </tr>
+              </table>
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+
+        {# ============================================================ #}
+        {# 回忆角：anniversary + milestone，只在至少有一条时才显示       #}
+        {# ============================================================ #}
+        {% if anniversaries or milestones %}
+        <tr>
+          <td style="padding: 24px 32px 8px;">
+            <div style="border-top: 1px solid #e8e8ed; padding-top: 18px;">
+              <div style="font-size: 11px; color: #86868b; letter-spacing: 1px; text-transform: uppercase;">REMEMBER WHEN</div>
+              <h2 style="margin: 4px 0 0; font-size: 17px; font-weight: 600; color: #1d1d1f;">🕰 本周回忆角</h2>
+              <p style="margin: 6px 0 0; font-size: 13px; color: #86868b;">不是随机抽的——这些有特殊的"今天"在里面。</p>
+            </div>
+          </td>
+        </tr>
+
+        {% for item in anniversaries %}
+        <tr>
+          <td style="padding: 8px 32px;">
+            <a href="{{ item.video_url }}" style="text-decoration: none; color: inherit; display: block;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#fff7f0; border:1px solid #ffe6cc; border-radius: 10px; overflow:hidden;">
+                <tr>
+                  <td width="160" style="vertical-align: top;">
+                    {% if item.cover_url %}
+                    <img src="{{ item.cover_url }}" alt="" width="160" height="213" style="display:block; width:160px; height:213px; object-fit: cover; border:0;">
+                    {% else %}
+                    <div style="width:160px; height:213px; background:#e8e8ed; display:flex; align-items:center; justify-content:center; color:#86868b; font-size:12px;">无封面</div>
+                    {% endif %}
+                  </td>
+                  <td style="padding: 14px 16px; vertical-align: top;">
+                    <div style="font-size: 12px; color:#c87a2c; font-weight: 600; margin-bottom: 6px;">
+                      📅 {{ item.anniversary_years }} 年前的这周，这条视频发布
+                    </div>
+                    <div style="font-size: 15px; font-weight: 500; line-height: 1.4; color:#1d1d1f; max-height: 88px; overflow:hidden;">
+                      {{ item.title or '(无标题)' }}
+                    </div>
+                    <div style="margin-top: 10px; font-size: 13px; color: #515154;">
+                      @{{ item.author or '未知作者' }}
+                    </div>
+                    {% if item.user_note %}
+                    <div style="margin-top: 8px; padding: 8px 10px; background:#fff8e1; border-left:3px solid #f5a623; font-size: 12px; color:#5d4037; border-radius: 4px;">
+                      📝 {{ item.user_note }}
+                    </div>
+                    {% endif %}
+                  </td>
+                </tr>
+              </table>
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+
+        {% for item in milestones %}
+        <tr>
+          <td style="padding: 8px 32px;">
+            <a href="{{ item.video_url }}" style="text-decoration: none; color: inherit; display: block;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f0f7ff; border:1px solid #d6e8fc; border-radius: 10px; overflow:hidden;">
+                <tr>
+                  <td width="160" style="vertical-align: top;">
+                    {% if item.cover_url %}
+                    <img src="{{ item.cover_url }}" alt="" width="160" height="213" style="display:block; width:160px; height:213px; object-fit: cover; border:0;">
+                    {% else %}
+                    <div style="width:160px; height:213px; background:#e8e8ed; display:flex; align-items:center; justify-content:center; color:#86868b; font-size:12px;">无封面</div>
+                    {% endif %}
+                  </td>
+                  <td style="padding: 14px 16px; vertical-align: top;">
+                    <div style="font-size: 12px; color:#0071e3; font-weight: 600; margin-bottom: 6px;">
+                      💭
+                      {% if item.milestone_days == 30 %}你正好 1 个月前{{ content_label }}的
+                      {% elif item.milestone_days == 90 %}你正好 3 个月前{{ content_label }}的
+                      {% elif item.milestone_days == 180 %}你正好半年前{{ content_label }}的
+                      {% elif item.milestone_days == 365 %}你正好 1 年前{{ content_label }}的
+                      {% elif item.milestone_days == 730 %}你正好 2 年前{{ content_label }}的
+                      {% else %}你 {{ item.milestone_days }} 天前{{ content_label }}的
+                      {% endif %}
+                      ——还记得当时为啥存吗？
+                    </div>
+                    <div style="font-size: 15px; font-weight: 500; line-height: 1.4; color:#1d1d1f; max-height: 88px; overflow:hidden;">
+                      {{ item.title or '(无标题)' }}
+                    </div>
+                    <div style="margin-top: 10px; font-size: 13px; color: #515154;">
+                      @{{ item.author or '未知作者' }}
+                    </div>
+                    {% if item.user_note %}
+                    <div style="margin-top: 8px; padding: 8px 10px; background:#fff8e1; border-left:3px solid #f5a623; font-size: 12px; color:#5d4037; border-radius: 4px;">
+                      📝 {{ item.user_note }}
+                    </div>
+                    {% endif %}
+                  </td>
+                </tr>
+              </table>
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+        {% endif %}
+
+        <!-- Footer -->
+        <tr>
+          <td style="padding: 24px 32px 28px;">
+            <div style="border-top: 1px solid #e8e8ed; padding-top: 16px; font-size: 12px; color: #86868b; line-height: 1.6;">
+              点封面图 → 直接在抖音打开<br>
+              这是 douyin-recall 自动生成的。觉得没意思？删了就行，下周会换一批。
+            </div>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+
+</body>
+</html>

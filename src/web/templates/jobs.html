@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+  <h1>后台队列</h1>
+  <span class="stat">查看同步、索引和批量移除是否在后台正常执行</span>
+</header>
+
+<p style="color: var(--text-secondary); font-size: 14px; line-height: 1.6; margin: 0 0 24px; max-width: 760px;">
+  这里是排查用的状态页。同步收藏/喜欢、生成索引、批量取消收藏或取消喜欢时，操作会先进入队列再执行；如果失败，会显示错误、次数和下次重试时间。
+</p>
+
+<div id="jobs-status"
+     hx-get="/jobs/status"
+     hx-trigger="every 5s"
+     hx-swap="innerHTML">
+  {% include "_jobs_table.html" %}
+</div>
+{% endblock %}

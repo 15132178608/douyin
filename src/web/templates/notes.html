@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+  <h1>有备注</h1>
+  <span class="stat">{{ items|length }} 条</span>
+</header>
+<p style="color: var(--text-secondary); font-size: 14px; line-height: 1.6; margin: 0 0 24px; max-width: 680px;">
+  你写过备注的{{ content_label }}——最干净的"我显式在乎"信号。
+</p>
+
+{% include "_grid.html" %}
+{% endblock %}

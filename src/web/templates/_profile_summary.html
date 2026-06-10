@@ -1,0 +1,47 @@
+<div id="profile-summary">
+  <div class="profile-card">
+    {% if request.state.current_user.douyin_avatar_url %}
+    <img class="profile-avatar"
+         src="{{ request.state.current_user.douyin_avatar_url }}"
+         alt=""
+         referrerpolicy="no-referrer"
+         onerror="this.hidden=true; this.nextElementSibling.hidden=false;">
+    <span class="profile-avatar" hidden>{{ (request.state.current_user.douyin_nickname or "抖")[:1] }}</span>
+    {% else %}
+    <span class="profile-avatar">{{ (request.state.current_user.douyin_nickname or "抖")[:1] }}</span>
+    {% endif %}
+    <div class="profile-main">
+      <div class="profile-kicker">当前账号</div>
+      <div class="profile-name">
+        {% if request.state.current_user.douyin_nickname %}
+          {{ request.state.current_user.douyin_nickname }}
+        {% elif profile_exists %}
+          已绑定抖音账号
+        {% else %}
+          尚未绑定抖音
+        {% endif %}
+      </div>
+      <div class="profile-id">
+        {% if request.state.current_user.douyin_unique_id %}
+          抖音号 {{ request.state.current_user.douyin_unique_id }}
+        {% elif profile_exists %}
+          昵称和头像还没读取到，不影响同步收藏和喜欢
+        {% else %}
+          扫码绑定后会显示抖音昵称和头像
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% if profile_refresh_message %}
+  <div class="profile-refresh-message {{ profile_refresh_status or '' }}">{{ profile_refresh_message }}</div>
+  {% endif %}
+  {# 登录态已过期 #}
+  {% if profile_exists %}
+  <button class="btn btn-secondary profile-refresh-btn"
+          hx-post="/auth/profile/refresh"
+          hx-target="#profile-summary"
+          hx-swap="outerHTML">
+    刷新账号资料
+  </button>
+  {% endif %}
+</div>

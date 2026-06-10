@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+  <h1>时间轴</h1>
+  <span class="stat">{{ total }} 条{{ content_label }}</span>
+</header>
+<p style="color: var(--text-secondary); font-size: 14px; line-height: 1.6; margin: 0 0 24px; max-width: 760px;">
+  按{{ content_label }}时间倒序，新的在前。{% if has_unknown %}首次抓取的 {{ unknown_count }} 条时间是空的（接口没返回），按"发现顺序"分组在最下面——之后增量抓取的新{{ content_label }}会有精确时间。{% endif %}
+</p>
+
+{% for section in sections %}
+<div class="timeline-section">
+  <h2>
+    {{ section.label }}
+    <span class="section-meta">{{ section["items"]|length }} 条</span>
+  </h2>
+  <div class="grid">
+    {% for item in section["items"] %}
+      {% include "_card.html" %}
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+
+{% if not sections %}
+<div class="empty">{{ content_label }}库还是空的，先跑 <code>recall {{ 'crawl' if content_kind == 'favorites' else 'crawl-likes' }}</code></div>
+{% endif %}
+{% endblock %}

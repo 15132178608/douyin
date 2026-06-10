@@ -1,0 +1,36 @@
+{% if total_pages and total_pages > 1 %}
+<nav class="pagination pagination-desktop" aria-label="分页">
+  {% if page_number > 1 and first_page_url %}
+  <a class="pagination-link" href="{{ first_page_url }}">首页</a>
+  {% else %}
+  <span class="pagination-link is-disabled">首页</span>
+  {% endif %}
+  {% if prev_page_url %}
+  <a class="pagination-link" href="{{ prev_page_url }}">上一页</a>
+  {% else %}
+  <span class="pagination-link is-disabled">上一页</span>
+  {% endif %}
+  <span class="pagination-status">第 {{ page_number }} / {{ total_pages }} 页</span>
+  <span class="pagination-pages" aria-label="页码">
+    {% for item in pagination_items %}
+      {% if item.type == "ellipsis" %}
+      <span class="pagination-ellipsis" aria-hidden="true">...</span>
+      {% elif item.is_current %}
+      <span class="pagination-number is-current" aria-current="page">{{ item.number }}</span>
+      {% else %}
+      <a class="pagination-number" href="{{ item.url }}">{{ item.number }}</a>
+      {% endif %}
+    {% endfor %}
+  </span>
+  {% if next_page_url %}
+  <a class="pagination-link" href="{{ next_page_url }}">下一页</a>
+  {% else %}
+  <span class="pagination-link is-disabled">下一页</span>
+  {% endif %}
+  {% if page_number < total_pages and last_page_url %}
+  <a class="pagination-link" href="{{ last_page_url }}">末页</a>
+  {% else %}
+  <span class="pagination-link is-disabled">末页</span>
+  {% endif %}
+</nav>
+{% endif %}

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="search-bar">
+  <input type="search"
+         name="q"
+         placeholder="搜索你的{{ content_label }}：教做菜的、那时候 emo 的、反直觉心理学..."
+         hx-get="{{ search_url }}"
+         hx-trigger="keyup changed delay:300ms, search"
+         hx-target="#results"
+         hx-indicator=".htmx-indicator"
+         {% if current_category %}hx-vals='{"category": "{{ current_category }}"}'{% endif %}
+         autofocus>
+  <div class="hint">
+    支持语义搜索（"做菜" 能找到 "菜谱"）+ 关键词搜索（@作者名 / hashtag）
+    {% if current_category_label %}（限「{{ current_category_label }}」内）{% endif %}
+    <span class="htmx-indicator">搜索中…</span>
+  </div>
+</div>
+
+<div id="results">
+  {% include "_grid.html" %}
+</div>
+{% endblock %}

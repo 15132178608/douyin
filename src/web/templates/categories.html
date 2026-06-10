@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+  <h1>自动分类</h1>
+  <span class="stat">
+    {{ categories|length }} 个类别
+    {% if uncategorized_count > 0 %} · {{ uncategorized_count }} 条未归类{% endif %}
+  </span>
+</header>
+<p style="color: var(--text-secondary); font-size: 14px; line-height: 1.6; margin: 0 0 28px; max-width: 760px;">
+  按语义自动分组（默认 KMeans）。名字是机器猜的，点<span style="color: var(--brand-cyan);">"改"</span>可以改成你想要的。
+  "杂物簇"是难免的——把它改名成"杂项"或者点"恢复默认"看是哪几条不对劲，回头再细调。
+</p>
+
+{% if categories %}
+<div class="cat-grid">
+  {% for cat in categories %}
+  <div class="cat-card" id="cat-{{ cat.id }}">
+    <a class="cat-open" href="{{ home_url }}?category={{ cat.id }}">
+      <div class="cat-name-row" id="cat-name-{{ cat.id }}">
+        {% include "_cat_name_view.html" %}
+      </div>
+      {% if cat.keywords %}
+      <div class="cat-keywords">
+        {% for kw in cat.keywords[:5] %}
+          <span class="cat-keyword-chip">{{ kw }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </a>
+    <div class="cat-meta">
+      <span>算法: {{ cat.algo or "—" }}</span>
+      <span>更新于 {{ cat.updated_at|string|truncate(10, true, "") }}</span>
+    </div>
+    {% if categories|length > 1 %}
+    <form hx-post="{{ kind_prefix }}/categories/merge"
+          hx-target="body"
+          hx-swap="outerHTML"
+          hx-confirm="确定合并分类吗？源分类会被移除，条目会移动到目标分类。"
+          style="display:flex; gap:6px; align-items:center;">
+      <input type="hidden" name="source_id" value="{{ cat.id }}">
+      <select name="target_id" style="flex:1; min-width:0; padding:6px 8px; border-radius:6px; border:1px solid var(--border-subtle); background:var(--bg-elevated); color:var(--text-secondary); font-size:12px;">
+        {% for target in categories %}
+          {% if target.id != cat.id %}
+          <option value="{{ target.id }}">并入：{{ target.name }}</option>
+          {% endif %}
+        {% endfor %}
+      </select>
+      <button class="btn-secondary" type="submit">合并</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  {% if uncategorized_count > 0 %}
+  <a class="cat-card uncat" href="{{ home_url }}?category=uncategorized" style="text-decoration:none; color:inherit;">
+    <div class="cat-name-row">
+      <span>📂 未分类 <span class="cat-count">({{ uncategorized_count }} 条)</span></span>
+    </div>
+    <div class="cat-keywords" style="color: var(--text-tertiary);">
+      离任何主簇都比较远的零散{{ content_label }}。可能是你少有重复主题的内容。
+    </div>
+    <div class="cat-meta">
+      <span>来源: HDBSCAN 噪声 / 增量未归</span>
+      <span>—</span>
+    </div>
+  </a>
+  {% endif %}
+</div>
+{% else %}
+<div class="empty" style="text-align:left;">
+  <p>还没有分类。</p>
+  <p style="font-size:13px; color: var(--text-tertiary);">
+    跑一次 <code>recall index --kind {{ content_kind }}</code> 把所有条目编码进向量库；<br>
+    再跑 <code>recall categorize --kind {{ content_kind }}</code> 让算法自动分类。
+  </p>
+  {% if uncategorized_count > 0 %}
+  <p style="font-size:13px; color: var(--text-tertiary);">
+    当前有 {{ uncategorized_count }} 条等待归类。
+  </p>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,24 +1,41 @@
-# Compiled class file
-*.class
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+pytest-cache-files-*/
 
-# Log file
+# ---- uv / poetry ----
+.uv/
+# uv.lock 是否提交看团队偏好；单人项目建议提交，这里就不忽略
+
+# ---- 工具数据（绝对不要提交） ----
+data/
 *.log
 
-# BlueJ files
-*.ctxt
+# ---- 模型缓存 ----
+.cache/
+models/
 
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
+# ---- 配置 ----
+.env
+.env.local
 
-# Package Files #
-*.jar
-*.war
-*.nar
-*.ear
-*.zip
-*.tar.gz
-*.rar
-
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-replay_pid*
+# ---- IDE ----
+.vscode/
+.idea/
+.claude/
+AGENTS.md
+*.swp
+.DS_Store
+Thumbs.db

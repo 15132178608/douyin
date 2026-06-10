@@ -1,0 +1,27 @@
+{# 分类名编辑片段（HTMX target）#}
+<form class="cat-rename-form"
+      hx-patch="{{ kind_prefix }}/categories/{{ cat.id }}/name"
+      hx-target="#cat-name-{{ cat.id }}"
+      hx-swap="innerHTML"
+      style="display:flex; flex-direction:column; width:100%;"
+      onclick="event.stopPropagation();"
+      onsubmit="event.stopPropagation();">
+  <input type="text" name="name" value="{{ cat.name }}"
+         autofocus required maxlength="40"
+         onclick="event.stopPropagation();">
+  <div class="cat-rename-actions">
+    <button type="submit" class="btn-primary">保存</button>
+    <button type="button" class="btn-secondary"
+            hx-get="{{ kind_prefix }}/categories/{{ cat.id }}/name/view"
+            hx-target="#cat-name-{{ cat.id }}"
+            hx-swap="innerHTML">取消</button>
+    {% if cat.name != cat.auto_name %}
+    <button type="button" class="btn-secondary"
+            hx-patch="{{ kind_prefix }}/categories/{{ cat.id }}/name"
+            hx-target="#cat-name-{{ cat.id }}"
+            hx-swap="innerHTML"
+            hx-vals='{"name": "{{ cat.auto_name|e }}"}'
+            title="恢复机器自动起的名字">↺ 恢复默认</button>
+    {% endif %}
+  </div>
+</form>

@@ -1,0 +1,79 @@
+{
+    "status_code": 0,
+    "has_more": 0,
+    "cursor": 12345,
+    "aweme_list": [
+        {
+            "aweme_id": "sample-aweme-1",
+            "desc": "NotebookLM 示例视频",
+            "caption": "NotebookLM 示例视频",
+            "authentication_token": "REDACTED_AUTHENTICATION_TOKEN",
+            "author": {
+                "nickname": "示例作者1",
+                "sec_uid": "MS4wLj_REDACTED_SEC_UID_1",
+                "uid": "100000000001"
+            },
+            "share_url": "https://www.iesdouyin.com/share/video/sample-aweme-1/",
+            "share_info": {
+                "share_url": "https://www.iesdouyin.com/share/video/sample-aweme-1/"
+            },
+            "video": {
+                "cover": {
+                    "url_list": [
+                        "https://example.com/covers/sample-aweme-1.jpg"
+                    ]
+                },
+                "duration": 382548
+            },
+            "video_tag": [
+                {
+                    "level": 1,
+                    "tag_id": "sample-tag-1",
+                    "tag_name": "个人管理"
+                }
+            ],
+            "create_time": 1779456106,
+            "statistics": {
+                "digg_count": 1000
+            }
+        },
+        {
+            "aweme_id": "sample-aweme-2",
+            "desc": "菜谱示例视频",
+            "caption": "菜谱示例视频",
+            "authentication_token": "REDACTED_AUTHENTICATION_TOKEN",
+            "author": {
+                "nickname": "示例作者2",
+                "sec_uid": "MS4wLj_REDACTED_SEC_UID_2",
+                "uid": "100000000002"
+            },
+            "share_info": {
+                "share_url": "https://www.iesdouyin.com/share/video/sample-aweme-2/"
+            },
+            "video": {
+                "origin_cover": {
+                    "url_list": [
+                        "https://example.com/covers/sample-aweme-2.jpg"
+                    ]
+                }
+            },
+            "duration": 42,
+            "video_tag": [
+                {
+                    "level": 1,
+                    "tag_id": "sample-tag-2",
+                    "tag_name": "生活"
+                }
+            ],
+            "collect_folder_list": [
+                {
+                    "name": "菜谱"
+                }
+            ],
+            "create_time": 1779456206,
+            "statistics": {
+                "digg_count": 200
+            }
+        }
+    ]
+}

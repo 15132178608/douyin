@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+  <h1>按作者</h1>
+  <span class="stat">{{ authors|length }} 位作者</span>
+</header>
+<p style="color: var(--text-secondary); font-size: 14px; line-height: 1.6; margin: 0 0 24px; max-width: 680px;">
+  点一个作者，看你{{ content_label }}过他的全部视频。按数量倒序——前面是你的重度关注。
+</p>
+
+{% if authors %}
+<div class="author-grid">
+  {% for a in authors %}
+  <a class="author-card" href="{{ home_url }}?author={{ a.author|urlencode }}">
+    <span class="author-avatar-shell">
+      {% if a.avatar_url %}
+      <img class="author-avatar"
+           src="{{ a.avatar_url }}"
+           alt=""
+           loading="lazy"
+           referrerpolicy="no-referrer"
+           onerror="this.hidden=true; this.nextElementSibling.hidden=false;">
+      <span class="author-avatar author-avatar-fallback" hidden>{{ (a.author or "?")[:1] }}</span>
+      {% else %}
+      <span class="author-avatar author-avatar-fallback">{{ (a.author or "?")[:1] }}</span>
+      {% endif %}
+    </span>
+    <span class="name">@{{ a.author }}</span>
+    <span class="count">{{ a.count }}</span>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty">还没有{{ content_label }}数据。先跑 <code>recall {{ 'crawl' if content_kind == 'favorites' else 'crawl-likes' }}</code>。</div>
+{% endif %}
+{% endblock %}

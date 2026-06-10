@@ -1,0 +1,9 @@
+{# 分类名展示片段（HTMX target）#}
+<span>{{ cat.name }} <span class="cat-count">({{ cat.item_count if cat.item_count is defined else "" }} 条)</span></span>
+<button class="cat-rename-btn"
+        type="button"
+        hx-get="{{ kind_prefix }}/categories/{{ cat.id }}/name/edit"
+        hx-target="#cat-name-{{ cat.id }}"
+        hx-swap="innerHTML"
+        onclick="event.preventDefault(); event.stopPropagation();"
+        title="改名">改</button>

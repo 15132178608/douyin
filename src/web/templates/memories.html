@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+  <h1>本周回忆角</h1>
+  <span class="stat">视频发布周年 + 收藏里程碑</span>
+</header>
+
+{% if anniversaries %}
+<section class="timeline-section">
+  <h2>去年这周附近发布</h2>
+  <div class="grid">
+    {% for item in anniversaries %}
+      {% include "_card.html" %}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if milestones %}
+<section class="timeline-section">
+  <h2>收藏里程碑</h2>
+  <div class="grid">
+    {% for item in milestones %}
+      {% include "_card.html" %}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if not anniversaries and not milestones %}
+<div class="empty" style="text-align:left;">本周暂时没有命中周年或里程碑的收藏。</div>
+{% endif %}
+{% endblock %}

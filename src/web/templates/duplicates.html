@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header>
+  <h1>重合视频</h1>
+  <span class="stat">同时收藏和喜欢过的视频</span>
+</header>
+
+{% if items %}
+<div class="grid">
+  {% for item in items %}
+    {% include "_card.html" %}
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty" style="text-align:left;">当前没有同时收藏和喜欢过的视频。</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,48 @@
+{% if items %}
+{% set show_batch_select = true %}
+{% if batch_action_url is defined %}
+<form id="batch-action-form"
+      class="batch-toolbar"
+      data-batch-toolbar
+      data-batch-content-kind="{{ content_kind }}"
+      method="post">
+  <div data-batch-hidden-inputs hidden></div>
+  <div class="batch-toolbar-status">
+    <span>已选择</span>
+    <strong class="batch-toolbar-count" data-batch-count>0</strong>
+    <span>条{{ content_label }}</span>
+  </div>
+  <div class="batch-toolbar-actions">
+    <button class="btn-secondary batch-action-btn"
+            type="submit"
+            formaction="{{ batch_action_url }}"
+            formmethod="post"
+            hx-post="{{ batch_action_url }}"
+            hx-include="#batch-action-form, .card-select-input:checked"
+            hx-target="#results"
+            hx-swap="innerHTML"
+            hx-confirm="确定批量移除选中的{{ content_label }}吗？这会逐条加入后台队列。"
+            data-batch-requires-selection
+            disabled>
+      批量移除
+    </button>
+    <button class="btn-secondary batch-action-btn"
+            type="button"
+            data-batch-clear
+            data-batch-requires-selection
+            disabled>
+      清空选择
+    </button>
+  </div>
+</form>
+{% endif %}
+<div class="grid">
+  {% for item in items %}
+    {% include "_card.html" %}
+  {% endfor %}
+  {% include "_load_more.html" %}
+</div>
+{% include "_pagination.html" %}
+{% else %}
+<div class="empty">{{ empty_msg or "没找到。" }}</div>
+{% endif %}

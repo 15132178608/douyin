@@ -1,0 +1,51 @@
+[project]
+name = "douyin-recall"
+version = "0.1.0"
+description = "把抖音收藏夹从黑洞变成可被未来自己唤醒的资产 —— 单人本地工具"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "xiaojiang" }]
+license = { file = "LICENSE" }
+
+dependencies = [
+    # CLI 与配置
+    "click>=8.1.7",
+    "pydantic-settings>=2.5.2",
+    "python-dotenv>=1.0.1",
+    "loguru>=0.7.2",
+
+    # 抓取（M1 用，M0 先装着）
+    "playwright>=1.47.0",
+
+    # 数据库与索引（M0 init-db 就要用 sqlite-vec）
+    "sqlite-vec>=0.1.6",
+    "jieba>=0.42.1",
+
+    # Embedding（M3 用，体积大，可以装完延后下载模型）
+    "sentence-transformers>=3.1.1",
+    "numpy>=1.26",
+
+    # M5 自动分类：HDBSCAN 作主、sklearn 作 fallback。sklearn 也用于 TF-IDF 命名
+    "scikit-learn>=1.5",
+    "hdbscan>=0.8.38",
+
+    # Web（M3/M4 用）
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.6",
+    "jinja2>=3.1.4",
+    "python-multipart>=0.0.12",  # FastAPI Form() 解析 HTMX 提交需要
+]
+
+[project.scripts]
+recall = "src.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.uv]
+# uv 锁定文件随 git 提交，团队/复现环境更稳
+managed = true

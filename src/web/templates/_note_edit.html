@@ -1,0 +1,18 @@
+<form class="note-edit-form"
+      hx-patch="{{ item.note_url_prefix }}/{{ item.id }}/note"
+      hx-target="#note-{{ item.id }}"
+      hx-swap="innerHTML">
+  <textarea name="note"
+            rows="3"
+            maxlength="500"
+            placeholder="为什么收藏这条？写一句话留给未来的自己..."
+            autofocus>{{ item.user_note or '' }}</textarea>
+  <div class="note-edit-actions">
+    <button type="submit" class="btn-primary">保存</button>
+    <button type="button"
+            class="btn-secondary"
+            hx-get="{{ item.note_url_prefix }}/{{ item.id }}/note/view"
+            hx-target="#note-{{ item.id }}"
+            hx-swap="innerHTML">取消</button>
+  </div>
+</form>

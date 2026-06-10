@@ -1,0 +1,76 @@
+{# Rendered both on initial page load (via include) and by the /auth/status polling endpoint.
+   Parent container: <div id="auth-status-area"> in auth.html.
+   When starting or qr_ready, the outer div polls /auth/status every 3 s and replaces
+   the contents of #auth-status-area. #}
+<div {% if auth_status in ('starting', 'qr_ready') %}
+     hx-get="/auth/status"
+     hx-trigger="every 3s"
+     hx-target="#auth-status-area"
+     hx-swap="innerHTML"
+     {% endif %}>
+
+  {# already-bound banner #}
+  {% if profile_exists and auth_status == 'idle' %}
+  <div class="bound-banner">
+    <span>✓</span>
+    <span>检测到本地登录资料；如果刷新账号资料或同步提示过期，请重新绑定。</span>
+  </div>
+  {% endif %}
+
+  {# status dot + message #}
+  <div class="status-row">
+    <span class="status-dot
+      {%- if auth_status == 'starting' %} dot-starting
+      {%- elif auth_status == 'qr_ready' %} dot-qr
+      {%- elif auth_status == 'success' %} dot-success
+      {%- elif auth_status == 'failed' %} dot-failed
+      {%- else %} dot-idle
+      {%- endif %}"></span>
+    <span class="status-msg">
+      {%- if auth_status == 'idle' -%}
+        {%- if profile_exists -%}已有本地登录资料，可重新扫码{%- else -%}尚未绑定，点击下方按钮开始{%- endif -%}
+      {%- else -%}
+        {{ auth_message }}
+      {%- endif -%}
+    </span>
+  </div>
+
+  {# QR image block — only shown when qr_ready #}
+  {% if qr_ready %}
+  <div class="qr-wrap">
+    <img src="/auth/qr-image" alt="抖音扫码二维码" class="qr-img">
+    <p class="qr-hint">打开抖音 App → 右上角相机 → 扫描上方二维码，然后点「确认登录」</p>
+  </div>
+  {% endif %}
+
+  {# action buttons #}
+  {% if auth_status in ('idle', 'failed') %}
+  <button class="btn btn-primary"
+          hx-post="/auth/start"
+          hx-target="#auth-status-area"
+          hx-swap="innerHTML">
+    {%- if auth_status == 'failed' -%}重试绑定
+    {%- elif profile_exists -%}重新绑定
+    {%- else -%}开始绑定
+    {%- endif -%}
+  </button>
+
+  {% elif auth_status == 'success' %}
+  <a href="/" class="btn btn-primary"
+     style="display:block;text-align:center;text-decoration:none;margin-bottom:12px;">
+    前往首页同步
+  </a>
+  <button class="btn btn-secondary"
+          hx-post="/auth/start"
+          hx-target="#auth-status-area"
+          hx-swap="innerHTML">
+    重新绑定
+  </button>
+
+  {% elif auth_status in ('starting', 'qr_ready') %}
+  <button class="btn btn-secondary" disabled>
+    {%- if auth_status == 'starting' -%}正在启动浏览器...{%- else -%}等待手机扫码...{%- endif -%}
+  </button>
+  {% endif %}
+
+</div>

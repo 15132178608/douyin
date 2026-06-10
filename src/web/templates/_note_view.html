@@ -1,0 +1,17 @@
+{% if item.user_note %}
+<div class="card-note">
+  <span class="card-note-text">📝 {{ item.user_note }}</span>
+  <button class="note-edit-btn"
+          hx-get="{{ item.note_url_prefix }}/{{ item.id }}/note/edit"
+          hx-target="#note-{{ item.id }}"
+          hx-swap="innerHTML"
+          title="编辑">改</button>
+</div>
+{% else %}
+<button class="note-add-btn"
+        hx-get="{{ item.note_url_prefix }}/{{ item.id }}/note/edit"
+        hx-target="#note-{{ item.id }}"
+        hx-swap="innerHTML">
+  ✎ 为啥要存它？
+</button>
+{% endif %}

@@ -1,0 +1,94 @@
+<div class="card" id="card-{{ item.id }}">
+  {% if show_batch_select is defined and show_batch_select %}
+  <label class="card-select" title="选择用于批量操作">
+    <input class="card-select-input"
+           type="checkbox"
+           name="ids"
+           value="{{ item.id }}"
+           data-batch-id="{{ item.id }}"
+           form="batch-action-form"
+           aria-label="选择{{ item.content_label }}：{{ (item.title or '无标题')[:40] }}">
+    <span class="card-select-box" aria-hidden="true"></span>
+  </label>
+  {% endif %}
+  <a href="{{ item.video_url or '#' }}" target="_blank"
+     hx-post="{{ item.track_url }}"
+     hx-swap="none"
+     hx-trigger="click">
+    <div class="card-cover" {% if item.cover_url %}style="background-image:url('{{ item.cover_url }}');"{% endif %}>
+      {% if not item.cover_url %}无封面{% endif %}
+      <button class="card-play-btn"
+              data-stream-url="{{ item.note_url_prefix }}/{{ item.id }}/stream"
+              data-share-url="{{ item.video_url or '#' }}"
+              data-title="{{ item.title or '' }}"
+              title="在页面内播放">
+        <span class="card-play-icon">
+          <svg viewBox="0 0 24 24"><polygon points="6,3 20,12 6,21"/></svg>
+        </span>
+      </button>
+    </div>
+    <div class="card-body">
+      <div class="card-title">{{ item.title or "(无标题)" }}</div>
+      <div class="card-author">
+        {% if item.author_avatar_url %}
+        <img class="card-author-avatar"
+             src="{{ item.author_avatar_url }}"
+             alt=""
+             loading="lazy"
+             referrerpolicy="no-referrer"
+             onerror="this.hidden=true; this.nextElementSibling.hidden=false;">
+        <span class="card-author-avatar card-author-avatar-fallback" hidden>{{ (item.author or "?")[:1] }}</span>
+        {% else %}
+        <span class="card-author-avatar card-author-avatar-fallback">{{ (item.author or "?")[:1] }}</span>
+        {% endif %}
+        <span class="card-author-name">@{{ item.author or "?" }}</span>
+      </div>
+      {% if (item.score is defined and item.score is not none) or item.favorited_at or item.video_created_at %}
+      <div class="card-meta">
+        {% if item.score is defined and item.score is not none %}
+          score {{ "%.3f"|format(item.score) }}
+          {% if item.vec_rank and item.fts_rank %}
+            <span class="source-badge">语义+关键词</span>
+          {% elif item.vec_rank %}
+            <span class="source-badge">语义</span>
+          {% else %}
+            <span class="source-badge">关键词</span>
+          {% endif %}
+        {% elif item.favorited_at %}
+          {{ "喜欢于" if item.content_kind == "likes" else "收藏于" }} {{ item.favorited_at[:10] }}
+        {% elif item.video_created_at %}
+          发布于 {{ item.video_created_at[:10] }}
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </a>
+  <div class="card-note-section" id="note-{{ item.id }}">
+    {% include "_note_view.html" %}
+  </div>
+  <div class="card-actions">
+    {% if item.content_kind == "favorites" %}
+    <button class="card-trash-btn"
+            data-disable-on-request
+            hx-post="/favorites/{{ item.id }}/uncollect"
+            hx-target="#card-{{ item.id }}"
+            hx-swap="outerHTML"
+            hx-confirm="确定要从抖音取消收藏「{{ (item.title or '无标题')[:30] }}」吗？\n这会同时从你抖音里的收藏夹也删掉。"
+            title="从抖音取消收藏">
+      <span class="trash-icon">🗑</span>
+      <span class="trash-working">取消中...</span>
+    </button>
+    {% elif item.content_kind == "likes" %}
+    <button class="card-trash-btn"
+            data-disable-on-request
+            hx-post="/likes/{{ item.id }}/unlike"
+            hx-target="#card-{{ item.id }}"
+            hx-swap="outerHTML"
+            hx-confirm="确定要从抖音取消喜欢「{{ (item.title or '无标题')[:30] }}」吗？\n这会同时从你抖音里的喜欢列表移除。"
+            title="从抖音取消喜欢">
+      <span class="trash-icon">🗑</span>
+      <span class="trash-working">取消中...</span>
+    </button>
+    {% endif %}
+  </div>
+</div>
