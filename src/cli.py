@@ -1035,6 +1035,14 @@ def status_cmd() -> None:
         click.echo(f"URL: {status['url']}")
     if status.get("pid"):
         click.echo(f"PID: {status['pid']}")
+    audit = server_runtime.get_service_audit(configured_port=settings.web_port)
+    click.echo(f"Service audit: {audit['relation']}")
+    click.echo(f"Port: {audit['port']}")
+    if audit.get("recorded_pid") is not None:
+        click.echo(f"Recorded PID: {audit['recorded_pid']}")
+    if audit.get("port_owner_pid") is not None:
+        click.echo(f"Port owner PID: {audit['port_owner_pid']}")
+    click.echo(f"Next step: {audit['next_step']}")
 
 
 @cli.command("stop")

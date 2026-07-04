@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.16
+
+- Added a service lifecycle audit to `recall status` so forgotten background Web services show the recorded PID, port owner PID, and safest next step.
+- Added the same service-audit guidance to `Douyin Recall Control` and `Douyin Recall Health Check`.
+- The audit distinguishes this project's recorded service from unrelated processes on the same port and tells users when to use Stop Service, Repair State, or inspect an external listener manually.
+
+See [docs/releases/v0.1.16.md](docs/releases/v0.1.16.md).
+
 ## v0.1.15
 
 - Added a `/maintenance` Douyin login recovery card that detects likely expired login state from failed sync jobs and crawl runs.

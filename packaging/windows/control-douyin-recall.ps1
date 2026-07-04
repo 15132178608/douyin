@@ -236,6 +236,100 @@ function Test-RecordedProcessRunning {
     return Test-PidRunning -ProcessId $ProcessId
 }
 
+function Get-ServiceAudit {
+    $port = Get-WebPort
+    $state = Read-ServerState
+    $recordedPid = Get-StatePid -State $state
+    if ($null -eq $recordedPid) {
+        $recordedPid = Read-ServerPidFile
+    }
+    $portOwner = Get-PortOwnerPid -Port $port
+    $recordedRunning = $false
+    if ($null -ne $recordedPid) {
+        $recordedRunning = Test-PidRunning -ProcessId $recordedPid
+    }
+
+    if ($null -eq $recordedPid) {
+        if ($null -eq $portOwner) {
+            return [pscustomobject]@{
+                Relation = "clear"
+                Action = "start"
+                Port = $port
+                RecordedPid = $null
+                PortOwnerPid = $null
+                Message = "No background web service is using port $port."
+                NextStep = "Start Douyin Recall only when you need the local web UI."
+            }
+        }
+        return [pscustomobject]@{
+            Relation = "external listener"
+            Action = "inspect_external"
+            Port = $port
+            RecordedPid = $null
+            PortOwnerPid = $portOwner
+            Message = "Port $port is owned by pid=$portOwner, but there is no Douyin Recall service record."
+            NextStep = "Do not stop pid=$portOwner from this tool. Inspect that process or change WEB_PORT."
+        }
+    }
+
+    if (-not $recordedRunning) {
+        if ($null -eq $portOwner) {
+            return [pscustomobject]@{
+                Relation = "stale service record"
+                Action = "repair"
+                Port = $port
+                RecordedPid = $recordedPid
+                PortOwnerPid = $null
+                Message = "Recorded PID $recordedPid is stale and port $port has no listener."
+                NextStep = "Run Douyin Recall Repair State or uv run recall stop to clean stale state."
+            }
+        }
+        return [pscustomobject]@{
+            Relation = "stale service record with listener"
+            Action = "repair"
+            Port = $port
+            RecordedPid = $recordedPid
+            PortOwnerPid = $portOwner
+            Message = "Recorded PID $recordedPid is stale, while port $port is owned by pid=$portOwner."
+            NextStep = "Run Douyin Recall Repair State or uv run recall stop to clean project state. Do not stop pid=$portOwner unless you recognize it."
+        }
+    }
+
+    if ($null -eq $portOwner) {
+        return [pscustomobject]@{
+            Relation = "record without listener"
+            Action = "repair"
+            Port = $port
+            RecordedPid = $recordedPid
+            PortOwnerPid = $null
+            Message = "Recorded PID $recordedPid still exists, but port $port has no listener."
+            NextStep = "Run Douyin Recall Repair State or uv run recall stop, then check status again."
+        }
+    }
+
+    if ([int]$portOwner -eq [int]$recordedPid) {
+        return [pscustomobject]@{
+            Relation = "own service running"
+            Action = "stop"
+            Port = $port
+            RecordedPid = $recordedPid
+            PortOwnerPid = $portOwner
+            Message = "Douyin Recall recorded PID $recordedPid owns port $port."
+            NextStep = "Run Douyin Recall Stop Service or uv run recall stop when you are done."
+        }
+    }
+
+    return [pscustomobject]@{
+        Relation = "recorded PID and port owner mismatch"
+        Action = "repair"
+        Port = $port
+        RecordedPid = $recordedPid
+        PortOwnerPid = $portOwner
+        Message = "Recorded PID $recordedPid does not match port $port owner pid=$portOwner."
+        NextStep = "Run Douyin Recall Repair State or uv run recall stop to clean project state. Do not stop pid=$portOwner unless you recognize it."
+    }
+}
+
 function Get-ControlSummary {
     $port = Get-WebPort
     $homeUrl = "http://127.0.0.1:$port"
@@ -263,6 +357,7 @@ function Get-ControlSummary {
     elseif ($webAvailable) {
         $serviceStatus = "web reachable, but PID record is missing"
     }
+    $audit = Get-ServiceAudit
 
     return [pscustomobject]@{
         Version = Get-InstalledVersion
@@ -272,6 +367,7 @@ function Get-ControlSummary {
         LogsDir = $LogsDir
         DownloadRoot = $DownloadRoot
         RecordedPid = $recordedPid
+        Audit = $audit
     }
 }
 
@@ -284,6 +380,12 @@ function Write-ControlSummary {
     if ($null -ne $summary.RecordedPid) {
         Write-Host "Recorded PID: $($summary.RecordedPid)"
     }
+    Write-Host "Service audit: $($summary.Audit.Relation)"
+    Write-Host "Port: $($summary.Audit.Port)"
+    if ($null -ne $summary.Audit.PortOwnerPid) {
+        Write-Host "Port owner PID: $($summary.Audit.PortOwnerPid)"
+    }
+    Write-Host "Next step: $($summary.Audit.NextStep)"
     Write-Host "Maintenance: $($summary.MaintenanceUrl)"
     Write-Host "Logs: $($summary.LogsDir)"
     Write-Host "Runtime cache: $($summary.DownloadRoot)"
@@ -432,7 +534,8 @@ function Invoke-HealthCheck {
     $state = Read-ServerState
     $port = Get-WebPort
     $portOwner = Get-PortOwnerPid -Port $port
-    $needsRepair = $false
+    $audit = Get-ServiceAudit
+    $needsRepair = $audit.Action -eq "repair"
 
     if ($null -eq $state) {
         Write-Host "[OK] Service record: no server.json record."
@@ -451,6 +554,14 @@ function Invoke-HealthCheck {
     else {
         Write-Host "[INFO] Port listener: $port is owned by pid=$portOwner."
     }
+    Write-Host "[INFO] Service audit: $($audit.Relation)"
+    if ($null -ne $audit.RecordedPid) {
+        Write-Host "[INFO] Recorded PID: $($audit.RecordedPid)"
+    }
+    if ($null -ne $audit.PortOwnerPid) {
+        Write-Host "[INFO] Port owner PID: $($audit.PortOwnerPid)"
+    }
+    Write-Host "[INFO] Next step: $($audit.NextStep)"
 
     Write-Host ""
     Write-Host "Repair suggestion:"

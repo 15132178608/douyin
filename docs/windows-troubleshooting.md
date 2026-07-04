@@ -45,14 +45,14 @@ C:\Users\<你的用户名>\AppData\Local\Programs\DouyinRecall\data\logs
 
 安装后也可以直接用开始菜单入口，不必先打开 PowerShell：
 
-- `Douyin Recall Control`：打开控制菜单，并先显示状态摘要，包括当前版本、服务状态、维护中心地址、日志目录和运行时缓存。
-- `Douyin Recall Status`：查看服务状态、PID、访问地址和日志目录。
+- `Douyin Recall Control`：打开控制菜单，并先显示状态摘要，包括当前版本、服务状态、service audit、端口 owner、维护中心地址、日志目录和运行时缓存。
+- `Douyin Recall Status`：查看服务状态、PID、访问地址、端口 owner 和安全下一步。
 - `Douyin Recall Stop Service`：停止由本项目记录的本地 Web 服务，适合处理忘记关闭导致后台占用的问题。
 - `Douyin Recall Maintenance`：打开 `/maintenance`；如果服务还没启动，会先走正常启动脚本。
 - `Douyin Recall Account Recovery`：打开 `/auth` 账号恢复页；同步提示登录态失效时，用这个入口重新扫码。
 - `Douyin Recall Diagnostics`：导出脱敏诊断包。
 - `Douyin Recall Logs`：打开日志目录。
-- `Douyin Recall Health Check`：运行健康检查，检查安装目录、日志目录、运行时缓存、uv、服务记录和端口监听。
+- `Douyin Recall Health Check`：运行健康检查，检查安装目录、日志目录、运行时缓存、uv、服务记录、端口监听和 service audit。
 - `Douyin Recall Repair State`：当健康检查提示服务记录陈旧时，清理 `data\runtime\server.json` 和 `data\runtime\server.pid`；不会删除数据库、日志、浏览器 profile 或登录态。
 - `Douyin Recall Backup Now`：立即生成 SQLite 备份，写入 `data\exports`。
 - `Douyin Recall Backups`：打开 `data\exports` 备份目录。
@@ -80,7 +80,7 @@ uv run recall update
 uv run recall verify-backup
 ```
 
-- `uv run recall status`：查看本地 Web 服务是否还在运行、PID 和访问地址。
+- `uv run recall status`：查看本地 Web 服务是否还在运行、PID、端口 owner 和安全下一步。
 - `uv run recall stop`：停止由 `recall serve` 记录的本地 Web 服务，适合处理忘记关闭导致后台占用的问题。
 - `uv run recall diagnose`：导出脱敏诊断包，排查失败任务、服务状态和日志摘要。
 - `uv run recall update`：检查 GitHub Release 上是否有新版安装包；只读检查，不会自动下载或安装。
@@ -108,7 +108,14 @@ http://127.0.0.1:8000/auth
 uv run recall status
 ```
 
-如果状态里显示服务正在运行，但你不想继续占用后台资源，运行：
+输出里的 `Service audit` 是关键：
+
+- `own_service_running`：记录的 Douyin Recall 服务正在占用端口。不想继续占用后台资源时，运行 `uv run recall stop` 或点击 `Douyin Recall Stop Service`。
+- `stale_record` / `record_without_listener` / `record_port_mismatch`：状态文件和实际端口不一致。运行 `uv run recall stop` 或点击 `Douyin Recall Repair State` 清理本项目状态后再检查。
+- `external_listener`：端口被别的进程占用，但没有本项目服务记录。不要用本项目工具去结束它；先确认那个 PID，或修改 `.env` 里的 `WEB_PORT`。
+- `clear`：没有服务记录，也没有端口监听，不需要清理。
+
+如果状态里显示本项目服务正在运行，但你不想继续占用后台资源，运行：
 
 ```powershell
 uv run recall stop

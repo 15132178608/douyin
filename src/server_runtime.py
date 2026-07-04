@@ -156,6 +156,85 @@ def get_server_status(
     return status
 
 
+def get_service_audit(
+    *,
+    runtime_dir: Path | None = None,
+    configured_port: int = 8000,
+    process_checker: Callable[[int], bool] | None = None,
+    port_owner_checker: Callable[[int], int | None] | None = None,
+) -> dict:
+    """Return read-only guidance about the recorded service and port listener."""
+    checker = process_checker or is_process_running
+    owner_checker = port_owner_checker or get_port_owner_pid
+    status = get_server_status(runtime_dir=runtime_dir, process_checker=checker)
+    port = int(status.get("port") or configured_port or 8000)
+    recorded_pid = status.get("pid")
+    port_owner_pid = owner_checker(port)
+
+    def audit(relation: str, action: str, message: str, next_step: str) -> dict:
+        return {
+            "relation": relation,
+            "action": action,
+            "port": port,
+            "recorded_pid": recorded_pid,
+            "port_owner_pid": port_owner_pid,
+            "message": message,
+            "next_step": next_step,
+            "status": status,
+        }
+
+    if status["state"] == "stopped":
+        if port_owner_pid is None:
+            return audit(
+                "clear",
+                "start",
+                f"端口 {port} 没有后台 Web 服务占用。",
+                "需要使用时运行 uv run recall serve，或点击 Douyin Recall。",
+            )
+        return audit(
+            "external_listener",
+            "inspect_external",
+            f"端口 {port} 正被 pid={port_owner_pid} 占用，但没有本项目服务记录。",
+            f"不要用 recall stop 结束未知进程；请先确认 pid={port_owner_pid}，或修改 .env 的 WEB_PORT 后重试。",
+        )
+
+    if status["state"] == "stale":
+        if port_owner_pid is None:
+            return audit(
+                "stale_record",
+                "repair",
+                f"发现陈旧服务记录 pid={recorded_pid}，端口 {port} 没有监听。",
+                "运行 uv run recall stop，或点击 Douyin Recall Repair State 清理陈旧状态。",
+            )
+        return audit(
+            "stale_record_with_listener",
+            "repair",
+            f"服务记录 pid={recorded_pid} 已陈旧，但端口 {port} 正被 pid={port_owner_pid} 占用。",
+            f"先运行 uv run recall stop 或 Douyin Recall Repair State 清理项目状态；不要结束 pid={port_owner_pid}，除非你确认它是可关闭的进程。",
+        )
+
+    if port_owner_pid is None:
+        return audit(
+            "record_without_listener",
+            "repair",
+            f"服务记录 pid={recorded_pid} 仍存在，但端口 {port} 没有监听。",
+            "运行 uv run recall stop，或点击 Douyin Recall Repair State 清理状态，然后重新检查。",
+        )
+    if recorded_pid is not None and int(port_owner_pid) == int(recorded_pid):
+        return audit(
+            "own_service_running",
+            "stop",
+            f"Douyin Recall 记录的服务 pid={recorded_pid} 正在占用端口 {port}。",
+            "运行 uv run recall stop，或点击 Douyin Recall Stop Service。",
+        )
+    return audit(
+        "record_port_mismatch",
+        "repair",
+        f"服务记录 pid={recorded_pid} 与端口 {port} 的 owner pid={port_owner_pid} 不一致。",
+        f"运行 uv run recall stop 或 Douyin Recall Repair State 清理项目状态；不要结束 pid={port_owner_pid}，除非你确认它是可关闭的进程。",
+    )
+
+
 def should_start_server(
     *,
     runtime_dir: Path | None = None,

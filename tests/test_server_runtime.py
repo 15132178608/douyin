@@ -10,6 +10,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from click.testing import CliRunner
+
+from src import cli as cli_module
 from src import server_runtime
 
 
@@ -223,6 +226,143 @@ def test_stop_recorded_server_keeps_state_when_port_remains_after_terminator() -
         assert "未确认停止" in result["message"]
 
 
+def test_service_audit_identifies_recorded_service_owning_port() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        server_runtime.write_server_state(pid=1111, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        audit = server_runtime.get_service_audit(
+            runtime_dir=runtime_dir,
+            configured_port=8000,
+            process_checker=lambda pid: pid == 1111,
+            port_owner_checker=lambda port: 1111,
+        )
+
+        assert audit["relation"] == "own_service_running"
+        assert audit["action"] == "stop"
+        assert audit["recorded_pid"] == 1111
+        assert audit["port_owner_pid"] == 1111
+        assert "uv run recall stop" in audit["next_step"]
+
+
+def test_service_audit_identifies_external_listener_without_state() -> None:
+    with TemporaryDirectory() as tmp:
+        audit = server_runtime.get_service_audit(
+            runtime_dir=Path(tmp),
+            configured_port=8000,
+            process_checker=lambda pid: False,
+            port_owner_checker=lambda port: 2222,
+        )
+
+        assert audit["relation"] == "external_listener"
+        assert audit["action"] == "inspect_external"
+        assert audit["recorded_pid"] is None
+        assert audit["port_owner_pid"] == 2222
+        assert "不要用 recall stop" in audit["next_step"]
+
+
+def test_service_audit_identifies_stale_record() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        server_runtime.write_server_state(pid=3333, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        audit = server_runtime.get_service_audit(
+            runtime_dir=runtime_dir,
+            configured_port=8000,
+            process_checker=lambda pid: False,
+            port_owner_checker=lambda port: None,
+        )
+
+        assert audit["relation"] == "stale_record"
+        assert audit["action"] == "repair"
+        assert audit["recorded_pid"] == 3333
+        assert audit["port_owner_pid"] is None
+        assert "Douyin Recall Repair State" in audit["next_step"]
+
+
+def test_service_audit_identifies_record_without_listener() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        server_runtime.write_server_state(pid=4445, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        audit = server_runtime.get_service_audit(
+            runtime_dir=runtime_dir,
+            configured_port=8000,
+            process_checker=lambda pid: pid == 4445,
+            port_owner_checker=lambda port: None,
+        )
+
+        assert audit["relation"] == "record_without_listener"
+        assert audit["action"] == "repair"
+        assert audit["recorded_pid"] == 4445
+        assert audit["port_owner_pid"] is None
+        assert "重新检查" in audit["next_step"]
+
+
+def test_service_audit_identifies_record_port_mismatch() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        server_runtime.write_server_state(pid=5556, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        audit = server_runtime.get_service_audit(
+            runtime_dir=runtime_dir,
+            configured_port=8000,
+            process_checker=lambda pid: pid == 5556,
+            port_owner_checker=lambda port: 9999,
+        )
+
+        assert audit["relation"] == "record_port_mismatch"
+        assert audit["action"] == "repair"
+        assert audit["recorded_pid"] == 5556
+        assert audit["port_owner_pid"] == 9999
+        assert "不要结束 pid=9999" in audit["next_step"]
+
+
+def test_service_audit_identifies_clear_port_without_state() -> None:
+    with TemporaryDirectory() as tmp:
+        audit = server_runtime.get_service_audit(
+            runtime_dir=Path(tmp),
+            configured_port=8000,
+            process_checker=lambda pid: False,
+            port_owner_checker=lambda port: None,
+        )
+
+        assert audit["relation"] == "clear"
+        assert audit["action"] == "start"
+        assert audit["recorded_pid"] is None
+        assert audit["port_owner_pid"] is None
+        assert "没有后台 Web 服务占用" in audit["message"]
+
+
+def test_status_command_prints_service_audit_guidance() -> None:
+    status = {
+        "state": "running",
+        "running": True,
+        "pid": 1111,
+        "url": "http://127.0.0.1:8000",
+        "message": "本地 Web 服务正在运行：http://127.0.0.1:8000 (pid=1111)",
+    }
+    audit = {
+        "relation": "own_service_running",
+        "action": "stop",
+        "port": 8000,
+        "recorded_pid": 1111,
+        "port_owner_pid": 1111,
+        "message": "Recorded Douyin Recall service owns port 8000.",
+        "next_step": "uv run recall stop",
+        "status": status,
+    }
+
+    with patch.object(cli_module.server_runtime, "get_server_status", return_value=status):
+        with patch.object(cli_module.server_runtime, "get_service_audit", return_value=audit):
+            result = CliRunner().invoke(cli_module.cli, ["status"])
+
+    assert result.exit_code == 0
+    assert "Service audit: own_service_running" in result.output
+    assert "Port owner PID: 1111" in result.output
+    assert "Next step: uv run recall stop" in result.output
+
+
 def test_windows_terminator_uses_force_and_raises_on_taskkill_failure() -> None:
     calls: list[list[str]] = []
 
@@ -260,6 +400,13 @@ if __name__ == "__main__":
         test_stop_recorded_server_keeps_state_when_terminator_fails,
         test_stop_recorded_server_waits_for_port_to_release_before_clearing_state,
         test_stop_recorded_server_keeps_state_when_port_remains_after_terminator,
+        test_service_audit_identifies_recorded_service_owning_port,
+        test_service_audit_identifies_external_listener_without_state,
+        test_service_audit_identifies_stale_record,
+        test_service_audit_identifies_record_without_listener,
+        test_service_audit_identifies_record_port_mismatch,
+        test_service_audit_identifies_clear_port_without_state,
+        test_status_command_prints_service_audit_guidance,
         test_windows_terminator_uses_force_and_raises_on_taskkill_failure,
     ]
     failed = 0
