@@ -11,6 +11,8 @@ $AppRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
 $DataRoot = Join-Path $AppRoot "data"
 $LogsDir = Join-Path $DataRoot "logs"
 $EnvPath = Join-Path $AppRoot ".env"
+$ProjectPath = Join-Path $AppRoot "pyproject.toml"
+$ServerStatePath = Join-Path $AppRoot "data\runtime\server.json"
 $StartScript = Join-Path $ScriptDir "start-douyin-recall.ps1"
 $DownloadRoot = "D:\codexDownload\douyinclaude-runtime"
 $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
@@ -88,6 +90,116 @@ function Test-WebAvailable {
     }
 }
 
+function Get-InstalledVersion {
+    if (-not (Test-Path $ProjectPath)) {
+        return "unknown"
+    }
+
+    $match = Select-String -Path $ProjectPath -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1
+    if ($match -and $match.Matches.Count -gt 0) {
+        return $match.Matches[0].Groups[1].Value
+    }
+    return "unknown"
+}
+
+function Read-ServerState {
+    if (-not (Test-Path $ServerStatePath)) {
+        return $null
+    }
+
+    try {
+        return Get-Content -Path $ServerStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-RecordedProcessRunning {
+    param([object]$State)
+
+    if ($null -eq $State) {
+        return $false
+    }
+
+    try {
+        $PidProperty = $State.PSObject.Properties["pid"]
+        if ($null -eq $PidProperty -or $null -eq $PidProperty.Value) {
+            return $false
+        }
+
+        $ProcessId = [int]$PidProperty.Value
+        Get-Process -Id $ProcessId -ErrorAction Stop | Out-Null
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-ControlSummary {
+    $port = Get-WebPort
+    $homeUrl = "http://127.0.0.1:$port"
+    $maintenanceUrl = "$homeUrl/maintenance"
+    $state = Read-ServerState
+    $recordedPid = $null
+    $webAvailable = Test-WebAvailable -Url $homeUrl
+    $serviceStatus = "未运行"
+
+    if ($null -ne $state) {
+        $PidProperty = $state.PSObject.Properties["pid"]
+        if ($null -ne $PidProperty) {
+            $recordedPid = $PidProperty.Value
+        }
+
+        if (Test-RecordedProcessRunning -State $state) {
+            if ($webAvailable) {
+                $serviceStatus = "正在运行"
+            }
+            else {
+                $serviceStatus = "进程存在，但本地网页暂未响应"
+            }
+        }
+        else {
+            $serviceStatus = "PID 记录陈旧"
+        }
+    }
+    elseif ($webAvailable) {
+        $serviceStatus = "网页可访问，但没有 PID 记录"
+    }
+
+    return [pscustomobject]@{
+        Version = Get-InstalledVersion
+        ServiceStatus = $serviceStatus
+        Port = $port
+        MaintenanceUrl = $maintenanceUrl
+        LogsDir = $LogsDir
+        DownloadRoot = $DownloadRoot
+        RecordedPid = $recordedPid
+    }
+}
+
+function Write-ControlSummary {
+    $summary = Get-ControlSummary
+
+    Write-Header "本地状态摘要"
+    Write-Host "当前版本：$($summary.Version)"
+    Write-Host "服务状态：$($summary.ServiceStatus)"
+    if ($null -ne $summary.RecordedPid) {
+        Write-Host "记录 PID：$($summary.RecordedPid)"
+    }
+    Write-Host "维护中心：$($summary.MaintenanceUrl)"
+    Write-Host "日志目录：$($summary.LogsDir)"
+    Write-Host "运行时缓存：$($summary.DownloadRoot)"
+
+    if ($summary.ServiceStatus -eq "正在运行" -or $summary.ServiceStatus -eq "进程存在，但本地网页暂未响应") {
+        Write-Host "停止入口：Douyin Recall Stop Service"
+    }
+    else {
+        Write-Host "启动入口：Douyin Recall"
+    }
+}
+
 function Wait-BeforeExit {
     Read-Host "Press Enter to close" | Out-Null
 }
@@ -123,6 +235,7 @@ function Open-LogsDirectory {
 }
 
 function Show-Status {
+    Write-ControlSummary
     Write-Header "服务状态"
     Invoke-RecallCommand @('status')
     $port = Get-WebPort
@@ -147,6 +260,8 @@ function Check-Update {
 }
 
 function Show-ControlMenu {
+    Write-ControlSummary
+
     while ($true) {
         Write-Host ""
         Write-Host "Douyin Recall Control"

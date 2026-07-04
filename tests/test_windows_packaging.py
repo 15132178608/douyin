@@ -114,6 +114,28 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("start-douyin-recall.ps1", control)
         self.assertIn("Read-Host \"Press Enter to close\"", control)
 
+    def test_control_script_prints_status_summary_before_menu_actions(self) -> None:
+        control = read("control-douyin-recall.ps1")
+
+        self.assertIn("function Get-InstalledVersion", control)
+        self.assertIn("function Read-ServerState", control)
+        self.assertIn("function Test-RecordedProcessRunning", control)
+        self.assertIn("function Get-ControlSummary", control)
+        self.assertIn("function Write-ControlSummary", control)
+        self.assertIn("data\\runtime\\server.json", control)
+        self.assertIn("ConvertFrom-Json", control)
+        self.assertIn('PSObject.Properties["pid"]', control)
+        self.assertIn("Get-Process -Id", control)
+        self.assertIn("当前版本：", control)
+        self.assertIn("服务状态：", control)
+        self.assertIn("维护中心：", control)
+        self.assertIn("日志目录：", control)
+        self.assertIn("运行时缓存：", control)
+        self.assertIn("停止入口：Douyin Recall Stop Service", control)
+        self.assertIn("启动入口：Douyin Recall", control)
+        self.assertLess(control.index("Write-ControlSummary"), control.index("Write-Host \"Douyin Recall Control\""))
+        self.assertLess(control.index("Write-ControlSummary"), control.index("Invoke-RecallCommand @('status')"))
+
     def test_inno_installs_start_menu_control_shortcuts(self) -> None:
         script = read("DouyinRecall.iss")
 
@@ -166,6 +188,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("UV_LINK_MODE", notes)
         self.assertIn("启动前健康检查", notes)
         self.assertIn("控制入口", notes)
+        self.assertIn("状态摘要", notes)
         self.assertIn("Douyin Recall Stop Service", notes)
         self.assertIn("recall stop", notes)
         self.assertIn("/maintenance", notes)
@@ -184,6 +207,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("启动前健康检查", doc)
         self.assertIn("Douyin Recall Control", doc)
         self.assertIn("Douyin Recall Stop Service", doc)
+        self.assertIn("状态摘要", doc)
         self.assertIn("/maintenance", doc)
 
 

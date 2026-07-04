@@ -45,7 +45,7 @@ C:\Users\<你的用户名>\AppData\Local\Programs\DouyinRecall\data\logs
 
 安装后也可以直接用开始菜单入口，不必先打开 PowerShell：
 
-- `Douyin Recall Control`：打开控制菜单。
+- `Douyin Recall Control`：打开控制菜单，并先显示状态摘要，包括当前版本、服务状态、维护中心地址、日志目录和运行时缓存。
 - `Douyin Recall Status`：查看服务状态、PID、访问地址和日志目录。
 - `Douyin Recall Stop Service`：停止由本项目记录的本地 Web 服务，适合处理忘记关闭导致后台占用的问题。
 - `Douyin Recall Maintenance`：打开 `/maintenance`；如果服务还没启动，会先走正常启动脚本。

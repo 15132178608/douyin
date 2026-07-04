@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.11
+
+- Added a status summary to `Douyin Recall Control` before showing the menu or detailed status command.
+- The summary shows installed version, local service state, maintenance URL, logs directory, runtime cache, and the right start/stop entry.
+- The summary reads local state directly from `.env`, `pyproject.toml`, and `data\runtime\server.json`, so it can explain basic state even before uv is available.
+
+See [docs/releases/v0.1.11.md](docs/releases/v0.1.11.md).
+
 ## v0.1.10
 
 - Added a Windows Start Menu control entry for day-to-day local operations after installation.
