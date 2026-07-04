@@ -1,5 +1,5 @@
 #define MyAppName "Douyin Recall"
-#define MyAppVersion "0.1.9"
+#define MyAppVersion "0.1.10"
 #define MyAppPublisher "xiaojiang"
 
 #ifndef SourceRoot
@@ -31,6 +31,12 @@ Source: "{#SourceRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 
 [Icons]
 Name: "{autoprograms}\Douyin Recall"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\start-douyin-recall.ps1"""; WorkingDir: "{app}"
+Name: "{autoprograms}\Douyin Recall Control"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"""; WorkingDir: "{app}"
+Name: "{autoprograms}\Douyin Recall Status"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""status"""; WorkingDir: "{app}"
+Name: "{autoprograms}\Douyin Recall Stop Service"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""stop"""; WorkingDir: "{app}"
+Name: "{autoprograms}\Douyin Recall Maintenance"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""maintenance"""; WorkingDir: "{app}"
+Name: "{autoprograms}\Douyin Recall Diagnostics"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""diagnose"""; WorkingDir: "{app}"
+Name: "{autoprograms}\Douyin Recall Logs"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""logs"""; WorkingDir: "{app}"
 Name: "{autodesktop}\Douyin Recall"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\start-douyin-recall.ps1"""; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]

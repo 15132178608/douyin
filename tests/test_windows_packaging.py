@@ -94,6 +94,42 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Remove-Item -LiteralPath $ProbePath -Force", launcher)
         self.assertLess(launcher.index("Assert-StartupPreflight"), launcher.index("$uv = Find-Uv"))
 
+    def test_control_script_exposes_local_operations_without_hidden_runtime_paths(self) -> None:
+        control = read("control-douyin-recall.ps1")
+
+        self.assertIn('[ValidateSet("menu", "start", "stop", "status", "maintenance", "diagnose", "logs", "update")]', control)
+        self.assertIn("D:\\codexDownload\\douyinclaude-runtime", control)
+        self.assertIn("$env:UV_CACHE_DIR", control)
+        self.assertIn('$env:UV_LINK_MODE = "copy"', control)
+        self.assertIn("$env:PLAYWRIGHT_BROWSERS_PATH", control)
+        self.assertNotIn("$env:TEMP", control)
+        self.assertIn("Start-DouyinRecall", control)
+        self.assertIn("Open-MaintenanceCenter", control)
+        self.assertIn("Open-LogsDirectory", control)
+        self.assertIn("Invoke-RecallCommand @('status')", control)
+        self.assertIn("Invoke-RecallCommand @('stop')", control)
+        self.assertIn("Invoke-RecallCommand @('diagnose')", control)
+        self.assertIn("Invoke-RecallCommand @('update')", control)
+        self.assertIn("/maintenance", control)
+        self.assertIn("start-douyin-recall.ps1", control)
+        self.assertIn("Read-Host \"Press Enter to close\"", control)
+
+    def test_inno_installs_start_menu_control_shortcuts(self) -> None:
+        script = read("DouyinRecall.iss")
+
+        self.assertIn("control-douyin-recall.ps1", script)
+        self.assertIn("Douyin Recall Control", script)
+        self.assertIn("Douyin Recall Status", script)
+        self.assertIn("Douyin Recall Stop Service", script)
+        self.assertIn("Douyin Recall Maintenance", script)
+        self.assertIn("Douyin Recall Diagnostics", script)
+        self.assertIn("Douyin Recall Logs", script)
+        self.assertIn('-Action ""status""', script)
+        self.assertIn('-Action ""stop""', script)
+        self.assertIn('-Action ""maintenance""', script)
+        self.assertIn('-Action ""diagnose""', script)
+        self.assertIn('-Action ""logs""', script)
+
     def test_build_script_requires_inno_setup_and_creates_setup_exe(self) -> None:
         build = read("build-installer.ps1")
 
@@ -129,6 +165,8 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("D:\\codexDownload\\douyinclaude-runtime", notes)
         self.assertIn("UV_LINK_MODE", notes)
         self.assertIn("启动前健康检查", notes)
+        self.assertIn("控制入口", notes)
+        self.assertIn("Douyin Recall Stop Service", notes)
         self.assertIn("recall stop", notes)
         self.assertIn("/maintenance", notes)
 
@@ -144,6 +182,8 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("uv run recall stop", doc)
         self.assertIn("uv run recall diagnose", doc)
         self.assertIn("启动前健康检查", doc)
+        self.assertIn("Douyin Recall Control", doc)
+        self.assertIn("Douyin Recall Stop Service", doc)
         self.assertIn("/maintenance", doc)
 
 

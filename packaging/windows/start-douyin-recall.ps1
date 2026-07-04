@@ -1,3 +1,7 @@
+param(
+    [string]$OpenPath = "/"
+)
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
@@ -235,12 +239,17 @@ try {
         Start-Sleep -Seconds 3
     }
 
-    Write-Step "Opening $url"
+    if (-not $OpenPath.StartsWith("/")) {
+        $OpenPath = "/$OpenPath"
+    }
+    $openUrl = "$url$OpenPath"
+
+    Write-Step "Opening $openUrl"
     Write-Host ""
     Write-Host "维护中心：$url/maintenance"
     Write-Host "停止服务：uv run recall stop"
     Write-Host "排障日志：$StartLog"
-    Start-Process $url
+    Start-Process $openUrl
 }
 catch {
     Write-StartLog "Startup failed: $($_.Exception.Message)"

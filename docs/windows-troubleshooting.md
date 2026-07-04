@@ -43,6 +43,15 @@ C:\Users\<你的用户名>\AppData\Local\Programs\DouyinRecall\data\logs
 
 ## 常用恢复命令
 
+安装后也可以直接用开始菜单入口，不必先打开 PowerShell：
+
+- `Douyin Recall Control`：打开控制菜单。
+- `Douyin Recall Status`：查看服务状态、PID、访问地址和日志目录。
+- `Douyin Recall Stop Service`：停止由本项目记录的本地 Web 服务，适合处理忘记关闭导致后台占用的问题。
+- `Douyin Recall Maintenance`：打开 `/maintenance`；如果服务还没启动，会先走正常启动脚本。
+- `Douyin Recall Diagnostics`：导出脱敏诊断包。
+- `Douyin Recall Logs`：打开日志目录。
+
 在安装目录打开 PowerShell，优先按这个顺序排查：
 
 ```powershell
@@ -80,13 +89,15 @@ uv run recall status
 uv run recall stop
 ```
 
+如果你是从安装包安装的，也可以直接点击开始菜单里的 `Douyin Recall Stop Service`。
+
 不要直接批量结束不认识的进程。`recall stop` 只会停止本项目记录的本地 Web 服务。
 
 ## 安装后仍然打不开
 
 1. 确认安装目录里存在 `.env` 和 `.env.example`。
 2. 确认 `D:\codexDownload\douyinclaude-runtime` 可以写入。
-3. 运行 `uv run recall diagnose` 生成诊断包。
+3. 点击 `Douyin Recall Diagnostics`，或运行 `uv run recall diagnose` 生成诊断包。
 4. 带上 `data\logs\start-douyin-recall.log` 和诊断包摘要继续排查。
 
 ## 想确认是否有新版

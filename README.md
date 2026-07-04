@@ -43,7 +43,7 @@
 | **导出 / 备份** | ✅ | `recall export` 支持 JSON / Markdown / SQLite backup |
 | **每周自动化** | ✅ | Windows 计划任务脚本：crawl + index + digest + backup |
 | **维护中心** | ✅ | `/maintenance` 集中查看服务、同步、索引、备份、失败任务，并可手动入队标准维护、校验和恢复 SQLite 备份、导出诊断包 |
-| **服务生命周期** | ✅ | `recall serve` 写 PID 状态、防重复启动；`recall status` / `recall stop` 管理本地 Web 服务 |
+| **服务生命周期** | ✅ | `recall serve` 写 PID 状态、防重复启动；`recall status` / `recall stop` 管理本地 Web 服务；Windows 开始菜单提供控制入口 |
 | **诊断包** | ✅ | `recall diagnose` 导出脱敏环境、服务、任务和日志摘要，排除 `.env`、数据库和浏览器登录态 |
 | **版本更新检查** | ✅ | `recall update` 和 `/maintenance` 显示本地版本、最新 Release 和安装包链接；只读检查，不自动安装 |
 | **整理 / 清理** | ✅ | 分类合并、单条移动分类、批量取消、收藏/喜欢重复视图 |
@@ -154,6 +154,8 @@ uv run recall digest --dry-run      # 预览 HTML
 首次同步和首次索引可能需要较长时间；索引阶段会下载本地模型。数据仍保存在本机 `data/` 目录，安装包不会上传你的数据库、登录资料或浏览器 profile。
 
 日常维护入口在 `/maintenance`：它会显示服务状态、最近同步、失败任务、SQLite 备份状态和版本更新状态，并提供“执行一次标准维护”“立即生成 SQLite 备份”“校验并准备恢复”和“导出诊断包”操作。恢复前会先做 SQLite 完整性和必要表检查，并要求输入确认文字；恢复时会先额外保存一份恢复前安全备份。诊断包只包含脱敏环境、服务、任务和日志摘要，不包含 `.env`、数据库、浏览器 profile 或登录态。安装包启动脚本会先做启动前健康检查，再检查 `recall status`，避免重复启动多个本地 Web 服务；运行时下载和缓存会放到 `D:\codexDownload\douyinclaude-runtime`，并设置 `UV_LINK_MODE=copy` 避免跨盘缓存产生 hardlink warning。
+
+安装后，开始菜单会提供 `Douyin Recall Control` 控制入口，以及 `Douyin Recall Status`、`Douyin Recall Stop Service`、`Douyin Recall Maintenance`、`Douyin Recall Diagnostics`、`Douyin Recall Logs` 快捷方式。平时想看状态、停止后台服务、打开维护中心、导出诊断包或查看日志，可以直接点这些入口，不需要先记住 PowerShell 命令。
 
 如果安装后打不开、首次下载失败、SmartScreen 拦截或忘记关闭后台服务，启动窗口会显示常用恢复命令和日志位置；完整处理步骤见 [`docs/windows-troubleshooting.md`](./docs/windows-troubleshooting.md)。
 

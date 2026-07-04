@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.10
+
+- Added a Windows Start Menu control entry for day-to-day local operations after installation.
+- Added shortcuts for status, stop service, maintenance center, diagnostics, and logs.
+- The maintenance shortcut opens `/maintenance` directly and starts the local service first when needed.
+
+See [docs/releases/v0.1.10.md](docs/releases/v0.1.10.md).
+
 ## v0.1.9
 
 - Installer launch script now runs startup preflight checks before downloading runtime dependencies.
