@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.17
+
+- Added `Douyin Recall Prepare Runtime` for installed Windows builds so first-launch dependency setup can be retried without starting the Web service.
+- The prepare action locates or installs `uv`, runs `uv sync`, installs Playwright Chromium, initializes SQLite, and prints service status.
+- Runtime downloads and caches still stay under `D:\codexDownload\douyinclaude-runtime`.
+
+See [docs/releases/v0.1.17.md](docs/releases/v0.1.17.md).
+
 ## v0.1.16
 
 - Added a service lifecycle audit to `recall status` so forgotten background Web services show the recorded PID, port owner PID, and safest next step.

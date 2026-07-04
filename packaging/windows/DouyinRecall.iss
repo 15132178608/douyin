@@ -1,5 +1,5 @@
 #define MyAppName "Douyin Recall"
-#define MyAppVersion "0.1.16"
+#define MyAppVersion "0.1.17"
 #define MyAppPublisher "xiaojiang"
 
 #ifndef SourceRoot
@@ -34,6 +34,7 @@ Source: "{#SourceRoot}\packaging\windows\preinstall-backup-douyin-recall.ps1"; F
 Name: "{autoprograms}\Douyin Recall"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\start-douyin-recall.ps1"""; WorkingDir: "{app}"
 Name: "{autoprograms}\Douyin Recall Control"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"""; WorkingDir: "{app}"
 Name: "{autoprograms}\Douyin Recall Status"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""status"""; WorkingDir: "{app}"
+Name: "{autoprograms}\Douyin Recall Prepare Runtime"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""prepare"""; WorkingDir: "{app}"
 Name: "{autoprograms}\Douyin Recall Stop Service"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""stop"""; WorkingDir: "{app}"
 Name: "{autoprograms}\Douyin Recall Maintenance"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""maintenance"""; WorkingDir: "{app}"
 Name: "{autoprograms}\Douyin Recall Account Recovery"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""auth"""; WorkingDir: "{app}"

@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("menu", "start", "stop", "status", "maintenance", "auth", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore", "verify-backup")]
+    [ValidateSet("menu", "start", "prepare", "stop", "status", "maintenance", "auth", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore", "verify-backup")]
     [string]$Action = "menu"
 )
 
@@ -17,8 +17,10 @@ $ServerStatePath = Join-Path $AppRoot "data\runtime\server.json"
 $ServerPidPath = Join-Path $AppRoot "data\runtime\server.pid"
 $StartScript = Join-Path $ScriptDir "start-douyin-recall.ps1"
 $DownloadRoot = "D:\codexDownload\douyinclaude-runtime"
+$UvDownloadDir = Join-Path $DownloadRoot "uv"
 $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
 $PlaywrightBrowsersDir = Join-Path $DownloadRoot "ms-playwright"
+$UvInstallScriptUrl = "https://astral.sh/uv/install.ps1"
 
 function Write-Header {
     param([string]$Title)
@@ -32,6 +34,7 @@ function Initialize-RuntimeEnvironment {
     New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
     New-Item -ItemType Directory -Path $DownloadRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $UvDownloadDir -Force | Out-Null
     New-Item -ItemType Directory -Path $UvCacheDir -Force | Out-Null
     New-Item -ItemType Directory -Path $PlaywrightBrowsersDir -Force | Out-Null
     $env:UV_CACHE_DIR = $UvCacheDir
@@ -57,6 +60,27 @@ function Find-Uv {
     throw "uv.exe was not found. Launch Douyin Recall once from the Start Menu, or install uv manually and retry."
 }
 
+function Find-OrInstall-Uv {
+    try {
+        return (Find-Uv)
+    }
+    catch {
+        Write-Host "uv.exe was not found. Installing uv for the current Windows user."
+    }
+
+    New-Item -ItemType Directory -Path $UvDownloadDir -Force | Out-Null
+    $installer = Join-Path $UvDownloadDir "install-uv.ps1"
+    Write-Host "Downloading uv installer to: $installer"
+    Invoke-WebRequest -Uri $UvInstallScriptUrl -OutFile $installer
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
+    $installExit = $LASTEXITCODE
+    if ($null -ne $installExit -and $installExit -ne 0) {
+        throw "uv installer failed with exit code $installExit"
+    }
+
+    return (Find-Uv)
+}
+
 function Invoke-RecallCommand {
     param([string[]]$RecallArgs)
 
@@ -65,6 +89,22 @@ function Invoke-RecallCommand {
     & $uv "run" "recall" @RecallArgs
     if ($LASTEXITCODE -ne 0) {
         throw "uv run recall $($RecallArgs -join ' ') failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Invoke-PrepareStep {
+    param(
+        [string]$Name,
+        [string]$CommandText,
+        [scriptblock]$Command
+    )
+
+    Write-Host ""
+    Write-Host "Prepare step: $Name"
+    Write-Host "Command: $CommandText"
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "$CommandText failed with exit code $LASTEXITCODE"
     }
 }
 
@@ -411,6 +451,34 @@ function Start-DouyinRecall {
     & $StartScript
 }
 
+function Prepare-Runtime {
+    Initialize-RuntimeEnvironment
+    Write-Header "Prepare runtime"
+    Write-Host "Start Menu entry: Douyin Recall Prepare Runtime"
+    Write-Host "This action prepares dependencies only and does not start the local web service."
+    Write-Host "Runtime cache: $DownloadRoot"
+    Write-Host "Logs: $LogsDir"
+    Write-Host "You can rerun this action after network or dependency download failures."
+
+    $uv = Find-OrInstall-Uv
+
+    Invoke-PrepareStep -Name "Python dependencies" -CommandText "uv sync" -Command {
+        & $uv "sync"
+    }
+    Invoke-PrepareStep -Name "Browser runtime" -CommandText "playwright install chromium" -Command {
+        & $uv "run" "playwright" "install" "chromium"
+    }
+    Invoke-PrepareStep -Name "Local database" -CommandText "recall init-db" -Command {
+        & $uv "run" "recall" "init-db"
+    }
+    Invoke-PrepareStep -Name "Service status" -CommandText "recall status" -Command {
+        & $uv "run" "recall" "status"
+    }
+
+    Write-Host ""
+    Write-Host "Runtime preparation finished. Use Douyin Recall to start the web UI when needed."
+}
+
 function Open-MaintenanceCenter {
     $port = Get-WebPort
     $url = "http://127.0.0.1:$port/maintenance"
@@ -614,37 +682,39 @@ function Show-ControlMenu {
         Write-Host ""
         Write-Host "Douyin Recall Control"
         Write-Host "1. Start and open Web"
-        Write-Host "2. Open maintenance center"
-        Write-Host "3. Show service status"
-        Write-Host "4. Stop local web service"
-        Write-Host "5. Export diagnostics"
-        Write-Host "6. Open logs directory"
-        Write-Host "7. Check update"
-        Write-Host "8. Run health check"
-        Write-Host "9. Repair stale service state"
-        Write-Host "10. Create SQLite backup"
-        Write-Host "11. Open backups directory"
-        Write-Host "12. Open restore center"
-        Write-Host "13. Verify latest backup"
-        Write-Host "14. Open account recovery"
+        Write-Host "2. Prepare runtime only"
+        Write-Host "3. Open maintenance center"
+        Write-Host "4. Show service status"
+        Write-Host "5. Stop local web service"
+        Write-Host "6. Export diagnostics"
+        Write-Host "7. Open logs directory"
+        Write-Host "8. Check update"
+        Write-Host "9. Run health check"
+        Write-Host "10. Repair stale service state"
+        Write-Host "11. Create SQLite backup"
+        Write-Host "12. Open backups directory"
+        Write-Host "13. Open restore center"
+        Write-Host "14. Verify latest backup"
+        Write-Host "15. Open account recovery"
         Write-Host "0. Exit"
         $choice = Read-Host "Choose"
 
         switch ($choice) {
             "1" { Start-DouyinRecall; return }
-            "2" { Open-MaintenanceCenter; return }
-            "3" { Show-Status; Wait-BeforeExit; return }
-            "4" { Stop-DouyinRecall; Wait-BeforeExit; return }
-            "5" { Export-Diagnostics; Wait-BeforeExit; return }
-            "6" { Open-LogsDirectory; return }
-            "7" { Check-Update; Wait-BeforeExit; return }
-            "8" { Invoke-HealthCheck; Wait-BeforeExit; return }
-            "9" { Repair-StaleServerState; Wait-BeforeExit; return }
-            "10" { Create-SqliteBackup; Wait-BeforeExit; return }
-            "11" { Open-BackupsDirectory; return }
-            "12" { Open-RestoreCenter; return }
-            "13" { Verify-LatestBackup; Wait-BeforeExit; return }
-            "14" { Open-AccountRecovery; return }
+            "2" { Prepare-Runtime; Wait-BeforeExit; return }
+            "3" { Open-MaintenanceCenter; return }
+            "4" { Show-Status; Wait-BeforeExit; return }
+            "5" { Stop-DouyinRecall; Wait-BeforeExit; return }
+            "6" { Export-Diagnostics; Wait-BeforeExit; return }
+            "7" { Open-LogsDirectory; return }
+            "8" { Check-Update; Wait-BeforeExit; return }
+            "9" { Invoke-HealthCheck; Wait-BeforeExit; return }
+            "10" { Repair-StaleServerState; Wait-BeforeExit; return }
+            "11" { Create-SqliteBackup; Wait-BeforeExit; return }
+            "12" { Open-BackupsDirectory; return }
+            "13" { Open-RestoreCenter; return }
+            "14" { Verify-LatestBackup; Wait-BeforeExit; return }
+            "15" { Open-AccountRecovery; return }
             "0" { return }
             default { Write-Host "Invalid choice. Try again." -ForegroundColor Yellow }
         }
@@ -655,6 +725,7 @@ try {
     switch ($Action) {
         "menu" { Show-ControlMenu }
         "start" { Start-DouyinRecall }
+        "prepare" { Prepare-Runtime; Wait-BeforeExit }
         "maintenance" { Open-MaintenanceCenter }
         "auth" { Open-AccountRecovery }
         "status" { Show-Status; Wait-BeforeExit }

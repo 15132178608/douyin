@@ -86,7 +86,7 @@
 - Windows 每周自动化：`scripts/run-weekly-maintenance.ps1` + `install-weekly-task.ps1`
 - `recall export`：JSON / Markdown / SQLite backup
 - Web 维护中心：`/maintenance` 汇总服务状态、最近同步、索引、备份、登录态恢复提示、失败任务和版本更新状态，可手动入队标准维护、立即生成 SQLite 备份、校验并恢复已有备份、导出脱敏诊断包
-- 服务生命周期：`recall serve` 写 PID 状态、防重复启动；`recall status` / `recall stop` 管理本地 Web 服务，并通过 service audit 区分本项目服务、陈旧状态和外部端口占用；安装包启动脚本先检查运行状态，并把运行时下载和缓存放到 `D:\codexDownload\douyinclaude-runtime`；Windows 开始菜单提供控制入口、状态、停止、维护中心、账号恢复、诊断、日志、健康检查、陈旧状态修复、立即备份、备份目录、恢复中心和最新备份只读校验快捷方式，控制入口会先显示本地状态摘要和下一步建议；安装器升级前会尽量保存 `data\exports\pre-install-recall-*.db`
+- 服务生命周期：`recall serve` 写 PID 状态、防重复启动；`recall status` / `recall stop` 管理本地 Web 服务，并通过 service audit 区分本项目服务、陈旧状态和外部端口占用；安装包启动脚本先检查运行状态，并把运行时下载和缓存放到 `D:\codexDownload\douyinclaude-runtime`；Windows 开始菜单提供控制入口、状态、运行时准备、停止、维护中心、账号恢复、诊断、日志、健康检查、陈旧状态修复、立即备份、备份目录、恢复中心和最新备份只读校验快捷方式，控制入口会先显示本地状态摘要和下一步建议；安装器升级前会尽量保存 `data\exports\pre-install-recall-*.db`
 - 诊断包导出：`recall diagnose` 生成脱敏 zip，包含环境、服务、任务和日志摘要，排除 `.env`、数据库、浏览器 profile 和登录态
 - 更新检查：`recall update` 和维护中心显示本地版本、最新 GitHub Release 与安装包链接；只读检查，不自动安装
 - 分类整理：合并簇、单条移动到其他簇、未分类桶手动整理
@@ -109,13 +109,14 @@
 - ✅ Web 首次设置向导：本地环境、扫码登录、同步收藏/喜欢、索引、完成入口已串起来
 - ✅ 维护中心：服务 / 同步 / 索引 / 登录态恢复提示 / 备份 / 恢复 / 诊断包 / 失败任务有统一入口，可手动触发标准维护和带校验的恢复
 - ✅ 服务进程管理：防重复启动、状态查看、service audit、停止命令和安装包启动脚本状态检查已完成
+- ✅ 首次启动重试：开始菜单提供 `Douyin Recall Prepare Runtime`，可单独重试 uv、依赖、Playwright 和数据库初始化，且不会启动本地 Web 服务
 - ✅ 登录态失效后，维护中心会根据失败同步/任务提示重新扫码，开始菜单可直达账号恢复页 `/auth`
 - ⏳ 模型下载、Chromium 下载、依赖安装需要展示进度和重试入口
 
 ## 📋 计划中（按优先级）
 
 ### 高优：个人工具可安装、可启动
-1. **安装包首启体验**——依赖准备、Playwright 安装、数据库初始化已有基础进度，运行时下载缓存已收敛到 `D:\codexDownload\douyinclaude-runtime`；下一步继续收敛失败重试和普通用户中文提示
+1. **安装包首启体验**——依赖准备、Playwright 安装、数据库初始化已有基础进度，运行时下载缓存已收敛到 `D:\codexDownload\douyinclaude-runtime`，并已有独立重试入口；下一步继续收敛普通用户中文提示和进度可视化
 2. **首次启动向导打磨**——登录态失效恢复入口已打通；下一步继续细化模型下载耗时提示和同步失败重试文案
 3. **doctor 命令扩展**——检查 web、jobs worker、SMTP、浏览器 profile、头像缓存目录、模型缓存
 

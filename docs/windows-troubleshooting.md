@@ -20,6 +20,8 @@ D:\codexDownload\douyinclaude-runtime
 
 安装包启动脚本会设置 `UV_LINK_MODE=copy`。这是为了避免缓存目录在 D 盘、安装目录在 C 盘时，`uv` 因跨盘 hardlink 不可用而打印 warning；它不会改变下载目录，也不会影响数据目录。
 
+如果首次启动卡在 uv、Python 依赖、Playwright Chromium 或数据库初始化，可以点击开始菜单里的 `Douyin Recall Prepare Runtime`。这个入口只准备运行时：安装或定位 uv、执行 `uv sync`、`playwright install chromium`、`recall init-db` 和 `recall status`；它不会启动本地 Web 服务，也不会打开浏览器。网络恢复后可以反复运行它。
+
 ## 启动失败先看哪里
 
 启动脚本会把自己的关键步骤写到：
@@ -47,6 +49,7 @@ C:\Users\<你的用户名>\AppData\Local\Programs\DouyinRecall\data\logs
 
 - `Douyin Recall Control`：打开控制菜单，并先显示状态摘要，包括当前版本、服务状态、service audit、端口 owner、维护中心地址、日志目录和运行时缓存。
 - `Douyin Recall Status`：查看服务状态、PID、访问地址、端口 owner 和安全下一步。
+- `Douyin Recall Prepare Runtime`：只重试运行时准备步骤；不会启动本地 Web 服务，也不会打开浏览器。
 - `Douyin Recall Stop Service`：停止由本项目记录的本地 Web 服务，适合处理忘记关闭导致后台占用的问题。
 - `Douyin Recall Maintenance`：打开 `/maintenance`；如果服务还没启动，会先走正常启动脚本。
 - `Douyin Recall Account Recovery`：打开 `/auth` 账号恢复页；同步提示登录态失效时，用这个入口重新扫码。
@@ -131,8 +134,9 @@ uv run recall stop
 
 1. 确认安装目录里存在 `.env` 和 `.env.example`。
 2. 确认 `D:\codexDownload\douyinclaude-runtime` 可以写入。
-3. 点击 `Douyin Recall Diagnostics`，或运行 `uv run recall diagnose` 生成诊断包。
-4. 带上 `data\logs\start-douyin-recall.log` 和诊断包摘要继续排查。
+3. 点击 `Douyin Recall Prepare Runtime` 单独重试运行时准备；它不会启动本地 Web 服务。
+4. 点击 `Douyin Recall Diagnostics`，或运行 `uv run recall diagnose` 生成诊断包。
+5. 带上 `data\logs\start-douyin-recall.log` 和诊断包摘要继续排查。
 
 ## 想确认是否有新版
 
