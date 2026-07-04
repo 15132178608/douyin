@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.12
+
+- Added `Douyin Recall Health Check` for local install, log, runtime cache, uv, service record, and port checks.
+- Added `Douyin Recall Repair State` to clear stale `server.json` / `server.pid` records when the recorded process is no longer running.
+- The repair action deletes only explicit state files one at a time and does not touch the database, logs, browser profile, or login state.
+
+See [docs/releases/v0.1.12.md](docs/releases/v0.1.12.md).
+
 ## v0.1.11
 
 - Added a status summary to `Douyin Recall Control` before showing the menu or detailed status command.

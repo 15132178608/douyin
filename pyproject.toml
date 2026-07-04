@@ -1,6 +1,6 @@
 [project]
 name = "douyin-recall"
-version = "0.1.11"
+version = "0.1.12"
 description = "把抖音收藏夹从黑洞变成可被未来自己唤醒的资产 —— 单人本地工具"
 readme = "README.md"
 requires-python = ">=3.11"

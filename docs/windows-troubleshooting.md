@@ -51,6 +51,8 @@ C:\Users\<你的用户名>\AppData\Local\Programs\DouyinRecall\data\logs
 - `Douyin Recall Maintenance`：打开 `/maintenance`；如果服务还没启动，会先走正常启动脚本。
 - `Douyin Recall Diagnostics`：导出脱敏诊断包。
 - `Douyin Recall Logs`：打开日志目录。
+- `Douyin Recall Health Check`：运行健康检查，检查安装目录、日志目录、运行时缓存、uv、服务记录和端口监听。
+- `Douyin Recall Repair State`：当健康检查提示服务记录陈旧时，清理 `data\runtime\server.json` 和 `data\runtime\server.pid`；不会删除数据库、日志、浏览器 profile 或登录态。
 
 在安装目录打开 PowerShell，优先按这个顺序排查：
 
@@ -90,6 +92,8 @@ uv run recall stop
 ```
 
 如果你是从安装包安装的，也可以直接点击开始菜单里的 `Douyin Recall Stop Service`。
+
+如果状态摘要或健康检查提示 `server.json` / `server.pid` 已陈旧，且服务进程已经不存在，可以点击 `Douyin Recall Repair State` 清理这两个状态文件。
 
 不要直接批量结束不认识的进程。`recall stop` 只会停止本项目记录的本地 Web 服务。
 

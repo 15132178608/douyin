@@ -97,7 +97,7 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_control_script_exposes_local_operations_without_hidden_runtime_paths(self) -> None:
         control = read("control-douyin-recall.ps1")
 
-        self.assertIn('[ValidateSet("menu", "start", "stop", "status", "maintenance", "diagnose", "logs", "update")]', control)
+        self.assertIn('[ValidateSet("menu", "start", "stop", "status", "maintenance", "diagnose", "logs", "update", "health", "repair")]', control)
         self.assertIn("D:\\codexDownload\\douyinclaude-runtime", control)
         self.assertIn("$env:UV_CACHE_DIR", control)
         self.assertIn('$env:UV_LINK_MODE = "copy"', control)
@@ -114,6 +114,40 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("start-douyin-recall.ps1", control)
         self.assertIn("Read-Host \"Press Enter to close\"", control)
 
+    def test_control_script_is_ascii_for_windows_powershell_5(self) -> None:
+        control = read("control-douyin-recall.ps1")
+
+        try:
+            control.encode("ascii")
+        except UnicodeEncodeError as exc:
+            self.fail(f"control script must stay ASCII for Windows PowerShell 5.1 parsing: {exc}")
+
+    def test_control_script_runs_health_check_and_safe_stale_state_repair(self) -> None:
+        control = read("control-douyin-recall.ps1")
+
+        self.assertIn("function Test-DirectoryWritable", control)
+        self.assertIn("function Test-UvAvailable", control)
+        self.assertIn("function Get-PortOwnerPid", control)
+        self.assertIn("function Invoke-HealthCheck", control)
+        self.assertIn("function Repair-StaleServerState", control)
+        self.assertIn("Douyin Recall Health Check", control)
+        self.assertIn("Douyin Recall Repair State", control)
+        self.assertIn("Health check", control)
+        self.assertIn("Install directory", control)
+        self.assertIn("Logs directory", control)
+        self.assertIn("Runtime cache", control)
+        self.assertIn("uv availability", control)
+        self.assertIn("Service record", control)
+        self.assertIn("Port listener", control)
+        self.assertIn("Repair suggestion", control)
+        self.assertIn("Remove-Item -LiteralPath $ServerStatePath -Force", control)
+        self.assertIn("Remove-Item -LiteralPath $ServerPidPath -Force", control)
+        self.assertIn("Remove-Item -LiteralPath $ProbePath -Force", control)
+        self.assertNotIn("Remove-Item -Recurse", control)
+        self.assertNotIn("rm -rf", control)
+        self.assertIn('"health" { Invoke-HealthCheck; Wait-BeforeExit }', control)
+        self.assertIn('"repair" { Repair-StaleServerState; Wait-BeforeExit }', control)
+
     def test_control_script_prints_status_summary_before_menu_actions(self) -> None:
         control = read("control-douyin-recall.ps1")
 
@@ -126,13 +160,13 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("ConvertFrom-Json", control)
         self.assertIn('PSObject.Properties["pid"]', control)
         self.assertIn("Get-Process -Id", control)
-        self.assertIn("当前版本：", control)
-        self.assertIn("服务状态：", control)
-        self.assertIn("维护中心：", control)
-        self.assertIn("日志目录：", control)
-        self.assertIn("运行时缓存：", control)
-        self.assertIn("停止入口：Douyin Recall Stop Service", control)
-        self.assertIn("启动入口：Douyin Recall", control)
+        self.assertIn("Current version:", control)
+        self.assertIn("Service state:", control)
+        self.assertIn("Maintenance:", control)
+        self.assertIn("Logs:", control)
+        self.assertIn("Runtime cache:", control)
+        self.assertIn("Stop entry: Douyin Recall Stop Service", control)
+        self.assertIn("Start entry: Douyin Recall", control)
         self.assertLess(control.index("Write-ControlSummary"), control.index("Write-Host \"Douyin Recall Control\""))
         self.assertLess(control.index("Write-ControlSummary"), control.index("Invoke-RecallCommand @('status')"))
 
@@ -146,11 +180,15 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Douyin Recall Maintenance", script)
         self.assertIn("Douyin Recall Diagnostics", script)
         self.assertIn("Douyin Recall Logs", script)
+        self.assertIn("Douyin Recall Health Check", script)
+        self.assertIn("Douyin Recall Repair State", script)
         self.assertIn('-Action ""status""', script)
         self.assertIn('-Action ""stop""', script)
         self.assertIn('-Action ""maintenance""', script)
         self.assertIn('-Action ""diagnose""', script)
         self.assertIn('-Action ""logs""', script)
+        self.assertIn('-Action ""health""', script)
+        self.assertIn('-Action ""repair""', script)
 
     def test_build_script_requires_inno_setup_and_creates_setup_exe(self) -> None:
         build = read("build-installer.ps1")
@@ -189,6 +227,9 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("启动前健康检查", notes)
         self.assertIn("控制入口", notes)
         self.assertIn("状态摘要", notes)
+        self.assertIn("健康检查", notes)
+        self.assertIn("Douyin Recall Health Check", notes)
+        self.assertIn("Douyin Recall Repair State", notes)
         self.assertIn("Douyin Recall Stop Service", notes)
         self.assertIn("recall stop", notes)
         self.assertIn("/maintenance", notes)
@@ -208,6 +249,9 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Douyin Recall Control", doc)
         self.assertIn("Douyin Recall Stop Service", doc)
         self.assertIn("状态摘要", doc)
+        self.assertIn("健康检查", doc)
+        self.assertIn("Douyin Recall Health Check", doc)
+        self.assertIn("Douyin Recall Repair State", doc)
         self.assertIn("/maintenance", doc)
 
 

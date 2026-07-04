@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("menu", "start", "stop", "status", "maintenance", "diagnose", "logs", "update")]
+    [ValidateSet("menu", "start", "stop", "status", "maintenance", "diagnose", "logs", "update", "health", "repair")]
     [string]$Action = "menu"
 )
 
@@ -13,6 +13,7 @@ $LogsDir = Join-Path $DataRoot "logs"
 $EnvPath = Join-Path $AppRoot ".env"
 $ProjectPath = Join-Path $AppRoot "pyproject.toml"
 $ServerStatePath = Join-Path $AppRoot "data\runtime\server.json"
+$ServerPidPath = Join-Path $AppRoot "data\runtime\server.pid"
 $StartScript = Join-Path $ScriptDir "start-douyin-recall.ps1"
 $DownloadRoot = "D:\codexDownload\douyinclaude-runtime"
 $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
@@ -52,7 +53,7 @@ function Find-Uv {
         return (Resolve-Path $userUv).Path
     }
 
-    throw "没有找到 uv.exe。请先点击开始菜单里的 Douyin Recall 完成首次启动，或手动安装 uv 后重试。"
+    throw "uv.exe was not found. Launch Douyin Recall once from the Start Menu, or install uv manually and retry."
 }
 
 function Invoke-RecallCommand {
@@ -90,6 +91,66 @@ function Test-WebAvailable {
     }
 }
 
+function Test-DirectoryWritable {
+    param(
+        [string]$Name,
+        [string]$Path
+    )
+
+    try {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        $ProbePath = Join-Path $Path ".douyin-recall-health-check.tmp"
+        Set-Content -Path $ProbePath -Value "ok" -Encoding UTF8
+        Remove-Item -LiteralPath $ProbePath -Force
+        return [pscustomobject]@{
+            Name = $Name
+            Ok = $true
+            Message = "$Name writable: $Path"
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            Name = $Name
+            Ok = $false
+            Message = "$Name not writable: $Path. $($_.Exception.Message)"
+        }
+    }
+}
+
+function Test-UvAvailable {
+    try {
+        $uv = Find-Uv
+        return [pscustomobject]@{
+            Name = "uv availability"
+            Ok = $true
+            Message = "uv availability OK: $uv"
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            Name = "uv availability"
+            Ok = $false
+            Message = "uv unavailable: $($_.Exception.Message)"
+        }
+    }
+}
+
+function Get-PortOwnerPid {
+    param([int]$Port)
+
+    try {
+        $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($connection) {
+            return [int]$connection.OwningProcess
+        }
+    }
+    catch {
+        return $null
+    }
+    return $null
+}
+
 function Get-InstalledVersion {
     if (-not (Test-Path $ProjectPath)) {
         return "unknown"
@@ -115,26 +176,63 @@ function Read-ServerState {
     }
 }
 
-function Test-RecordedProcessRunning {
+function Get-StatePid {
     param([object]$State)
 
     if ($null -eq $State) {
-        return $false
+        return $null
     }
 
     try {
         $PidProperty = $State.PSObject.Properties["pid"]
         if ($null -eq $PidProperty -or $null -eq $PidProperty.Value) {
-            return $false
+            return $null
         }
 
-        $ProcessId = [int]$PidProperty.Value
+        return [int]$PidProperty.Value
+    }
+    catch {
+        return $null
+    }
+}
+
+function Read-ServerPidFile {
+    if (-not (Test-Path $ServerPidPath)) {
+        return $null
+    }
+
+    try {
+        return [int]((Get-Content -Path $ServerPidPath -Raw -Encoding UTF8).Trim())
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-PidRunning {
+    param([int]$ProcessId)
+
+    if ($ProcessId -le 0) {
+        return $false
+    }
+
+    try {
         Get-Process -Id $ProcessId -ErrorAction Stop | Out-Null
         return $true
     }
     catch {
         return $false
     }
+}
+
+function Test-RecordedProcessRunning {
+    param([object]$State)
+
+    $ProcessId = Get-StatePid -State $State
+    if ($null -eq $ProcessId) {
+        return $false
+    }
+    return Test-PidRunning -ProcessId $ProcessId
 }
 
 function Get-ControlSummary {
@@ -144,28 +242,25 @@ function Get-ControlSummary {
     $state = Read-ServerState
     $recordedPid = $null
     $webAvailable = Test-WebAvailable -Url $homeUrl
-    $serviceStatus = "未运行"
+    $serviceStatus = "stopped"
 
     if ($null -ne $state) {
-        $PidProperty = $state.PSObject.Properties["pid"]
-        if ($null -ne $PidProperty) {
-            $recordedPid = $PidProperty.Value
-        }
+        $recordedPid = Get-StatePid -State $state
 
         if (Test-RecordedProcessRunning -State $state) {
             if ($webAvailable) {
-                $serviceStatus = "正在运行"
+                $serviceStatus = "running"
             }
             else {
-                $serviceStatus = "进程存在，但本地网页暂未响应"
+                $serviceStatus = "process exists, but local web is not responding yet"
             }
         }
         else {
-            $serviceStatus = "PID 记录陈旧"
+            $serviceStatus = "stale PID record"
         }
     }
     elseif ($webAvailable) {
-        $serviceStatus = "网页可访问，但没有 PID 记录"
+        $serviceStatus = "web reachable, but PID record is missing"
     }
 
     return [pscustomobject]@{
@@ -182,21 +277,21 @@ function Get-ControlSummary {
 function Write-ControlSummary {
     $summary = Get-ControlSummary
 
-    Write-Header "本地状态摘要"
-    Write-Host "当前版本：$($summary.Version)"
-    Write-Host "服务状态：$($summary.ServiceStatus)"
+    Write-Header "Local status summary"
+    Write-Host "Current version: $($summary.Version)"
+    Write-Host "Service state: $($summary.ServiceStatus)"
     if ($null -ne $summary.RecordedPid) {
-        Write-Host "记录 PID：$($summary.RecordedPid)"
+        Write-Host "Recorded PID: $($summary.RecordedPid)"
     }
-    Write-Host "维护中心：$($summary.MaintenanceUrl)"
-    Write-Host "日志目录：$($summary.LogsDir)"
-    Write-Host "运行时缓存：$($summary.DownloadRoot)"
+    Write-Host "Maintenance: $($summary.MaintenanceUrl)"
+    Write-Host "Logs: $($summary.LogsDir)"
+    Write-Host "Runtime cache: $($summary.DownloadRoot)"
 
-    if ($summary.ServiceStatus -eq "正在运行" -or $summary.ServiceStatus -eq "进程存在，但本地网页暂未响应") {
-        Write-Host "停止入口：Douyin Recall Stop Service"
+    if ($summary.ServiceStatus -eq "running" -or $summary.ServiceStatus -eq "process exists, but local web is not responding yet") {
+        Write-Host "Stop entry: Douyin Recall Stop Service"
     }
     else {
-        Write-Host "启动入口：Douyin Recall"
+        Write-Host "Start entry: Douyin Recall"
     }
 }
 
@@ -209,7 +304,7 @@ function Start-DouyinRecall {
         throw "Missing launcher script: $StartScript"
     }
 
-    Write-Header "启动 Douyin Recall"
+    Write-Header "Start Douyin Recall"
     & $StartScript
 }
 
@@ -217,46 +312,130 @@ function Open-MaintenanceCenter {
     $port = Get-WebPort
     $url = "http://127.0.0.1:$port/maintenance"
 
-    Write-Header "打开维护中心"
+    Write-Header "Open maintenance center"
     if (Test-WebAvailable -Url $url) {
         Start-Process $url
         return
     }
 
-    Write-Host "本地 Web 服务还没有响应，先启动服务再打开维护中心。"
+    Write-Host "Local web service is not responding yet. Starting it before opening maintenance."
     & $StartScript -OpenPath "/maintenance"
 }
 
 function Open-LogsDirectory {
     Initialize-RuntimeEnvironment
-    Write-Header "打开日志目录"
+    Write-Header "Open logs directory"
     Write-Host $LogsDir
     Start-Process $LogsDir
 }
 
 function Show-Status {
     Write-ControlSummary
-    Write-Header "服务状态"
+    Write-Header "Service status"
     Invoke-RecallCommand @('status')
     $port = Get-WebPort
     Write-Host ""
-    Write-Host "维护中心：http://127.0.0.1:$port/maintenance"
-    Write-Host "日志目录：$LogsDir"
+    Write-Host "Maintenance: http://127.0.0.1:$port/maintenance"
+    Write-Host "Logs: $LogsDir"
 }
 
 function Stop-DouyinRecall {
-    Write-Header "停止本地 Web 服务"
+    Write-Header "Stop local web service"
     Invoke-RecallCommand @('stop')
 }
 
 function Export-Diagnostics {
-    Write-Header "导出诊断包"
+    Write-Header "Export diagnostics"
     Invoke-RecallCommand @('diagnose')
 }
 
 function Check-Update {
-    Write-Header "检查更新"
+    Write-Header "Check update"
     Invoke-RecallCommand @('update')
+}
+
+function Invoke-HealthCheck {
+    Write-ControlSummary
+    Write-Header "Health check"
+    Write-Host "Start Menu entry: Douyin Recall Health Check"
+
+    $checks = @(
+        (Test-DirectoryWritable -Name "Install directory" -Path $AppRoot),
+        (Test-DirectoryWritable -Name "Logs directory" -Path $LogsDir),
+        (Test-DirectoryWritable -Name "Runtime cache" -Path $DownloadRoot),
+        (Test-UvAvailable)
+    )
+
+    foreach ($check in $checks) {
+        $prefix = if ($check.Ok) { "[OK]" } else { "[WARN]" }
+        Write-Host "$prefix $($check.Message)"
+    }
+
+    $state = Read-ServerState
+    $port = Get-WebPort
+    $portOwner = Get-PortOwnerPid -Port $port
+    $needsRepair = $false
+
+    if ($null -eq $state) {
+        Write-Host "[OK] Service record: no server.json record."
+    }
+    elseif (Test-RecordedProcessRunning -State $state) {
+        Write-Host "[OK] Service record: recorded PID still exists."
+    }
+    else {
+        $needsRepair = $true
+        Write-Host "[WARN] Service record: stale PID record found."
+    }
+
+    if ($null -eq $portOwner) {
+        Write-Host "[OK] Port listener: $port has no listener."
+    }
+    else {
+        Write-Host "[INFO] Port listener: $port is owned by pid=$portOwner."
+    }
+
+    Write-Host ""
+    Write-Host "Repair suggestion:"
+    if ($needsRepair) {
+        Write-Host "  Run: Douyin Recall Repair State"
+        Write-Host "  Or run from install dir: powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\control-douyin-recall.ps1 -Action repair"
+    }
+    else {
+        Write-Host "  No stale service record needs automatic cleanup."
+    }
+}
+
+function Repair-StaleServerState {
+    Write-ControlSummary
+    Write-Header "Repair stale service state"
+    Write-Host "Start Menu entry: Douyin Recall Repair State"
+
+    $state = Read-ServerState
+    $recordedPid = Get-StatePid -State $state
+    if ($null -eq $recordedPid) {
+        $recordedPid = Read-ServerPidFile
+    }
+
+    if ($null -ne $recordedPid -and (Test-PidRunning -ProcessId $recordedPid)) {
+        Write-Host "Recorded service process is still running (pid=$recordedPid). State files were not cleaned. Use Douyin Recall Stop Service first."
+        return
+    }
+
+    $removed = $false
+    if (Test-Path $ServerStatePath) {
+        Remove-Item -LiteralPath $ServerStatePath -Force
+        Write-Host "Removed stale service record: $ServerStatePath"
+        $removed = $true
+    }
+    if (Test-Path $ServerPidPath) {
+        Remove-Item -LiteralPath $ServerPidPath -Force
+        Write-Host "Removed stale PID file: $ServerPidPath"
+        $removed = $true
+    }
+
+    if (-not $removed) {
+        Write-Host "No server.json or server.pid file needed cleanup."
+    }
 }
 
 function Show-ControlMenu {
@@ -265,15 +444,17 @@ function Show-ControlMenu {
     while ($true) {
         Write-Host ""
         Write-Host "Douyin Recall Control"
-        Write-Host "1. 启动并打开 Web"
-        Write-Host "2. 打开维护中心"
-        Write-Host "3. 查看服务状态"
-        Write-Host "4. 停止本地 Web 服务"
-        Write-Host "5. 导出诊断包"
-        Write-Host "6. 打开日志目录"
-        Write-Host "7. 检查更新"
-        Write-Host "0. 退出"
-        $choice = Read-Host "请选择"
+        Write-Host "1. Start and open Web"
+        Write-Host "2. Open maintenance center"
+        Write-Host "3. Show service status"
+        Write-Host "4. Stop local web service"
+        Write-Host "5. Export diagnostics"
+        Write-Host "6. Open logs directory"
+        Write-Host "7. Check update"
+        Write-Host "8. Run health check"
+        Write-Host "9. Repair stale service state"
+        Write-Host "0. Exit"
+        $choice = Read-Host "Choose"
 
         switch ($choice) {
             "1" { Start-DouyinRecall; return }
@@ -283,8 +464,10 @@ function Show-ControlMenu {
             "5" { Export-Diagnostics; Wait-BeforeExit; return }
             "6" { Open-LogsDirectory; return }
             "7" { Check-Update; Wait-BeforeExit; return }
+            "8" { Invoke-HealthCheck; Wait-BeforeExit; return }
+            "9" { Repair-StaleServerState; Wait-BeforeExit; return }
             "0" { return }
-            default { Write-Host "无效选择，请重新输入。" -ForegroundColor Yellow }
+            default { Write-Host "Invalid choice. Try again." -ForegroundColor Yellow }
         }
     }
 }
@@ -299,6 +482,8 @@ try {
         "diagnose" { Export-Diagnostics; Wait-BeforeExit }
         "logs" { Open-LogsDirectory }
         "update" { Check-Update; Wait-BeforeExit }
+        "health" { Invoke-HealthCheck; Wait-BeforeExit }
+        "repair" { Repair-StaleServerState; Wait-BeforeExit }
     }
 }
 catch {
@@ -306,9 +491,9 @@ catch {
     Write-Host "Douyin Recall Control failed:" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
     Write-Host ""
-    Write-Host "安装目录：$AppRoot"
-    Write-Host "日志目录：$LogsDir"
-    Write-Host "运行时缓存：$DownloadRoot"
+    Write-Host "Install directory: $AppRoot"
+    Write-Host "Logs directory: $LogsDir"
+    Write-Host "Runtime cache: $DownloadRoot"
     Wait-BeforeExit
     exit 1
 }

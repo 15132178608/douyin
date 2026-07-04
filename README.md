@@ -155,7 +155,7 @@ uv run recall digest --dry-run      # 预览 HTML
 
 日常维护入口在 `/maintenance`：它会显示服务状态、最近同步、失败任务、SQLite 备份状态和版本更新状态，并提供“执行一次标准维护”“立即生成 SQLite 备份”“校验并准备恢复”和“导出诊断包”操作。恢复前会先做 SQLite 完整性和必要表检查，并要求输入确认文字；恢复时会先额外保存一份恢复前安全备份。诊断包只包含脱敏环境、服务、任务和日志摘要，不包含 `.env`、数据库、浏览器 profile 或登录态。安装包启动脚本会先做启动前健康检查，再检查 `recall status`，避免重复启动多个本地 Web 服务；运行时下载和缓存会放到 `D:\codexDownload\douyinclaude-runtime`，并设置 `UV_LINK_MODE=copy` 避免跨盘缓存产生 hardlink warning。
 
-安装后，开始菜单会提供 `Douyin Recall Control` 控制入口，以及 `Douyin Recall Status`、`Douyin Recall Stop Service`、`Douyin Recall Maintenance`、`Douyin Recall Diagnostics`、`Douyin Recall Logs` 快捷方式。`Douyin Recall Control` 打开时会先显示状态摘要，包括当前版本、服务状态、维护中心地址、日志目录和运行时缓存。平时想看状态、停止后台服务、打开维护中心、导出诊断包或查看日志，可以直接点这些入口，不需要先记住 PowerShell 命令。
+安装后，开始菜单会提供 `Douyin Recall Control` 控制入口，以及 `Douyin Recall Status`、`Douyin Recall Stop Service`、`Douyin Recall Maintenance`、`Douyin Recall Diagnostics`、`Douyin Recall Logs`、`Douyin Recall Health Check`、`Douyin Recall Repair State` 快捷方式。`Douyin Recall Control` 打开时会先显示状态摘要，包括当前版本、服务状态、维护中心地址、日志目录和运行时缓存。平时想看状态、停止后台服务、打开维护中心、导出诊断包、查看日志、运行健康检查或清理陈旧服务记录，可以直接点这些入口，不需要先记住 PowerShell 命令。
 
 如果安装后打不开、首次下载失败、SmartScreen 拦截或忘记关闭后台服务，启动窗口会显示常用恢复命令和日志位置；完整处理步骤见 [`docs/windows-troubleshooting.md`](./docs/windows-troubleshooting.md)。
 
