@@ -53,6 +53,17 @@ C:\Users\<你的用户名>\AppData\Local\Programs\DouyinRecall\data\logs
 - `Douyin Recall Logs`：打开日志目录。
 - `Douyin Recall Health Check`：运行健康检查，检查安装目录、日志目录、运行时缓存、uv、服务记录和端口监听。
 - `Douyin Recall Repair State`：当健康检查提示服务记录陈旧时，清理 `data\runtime\server.json` 和 `data\runtime\server.pid`；不会删除数据库、日志、浏览器 profile 或登录态。
+- `Douyin Recall Backup Now`：立即生成 SQLite 备份，写入 `data\exports`。
+- `Douyin Recall Backups`：打开 `data\exports` 备份目录。
+- `Douyin Recall Restore Center`：打开 `/maintenance` 的恢复中心；恢复前仍会校验备份并要求输入确认文字。
+
+安装新版时，安装器会尽量在覆盖应用文件前复制当前数据库：
+
+```text
+data\exports\pre-install-recall-*.db
+```
+
+如果是首次安装，或当前还没有 `data\recall.db`，安装日志里会显示 `Pre-install backup skipped: recall.db not found.`。
 
 在安装目录打开 PowerShell，优先按这个顺序排查：
 
@@ -117,3 +128,5 @@ uv run recall update
 ```powershell
 uv run recall stop
 ```
+
+也可以先点击 `Douyin Recall Backup Now` 手动生成一份备份；安装器本身还会尽量生成 `pre-install-recall-*.db` 安全备份。

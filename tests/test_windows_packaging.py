@@ -97,12 +97,13 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_control_script_exposes_local_operations_without_hidden_runtime_paths(self) -> None:
         control = read("control-douyin-recall.ps1")
 
-        self.assertIn('[ValidateSet("menu", "start", "stop", "status", "maintenance", "diagnose", "logs", "update", "health", "repair")]', control)
+        self.assertIn('[ValidateSet("menu", "start", "stop", "status", "maintenance", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore")]', control)
         self.assertIn("D:\\codexDownload\\douyinclaude-runtime", control)
         self.assertIn("$env:UV_CACHE_DIR", control)
         self.assertIn('$env:UV_LINK_MODE = "copy"', control)
         self.assertIn("$env:PLAYWRIGHT_BROWSERS_PATH", control)
         self.assertNotIn("$env:TEMP", control)
+        self.assertIn('$ExportsDir = Join-Path $AppRoot "data\\exports"', control)
         self.assertIn("Start-DouyinRecall", control)
         self.assertIn("Open-MaintenanceCenter", control)
         self.assertIn("Open-LogsDirectory", control)
@@ -110,6 +111,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Invoke-RecallCommand @('stop')", control)
         self.assertIn("Invoke-RecallCommand @('diagnose')", control)
         self.assertIn("Invoke-RecallCommand @('update')", control)
+        self.assertIn("Invoke-RecallCommand @('export', '--format', 'sqlite', '--output', $ExportsDir)", control)
         self.assertIn("/maintenance", control)
         self.assertIn("start-douyin-recall.ps1", control)
         self.assertIn("Read-Host \"Press Enter to close\"", control)
@@ -148,6 +150,28 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn('"health" { Invoke-HealthCheck; Wait-BeforeExit }', control)
         self.assertIn('"repair" { Repair-StaleServerState; Wait-BeforeExit }', control)
 
+    def test_control_script_exposes_backup_and_restore_center_actions(self) -> None:
+        control = read("control-douyin-recall.ps1")
+
+        self.assertIn("function Create-SqliteBackup", control)
+        self.assertIn("function Open-BackupsDirectory", control)
+        self.assertIn("function Open-RestoreCenter", control)
+        self.assertIn("Create SQLite backup", control)
+        self.assertIn("Open backups directory", control)
+        self.assertIn("Open restore center", control)
+        self.assertIn("Douyin Recall Backup Now", control)
+        self.assertIn("Douyin Recall Backups", control)
+        self.assertIn("Douyin Recall Restore Center", control)
+        self.assertIn("Backups directory:", control)
+        self.assertIn("New-Item -ItemType Directory -Path $ExportsDir -Force", control)
+        self.assertIn("Start-Process $ExportsDir", control)
+        self.assertIn('"backup" { Create-SqliteBackup; Wait-BeforeExit }', control)
+        self.assertIn('"backups" { Open-BackupsDirectory }', control)
+        self.assertIn('"restore" { Open-RestoreCenter }', control)
+        self.assertIn("-OpenPath \"/maintenance\"", control)
+        self.assertNotIn("Remove-Item -Recurse", control)
+        self.assertNotIn("rm -rf", control)
+
     def test_control_script_prints_status_summary_before_menu_actions(self) -> None:
         control = read("control-douyin-recall.ps1")
 
@@ -182,6 +206,9 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Douyin Recall Logs", script)
         self.assertIn("Douyin Recall Health Check", script)
         self.assertIn("Douyin Recall Repair State", script)
+        self.assertIn("Douyin Recall Backup Now", script)
+        self.assertIn("Douyin Recall Backups", script)
+        self.assertIn("Douyin Recall Restore Center", script)
         self.assertIn('-Action ""status""', script)
         self.assertIn('-Action ""stop""', script)
         self.assertIn('-Action ""maintenance""', script)
@@ -189,6 +216,40 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn('-Action ""logs""', script)
         self.assertIn('-Action ""health""', script)
         self.assertIn('-Action ""repair""', script)
+        self.assertIn('-Action ""backup""', script)
+        self.assertIn('-Action ""backups""', script)
+        self.assertIn('-Action ""restore""', script)
+
+    def test_inno_runs_best_effort_preinstall_database_backup(self) -> None:
+        script = read("DouyinRecall.iss")
+
+        self.assertIn("[Code]", script)
+        self.assertIn("procedure CurStepChanged(CurStep: TSetupStep);", script)
+        self.assertIn("CreatePreInstallDatabaseBackup", script)
+        self.assertIn("preinstall-backup-douyin-recall.ps1", script)
+        self.assertIn("ExtractTemporaryFile('preinstall-backup-douyin-recall.ps1')", script)
+        self.assertIn("Exec(ExpandConstant('{sys}\\WindowsPowerShell\\v1.0\\powershell.exe')", script)
+        self.assertIn("recall.db", script)
+        self.assertIn("data\\exports", script)
+        self.assertIn("pre-install-recall-", script)
+        self.assertIn("CopyFile(SourceDb, BackupPath, False)", script)
+        self.assertIn("Pre-install backup skipped: recall.db not found.", script)
+        self.assertIn("Pre-install database backup:", script)
+        self.assertNotIn("FileCopy(", script)
+        self.assertNotIn("DeleteFile(", script)
+        self.assertNotIn("DelTree(", script)
+
+    def test_preinstall_backup_script_uses_sqlite_backup_api_before_copy_fallback(self) -> None:
+        script = read("preinstall-backup-douyin-recall.ps1")
+
+        self.assertIn("sqlite3.connect(source_path)", script)
+        self.assertIn("source.backup(destination)", script)
+        self.assertIn("Copy-Item -LiteralPath $SourceDb -Destination $BackupPath -Force", script)
+        self.assertIn("D:\\codexDownload\\douyinclaude-runtime", script)
+        self.assertIn('$env:UV_LINK_MODE = "copy"', script)
+        self.assertIn("pre-install-recall-", script)
+        self.assertNotIn("Remove-Item -Recurse", script)
+        self.assertNotIn("rm -rf", script)
 
     def test_build_script_requires_inno_setup_and_creates_setup_exe(self) -> None:
         build = read("build-installer.ps1")
@@ -230,6 +291,11 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("健康检查", notes)
         self.assertIn("Douyin Recall Health Check", notes)
         self.assertIn("Douyin Recall Repair State", notes)
+        self.assertIn("Douyin Recall Backup Now", notes)
+        self.assertIn("Douyin Recall Backups", notes)
+        self.assertIn("Douyin Recall Restore Center", notes)
+        self.assertIn("pre-install-recall-", notes)
+        self.assertIn("data\\exports", notes)
         self.assertIn("Douyin Recall Stop Service", notes)
         self.assertIn("recall stop", notes)
         self.assertIn("/maintenance", notes)
@@ -252,6 +318,11 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("健康检查", doc)
         self.assertIn("Douyin Recall Health Check", doc)
         self.assertIn("Douyin Recall Repair State", doc)
+        self.assertIn("Douyin Recall Backup Now", doc)
+        self.assertIn("Douyin Recall Backups", doc)
+        self.assertIn("Douyin Recall Restore Center", doc)
+        self.assertIn("pre-install-recall-", doc)
+        self.assertIn("data\\exports", doc)
         self.assertIn("/maintenance", doc)
 
 

@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("menu", "start", "stop", "status", "maintenance", "diagnose", "logs", "update", "health", "repair")]
+    [ValidateSet("menu", "start", "stop", "status", "maintenance", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore")]
     [string]$Action = "menu"
 )
 
@@ -10,6 +10,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
 $DataRoot = Join-Path $AppRoot "data"
 $LogsDir = Join-Path $DataRoot "logs"
+$ExportsDir = Join-Path $AppRoot "data\exports"
 $EnvPath = Join-Path $AppRoot ".env"
 $ProjectPath = Join-Path $AppRoot "pyproject.toml"
 $ServerStatePath = Join-Path $AppRoot "data\runtime\server.json"
@@ -354,6 +355,40 @@ function Check-Update {
     Invoke-RecallCommand @('update')
 }
 
+function Create-SqliteBackup {
+    Initialize-RuntimeEnvironment
+    Write-Header "Create SQLite backup"
+    Write-Host "Start Menu entry: Douyin Recall Backup Now"
+    New-Item -ItemType Directory -Path $ExportsDir -Force | Out-Null
+    Invoke-RecallCommand @('export', '--format', 'sqlite', '--output', $ExportsDir)
+    Write-Host ""
+    Write-Host "Backups directory: $ExportsDir"
+}
+
+function Open-BackupsDirectory {
+    Initialize-RuntimeEnvironment
+    Write-Header "Open backups directory"
+    Write-Host "Start Menu entry: Douyin Recall Backups"
+    New-Item -ItemType Directory -Path $ExportsDir -Force | Out-Null
+    Write-Host $ExportsDir
+    Start-Process $ExportsDir
+}
+
+function Open-RestoreCenter {
+    $port = Get-WebPort
+    $url = "http://127.0.0.1:$port/maintenance"
+
+    Write-Header "Open restore center"
+    Write-Host "Start Menu entry: Douyin Recall Restore Center"
+    if (Test-WebAvailable -Url $url) {
+        Start-Process $url
+        return
+    }
+
+    Write-Host "Local web service is not responding yet. Starting it before opening restore center."
+    & $StartScript -OpenPath "/maintenance"
+}
+
 function Invoke-HealthCheck {
     Write-ControlSummary
     Write-Header "Health check"
@@ -453,6 +488,9 @@ function Show-ControlMenu {
         Write-Host "7. Check update"
         Write-Host "8. Run health check"
         Write-Host "9. Repair stale service state"
+        Write-Host "10. Create SQLite backup"
+        Write-Host "11. Open backups directory"
+        Write-Host "12. Open restore center"
         Write-Host "0. Exit"
         $choice = Read-Host "Choose"
 
@@ -466,6 +504,9 @@ function Show-ControlMenu {
             "7" { Check-Update; Wait-BeforeExit; return }
             "8" { Invoke-HealthCheck; Wait-BeforeExit; return }
             "9" { Repair-StaleServerState; Wait-BeforeExit; return }
+            "10" { Create-SqliteBackup; Wait-BeforeExit; return }
+            "11" { Open-BackupsDirectory; return }
+            "12" { Open-RestoreCenter; return }
             "0" { return }
             default { Write-Host "Invalid choice. Try again." -ForegroundColor Yellow }
         }
@@ -484,6 +525,9 @@ try {
         "update" { Check-Update; Wait-BeforeExit }
         "health" { Invoke-HealthCheck; Wait-BeforeExit }
         "repair" { Repair-StaleServerState; Wait-BeforeExit }
+        "backup" { Create-SqliteBackup; Wait-BeforeExit }
+        "backups" { Open-BackupsDirectory }
+        "restore" { Open-RestoreCenter }
     }
 }
 catch {

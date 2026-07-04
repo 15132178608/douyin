@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.13
+
+- Added `Douyin Recall Backup Now`, `Douyin Recall Backups`, and `Douyin Recall Restore Center` Start Menu entries for installed Windows builds.
+- Added a best-effort installer pre-install safety copy from `data\recall.db` to `data\exports\pre-install-recall-*.db`.
+- Restore remains in `/maintenance`, where SQLite validation and explicit confirmation are required before replacing the current database.
+
+See [docs/releases/v0.1.13.md](docs/releases/v0.1.13.md).
+
 ## v0.1.12
 
 - Added `Douyin Recall Health Check` for local install, log, runtime cache, uv, service record, and port checks.
