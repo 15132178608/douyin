@@ -48,6 +48,29 @@
   </section>
 
   <section class="maintenance-card">
+    <h2>抖音登录</h2>
+    {% if maintenance_status.auth.needs_rebind %}
+      <p class="maintenance-main">登录态可能过期</p>
+      {% if maintenance_status.auth.latest_error %}
+        <p class="maintenance-meta">{{ maintenance_status.auth.latest_error.message }}</p>
+      {% endif %}
+      <p class="maintenance-meta"><a href="/auth">重新绑定抖音账号</a></p>
+    {% elif maintenance_status.auth.status == "bound" %}
+      <p class="maintenance-main">
+        {% if maintenance_status.auth.profile.nickname %}
+          {{ maintenance_status.auth.profile.nickname }}
+        {% else %}
+          已检测到本地登录资料
+        {% endif %}
+      </p>
+      <p class="maintenance-meta">如果同步失败或昵称刷新失败，请打开 <a href="/auth">账号绑定</a> 重新扫码。</p>
+    {% else %}
+      <p class="maintenance-main">尚未绑定抖音账号</p>
+      <p class="maintenance-meta"><a href="/auth">打开账号绑定</a>，扫码后再同步收藏和喜欢。</p>
+    {% endif %}
+  </section>
+
+  <section class="maintenance-card">
     <h2>版本更新</h2>
     {% set update = maintenance_status.update %}
     {% if update %}
@@ -102,6 +125,9 @@
       <div class="maintenance-attention-list">
         {% if "failed_jobs" in attention_codes %}
         <span class="maintenance-badge danger">有失败任务</span>
+        {% endif %}
+        {% if "douyin_login_expired" in attention_codes %}
+        <span class="maintenance-badge danger">抖音登录态可能过期</span>
         {% endif %}
         {% if "no_backups" in attention_codes %}
         <span class="maintenance-badge warn">还没有备份</span>

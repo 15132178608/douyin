@@ -110,6 +110,49 @@ def test_status_reports_last_runs_backups_and_attention_items() -> None:
         assert "latest_likes_crawl_failed" in status["attention_codes"]
 
 
+def test_status_flags_douyin_login_expired_recovery_hint() -> None:
+    with isolated_maintenance_db() as conn, TemporaryDirectory() as tmp:
+        conn.execute(
+            """
+            UPDATE users
+            SET douyin_nickname = '旧昵称',
+                douyin_unique_id = 'old_douyin',
+                douyin_profile_updated_at = '2026-07-01 09:00:00'
+            WHERE id = 'default'
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO like_crawl_runs (
+                user_id, started_at, finished_at, status, error_message
+            ) VALUES (
+                'default', '2026-07-02 09:00:00', '2026-07-02 09:01:00',
+                'failed', '抖音登录态失效：用户未登录'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO job_queue (
+                user_id, kind, status, attempts, max_attempts, created_at, error_message
+            ) VALUES (
+                'default', 'sync_likes', 'failed', 3, 3,
+                '2026-07-02 09:02:00', 'API 返回：用户未登录'
+            )
+            """
+        )
+
+        status = maintenance.get_maintenance_status("default", backup_dir=Path(tmp))
+
+        assert status["auth"]["needs_rebind"] is True
+        assert status["auth"]["status"] == "expired"
+        assert status["auth"]["recovery_url"] == "/auth"
+        assert status["auth"]["profile"]["nickname"] == "旧昵称"
+        assert status["auth"]["latest_error"]["source"] == "sync_likes"
+        assert "用户未登录" in status["auth"]["latest_error"]["message"]
+        assert "douyin_login_expired" in status["attention_codes"]
+
+
 def test_status_can_include_update_status_for_maintenance_center() -> None:
     with isolated_maintenance_db() as _conn, TemporaryDirectory() as tmp:
         status = maintenance.get_maintenance_status(
@@ -258,6 +301,7 @@ def test_restore_sqlite_backup_replaces_target_and_creates_safety_backup() -> No
 if __name__ == "__main__":
     tests = [
         test_status_reports_last_runs_backups_and_attention_items,
+        test_status_flags_douyin_login_expired_recovery_hint,
         test_status_can_include_update_status_for_maintenance_center,
         test_enqueue_full_maintenance_adds_sync_index_and_backup_jobs_in_order,
         test_validate_sqlite_backup_reports_counts_and_required_tables,

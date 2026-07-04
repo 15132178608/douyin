@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.15
+
+- Added a `/maintenance` Douyin login recovery card that detects likely expired login state from failed sync jobs and crawl runs.
+- Added `Douyin Recall Account Recovery` for installed Windows builds so users can open `/auth` directly from the Start Menu.
+- The recovery path reuses the existing QR rebind flow and does not delete or reset local browser profile data.
+
+See [docs/releases/v0.1.15.md](docs/releases/v0.1.15.md).
+
 ## v0.1.14
 
 - Added `recall verify-backup` for read-only SQLite backup recovery checks.

@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("menu", "start", "stop", "status", "maintenance", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore", "verify-backup")]
+    [ValidateSet("menu", "start", "stop", "status", "maintenance", "auth", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore", "verify-backup")]
     [string]$Action = "menu"
 )
 
@@ -323,6 +323,21 @@ function Open-MaintenanceCenter {
     & $StartScript -OpenPath "/maintenance"
 }
 
+function Open-AccountRecovery {
+    $port = Get-WebPort
+    $url = "http://127.0.0.1:$port/auth"
+
+    Write-Header "Open account recovery"
+    Write-Host "Start Menu entry: Douyin Recall Account Recovery"
+    if (Test-WebAvailable -Url $url) {
+        Start-Process $url
+        return
+    }
+
+    Write-Host "Local web service is not responding yet. Starting it before opening account recovery."
+    & $StartScript -OpenPath "/auth"
+}
+
 function Open-LogsDirectory {
     Initialize-RuntimeEnvironment
     Write-Header "Open logs directory"
@@ -500,6 +515,7 @@ function Show-ControlMenu {
         Write-Host "11. Open backups directory"
         Write-Host "12. Open restore center"
         Write-Host "13. Verify latest backup"
+        Write-Host "14. Open account recovery"
         Write-Host "0. Exit"
         $choice = Read-Host "Choose"
 
@@ -517,6 +533,7 @@ function Show-ControlMenu {
             "11" { Open-BackupsDirectory; return }
             "12" { Open-RestoreCenter; return }
             "13" { Verify-LatestBackup; Wait-BeforeExit; return }
+            "14" { Open-AccountRecovery; return }
             "0" { return }
             default { Write-Host "Invalid choice. Try again." -ForegroundColor Yellow }
         }
@@ -528,6 +545,7 @@ try {
         "menu" { Show-ControlMenu }
         "start" { Start-DouyinRecall }
         "maintenance" { Open-MaintenanceCenter }
+        "auth" { Open-AccountRecovery }
         "status" { Show-Status; Wait-BeforeExit }
         "stop" { Stop-DouyinRecall; Wait-BeforeExit }
         "diagnose" { Export-Diagnostics; Wait-BeforeExit }

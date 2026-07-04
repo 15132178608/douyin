@@ -152,6 +152,10 @@ def test_maintenance_center_exposes_backup_and_full_maintenance_actions() -> Non
     assert "DouyinRecallSetup.exe" in maintenance_status
     assert "uv run recall update" in maintenance_status
     assert "最近备份" in maintenance_status
+    assert "抖音登录" in maintenance_status
+    assert "登录态可能过期" in maintenance_status
+    assert 'href="/auth"' in maintenance_status
+    assert "douyin_login_expired" in maintenance_status
     assert "maintenance_status.backups.items" not in maintenance_status
     assert 'maintenance_status.backups["items"]' in maintenance_status
     assert 'hx-post="/maintenance/restore/validate"' in maintenance_status

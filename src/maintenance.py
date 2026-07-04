@@ -15,7 +15,7 @@ from src import update_check
 from src.config import PROJECT_ROOT
 from src.content.kinds import get_content_kind, list_content_kinds
 from src.db import get_connection
-from src.tenancy import DEFAULT_USER_ID, normalize_user_id
+from src.tenancy import DEFAULT_USER_ID, normalize_user_id, user_playwright_profile_path
 
 
 DEFAULT_BACKUP_DIR = PROJECT_ROOT / "data" / "exports"
@@ -29,6 +29,21 @@ REQUIRED_RESTORE_TABLES = {
 }
 RECOVERY_BACKUP_PATTERNS = ("recall-backup-*.db", "pre-install-recall-*.db")
 BACKUP_TIMESTAMP_RE = re.compile(r"(\d{8}-\d{6})")
+DOUYIN_AUTH_ERROR_MARKERS = (
+    "用户未登录",
+    "登录态失效",
+    "请登录",
+    "请先登录",
+    "login required",
+    "not login",
+    "not logged in",
+    "unauthenticated",
+)
+DOUYIN_AUTH_JOB_KINDS = {
+    "sync_favorites",
+    "sync_likes",
+    "uncollect",
+}
 
 
 @dataclass(frozen=True)
@@ -114,6 +129,119 @@ def _sqlite_row_to_dict(row: Any | None) -> dict | None:
     if row is None:
         return None
     return {key: row[key] for key in row.keys()}
+
+
+def _looks_like_douyin_auth_error(message: Any) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    return any(marker.lower() in text for marker in DOUYIN_AUTH_ERROR_MARKERS)
+
+
+def _douyin_auth_error_snippet(message: Any, *, max_chars: int = 240) -> str:
+    text = str(message or "").strip()
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    if len(first_line) <= max_chars:
+        return first_line
+    return first_line[: max_chars - 1].rstrip() + "…"
+
+
+def _path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _douyin_profile_summary(user_id: str) -> dict:
+    conn = get_connection()
+    row = conn.execute(
+        """
+        SELECT douyin_nickname, douyin_unique_id, douyin_sec_uid,
+               douyin_avatar_url, douyin_profile_updated_at
+        FROM users
+        WHERE id = ?
+        """,
+        (normalize_user_id(user_id),),
+    ).fetchone()
+    if row is None:
+        return {
+            "nickname": None,
+            "unique_id": None,
+            "sec_uid": None,
+            "avatar_url": None,
+            "updated_at": None,
+        }
+    return {
+        "nickname": row["douyin_nickname"],
+        "unique_id": row["douyin_unique_id"],
+        "sec_uid": row["douyin_sec_uid"],
+        "avatar_url": row["douyin_avatar_url"],
+        "updated_at": row["douyin_profile_updated_at"],
+    }
+
+
+def _douyin_auth_recovery_summary(user_id: str, crawl_runs: dict[str, dict]) -> dict:
+    uid = normalize_user_id(user_id)
+    errors: list[dict] = []
+
+    for job in jobs.list_jobs(user_id=uid, limit=50):
+        if job.get("status") != "failed":
+            continue
+        kind = str(job.get("kind") or "")
+        if kind not in DOUYIN_AUTH_JOB_KINDS:
+            continue
+        message = str(job.get("error_message") or "")
+        if not _looks_like_douyin_auth_error(message):
+            continue
+        errors.append(
+            {
+                "source": kind,
+                "message": _douyin_auth_error_snippet(message),
+                "at": job.get("finished_at") or job.get("created_at"),
+            }
+        )
+
+    for key, run in crawl_runs.items():
+        latest = run.get("latest") or {}
+        if latest.get("status") != "failed":
+            continue
+        message = str(latest.get("error_message") or "")
+        if not _looks_like_douyin_auth_error(message):
+            continue
+        errors.append(
+            {
+                "source": f"{key}_crawl",
+                "message": _douyin_auth_error_snippet(message),
+                "at": latest.get("finished_at") or latest.get("started_at"),
+            }
+        )
+
+    profile = _douyin_profile_summary(uid)
+    profile_path_exists = _path_exists(user_playwright_profile_path(uid))
+    has_saved_profile = any(
+        bool(profile.get(key))
+        for key in ("nickname", "unique_id", "sec_uid", "avatar_url")
+    )
+    has_local_profile = bool(has_saved_profile or profile_path_exists)
+    needs_rebind = bool(errors)
+    if needs_rebind:
+        status = "expired"
+    elif has_local_profile:
+        status = "bound"
+    else:
+        status = "missing"
+
+    return {
+        "status": status,
+        "needs_rebind": needs_rebind,
+        "recovery_url": "/auth",
+        "profile_path_exists": profile_path_exists,
+        "has_saved_profile": has_saved_profile,
+        "profile": profile,
+        "latest_error": errors[0] if errors else None,
+        "errors": errors[:3],
+    }
 
 
 def _content_summary(user_id: str, content_kind: str) -> dict:
@@ -205,10 +333,13 @@ def get_maintenance_status(
     contents = {kind.key: _content_summary(uid, kind.key) for kind in list_content_kinds()}
     crawl_runs = {kind.key: _crawl_run_summary(uid, kind.key) for kind in list_content_kinds()}
     job_summary = _job_summary(uid)
+    auth_summary = _douyin_auth_recovery_summary(uid, crawl_runs)
 
     attention_codes: list[str] = []
     if job_summary["failed"] > 0:
         attention_codes.append("failed_jobs")
+    if auth_summary["needs_rebind"]:
+        attention_codes.append("douyin_login_expired")
     if not backups:
         attention_codes.append("no_backups")
     for key, run in crawl_runs.items():
@@ -231,6 +362,7 @@ def get_maintenance_status(
         "likes": contents["likes"],
         "crawl_runs": crawl_runs,
         "jobs": job_summary,
+        "auth": auth_summary,
         "server": server_runtime.get_server_status(),
         "backups": {
             "output_dir": str(backup_root),

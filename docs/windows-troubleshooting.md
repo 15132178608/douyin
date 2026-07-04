@@ -49,6 +49,7 @@ C:\Users\<你的用户名>\AppData\Local\Programs\DouyinRecall\data\logs
 - `Douyin Recall Status`：查看服务状态、PID、访问地址和日志目录。
 - `Douyin Recall Stop Service`：停止由本项目记录的本地 Web 服务，适合处理忘记关闭导致后台占用的问题。
 - `Douyin Recall Maintenance`：打开 `/maintenance`；如果服务还没启动，会先走正常启动脚本。
+- `Douyin Recall Account Recovery`：打开 `/auth` 账号恢复页；同步提示登录态失效时，用这个入口重新扫码。
 - `Douyin Recall Diagnostics`：导出脱敏诊断包。
 - `Douyin Recall Logs`：打开日志目录。
 - `Douyin Recall Health Check`：运行健康检查，检查安装目录、日志目录、运行时缓存、uv、服务记录和端口监听。
@@ -57,6 +58,8 @@ C:\Users\<你的用户名>\AppData\Local\Programs\DouyinRecall\data\logs
 - `Douyin Recall Backups`：打开 `data\exports` 备份目录。
 - `Douyin Recall Restore Center`：打开 `/maintenance` 的恢复中心；恢复前仍会校验备份并要求输入确认文字。
 - `Douyin Recall Verify Backup`：只读校验 `data\exports` 里最新的手动备份或安装前备份，不会替换当前数据库。
+
+维护中心 `/maintenance` 会检查最近失败的同步任务和抓取记录。如果看到 `登录态可能过期`，先点击 `Douyin Recall Account Recovery`，或打开 `/auth` 重新扫码，再重新同步收藏和喜欢。
 
 安装新版时，安装器会尽量在覆盖应用文件前复制当前数据库：
 
@@ -90,6 +93,12 @@ http://127.0.0.1:8000/maintenance
 ```
 
 如果你在 `.env` 里改过 `WEB_PORT`，把上面的 `8000` 换成实际端口。
+
+账号恢复页在：
+
+```text
+http://127.0.0.1:8000/auth
+```
 
 ## 端口或后台进程残留
 
