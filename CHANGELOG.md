@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.8
+
+- Installer launch script now sets `UV_LINK_MODE=copy` when using the shared runtime cache on `D:\codexDownload`.
+- This suppresses uv hardlink warnings caused by installing from a D: cache into the per-user C: install directory.
+
+See [docs/releases/v0.1.8.md](docs/releases/v0.1.8.md).
+
 ## v0.1.7
 
 - Added a read-only GitHub Release update checker with a one-hour cache.

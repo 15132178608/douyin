@@ -55,6 +55,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Windows SmartScreen 可能提示风险", launcher)
         self.assertIn("$DownloadRoot", launcher)
         self.assertIn("$env:UV_CACHE_DIR", launcher)
+        self.assertIn('$env:UV_LINK_MODE = "copy"', launcher)
         self.assertIn("$env:PLAYWRIGHT_BROWSERS_PATH", launcher)
         self.assertNotIn("$env:TEMP", launcher)
         self.assertIn("Copy-Item", launcher)
@@ -111,6 +112,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("SmartScreen", notes)
         self.assertIn("首次启动", notes)
         self.assertIn("D:\\codexDownload\\douyinclaude-runtime", notes)
+        self.assertIn("UV_LINK_MODE", notes)
         self.assertIn("recall stop", notes)
         self.assertIn("/maintenance", notes)
 

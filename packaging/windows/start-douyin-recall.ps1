@@ -101,6 +101,7 @@ try {
     New-Item -ItemType Directory -Path $UvCacheDir -Force | Out-Null
     New-Item -ItemType Directory -Path $PlaywrightBrowsersDir -Force | Out-Null
     $env:UV_CACHE_DIR = $UvCacheDir
+    $env:UV_LINK_MODE = "copy"
     $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightBrowsersDir
     Write-StartLog "Startup requested from $AppRoot"
 

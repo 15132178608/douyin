@@ -153,7 +153,7 @@ uv run recall digest --dry-run      # 预览 HTML
 
 首次同步和首次索引可能需要较长时间；索引阶段会下载本地模型。数据仍保存在本机 `data/` 目录，安装包不会上传你的数据库、登录资料或浏览器 profile。
 
-日常维护入口在 `/maintenance`：它会显示服务状态、最近同步、失败任务、SQLite 备份状态和版本更新状态，并提供“执行一次标准维护”“立即生成 SQLite 备份”“校验并准备恢复”和“导出诊断包”操作。恢复前会先做 SQLite 完整性和必要表检查，并要求输入确认文字；恢复时会先额外保存一份恢复前安全备份。诊断包只包含脱敏环境、服务、任务和日志摘要，不包含 `.env`、数据库、浏览器 profile 或登录态。安装包启动脚本会先检查 `recall status`，避免重复启动多个本地 Web 服务；运行时下载和缓存会放到 `D:\codexDownload\douyinclaude-runtime`。
+日常维护入口在 `/maintenance`：它会显示服务状态、最近同步、失败任务、SQLite 备份状态和版本更新状态，并提供“执行一次标准维护”“立即生成 SQLite 备份”“校验并准备恢复”和“导出诊断包”操作。恢复前会先做 SQLite 完整性和必要表检查，并要求输入确认文字；恢复时会先额外保存一份恢复前安全备份。诊断包只包含脱敏环境、服务、任务和日志摘要，不包含 `.env`、数据库、浏览器 profile 或登录态。安装包启动脚本会先检查 `recall status`，避免重复启动多个本地 Web 服务；运行时下载和缓存会放到 `D:\codexDownload\douyinclaude-runtime`，并设置 `UV_LINK_MODE=copy` 避免跨盘缓存产生 hardlink warning。
 
 如果安装后打不开、首次下载失败、SmartScreen 拦截或忘记关闭后台服务，启动窗口会显示常用恢复命令和日志位置；完整处理步骤见 [`docs/windows-troubleshooting.md`](./docs/windows-troubleshooting.md)。
 
