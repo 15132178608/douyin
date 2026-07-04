@@ -5,6 +5,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
 $DataRoot = Join-Path $AppRoot "data"
 $LogsDir = Join-Path $DataRoot "logs"
+$StartLog = Join-Path $LogsDir "start-douyin-recall.log"
 $EnvPath = Join-Path $AppRoot ".env"
 $EnvExamplePath = Join-Path $AppRoot ".env.example"
 $DownloadRoot = "D:\codexDownload\douyinclaude-runtime"
@@ -12,10 +13,24 @@ $UvDownloadDir = Join-Path $DownloadRoot "uv"
 $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
 $PlaywrightBrowsersDir = Join-Path $DownloadRoot "ms-playwright"
 
+function Write-StartLog {
+    param([string]$Message)
+    try {
+        if (Test-Path $LogsDir) {
+            $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ssK"
+            Add-Content -Path $StartLog -Value "[$timestamp] $Message" -Encoding UTF8
+        }
+    }
+    catch {
+        # Startup logging must never prevent the app from launching.
+    }
+}
+
 function Write-Step {
     param([string]$Message)
     Write-Host ""
     Write-Host "==> $Message"
+    Write-StartLog $Message
 }
 
 function Find-Uv {
@@ -63,6 +78,21 @@ function Get-WebPort {
     return 8000
 }
 
+function Write-Troubleshooting {
+    param([int]$Port = 8000)
+
+    Write-Host ""
+    Write-Host "常用恢复命令："
+    Write-Host "  uv run recall status"
+    Write-Host "  uv run recall stop"
+    Write-Host "  uv run recall diagnose"
+    Write-Host ""
+    Write-Host "维护中心： http://127.0.0.1:$port/maintenance"
+    Write-Host "启动日志： $StartLog"
+    Write-Host "服务日志： $LogsDir"
+    Write-Host "运行时下载/缓存： $DownloadRoot"
+}
+
 try {
     Set-Location $AppRoot
     New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
@@ -72,6 +102,7 @@ try {
     New-Item -ItemType Directory -Path $PlaywrightBrowsersDir -Force | Out-Null
     $env:UV_CACHE_DIR = $UvCacheDir
     $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightBrowsersDir
+    Write-StartLog "Startup requested from $AppRoot"
 
     Write-Host ""
     Write-Host "提示：当前安装包未签名，Windows SmartScreen 可能提示风险；请只使用 GitHub Release 页面下载的安装包。"
@@ -125,14 +156,27 @@ try {
     }
 
     Write-Step "Opening $url"
+    Write-Host ""
+    Write-Host "维护中心：$url/maintenance"
+    Write-Host "停止服务：uv run recall stop"
+    Write-Host "排障日志：$StartLog"
     Start-Process $url
 }
 catch {
+    Write-StartLog "Startup failed: $($_.Exception.Message)"
+    $port = 8000
+    try {
+        $port = Get-WebPort
+    }
+    catch {
+        Write-StartLog "Could not resolve WEB_PORT during failure handling: $($_.Exception.Message)"
+    }
+
     Write-Host ""
     Write-Host "Douyin Recall failed to start:" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
     Write-Host ""
-    Write-Host "Logs are in: $LogsDir"
+    Write-Troubleshooting -Port $port
     Read-Host "Press Enter to close"
     exit 1
 }

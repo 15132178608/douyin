@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.6
+
+- Installer launch failures now print recovery commands for `recall status`, `recall stop`, and `recall diagnose`.
+- Installer startup now records a dedicated `data\logs\start-douyin-recall.log`.
+- Added Windows installer troubleshooting documentation for SmartScreen, first-run downloads, logs, maintenance, and background service cleanup.
+
+See [docs/releases/v0.1.6.md](docs/releases/v0.1.6.md).
+
 ## v0.1.5
 
 - GitHub Release workflow now uses `docs/releases/<tag>.md` when release notes are present.

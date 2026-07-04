@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGING = ROOT / "packaging" / "windows"
 WORKFLOW = ROOT / ".github" / "workflows" / "windows-installer.yml"
 RELEASE_NOTES_DIR = ROOT / "docs" / "releases"
+WINDOWS_TROUBLESHOOTING = ROOT / "docs" / "windows-troubleshooting.md"
 
 
 def read(name: str) -> str:
@@ -64,6 +65,19 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("uv run recall serve", launcher)
         self.assertIn("http://127.0.0.1:", launcher)
 
+    def test_launcher_prints_recovery_steps_when_startup_fails(self) -> None:
+        launcher = read("start-douyin-recall.ps1")
+
+        self.assertIn("$StartLog", launcher)
+        self.assertIn("start-douyin-recall.log", launcher)
+        self.assertIn("Write-Troubleshooting", launcher)
+        self.assertIn("常用恢复命令", launcher)
+        self.assertIn("uv run recall status", launcher)
+        self.assertIn("uv run recall stop", launcher)
+        self.assertIn("uv run recall diagnose", launcher)
+        self.assertIn("http://127.0.0.1:$port/maintenance", launcher)
+        self.assertIn("D:\\codexDownload\\douyinclaude-runtime", launcher)
+
     def test_build_script_requires_inno_setup_and_creates_setup_exe(self) -> None:
         build = read("build-installer.ps1")
 
@@ -99,6 +113,19 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("D:\\codexDownload\\douyinclaude-runtime", notes)
         self.assertIn("recall stop", notes)
         self.assertIn("/maintenance", notes)
+
+    def test_windows_troubleshooting_doc_covers_installer_recovery(self) -> None:
+        self.assertTrue(WINDOWS_TROUBLESHOOTING.exists())
+        doc = WINDOWS_TROUBLESHOOTING.read_text(encoding="utf-8")
+
+        self.assertIn("Windows 安装包排障", doc)
+        self.assertIn("SmartScreen", doc)
+        self.assertIn("D:\\codexDownload\\douyinclaude-runtime", doc)
+        self.assertIn("start-douyin-recall.log", doc)
+        self.assertIn("uv run recall status", doc)
+        self.assertIn("uv run recall stop", doc)
+        self.assertIn("uv run recall diagnose", doc)
+        self.assertIn("/maintenance", doc)
 
 
 if __name__ == "__main__":
