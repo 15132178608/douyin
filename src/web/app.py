@@ -41,8 +41,11 @@ from src.categorize import cluster as cluster_mod
 from src.content.kinds import get_content_kind
 from src.config import settings
 from src.db import get_connection, init_schema
+from src import db as db_module
 from src import accounts
+from src import diagnostics
 from src import jobs
+from src import maintenance
 from src import onboarding
 from src.tenancy import DEFAULT_USER_ID, normalize_user_id
 from src.web.authors import cached_author_avatar_url_from_raw_json
@@ -108,11 +111,17 @@ def _start_background_workers() -> None:
         _job_worker_thread.start()
 
 
-@app.on_event("shutdown")
-def _shutdown_uncollect_worker() -> None:
+def _stop_background_workers() -> None:
+    global _job_worker_thread
     _job_worker_stop.set()
     if _job_worker_thread is not None:
         _job_worker_thread.join(timeout=5)
+    _job_worker_thread = None
+
+
+@app.on_event("shutdown")
+def _shutdown_uncollect_worker() -> None:
+    _stop_background_workers()
     _uncollect_worker.close()
     with _user_uncollect_workers_lock:
         workers = list(_user_uncollect_workers.values())
@@ -144,7 +153,7 @@ def _content_context(content_kind: str = "favorites") -> dict:
         "notes_url": f"{prefix}/notes",
         "timeline_url": f"{prefix}/timeline",
         "memories_url": "/memories",
-        "jobs_url": "/jobs",
+        "jobs_url": "/maintenance",
         "duplicates_url": "/duplicates",
         "batch_action_url": _batch_action_url(kind.key),
         "batch_export_url": _batch_export_url(kind.key),
@@ -676,17 +685,173 @@ async def enqueue_index_job(
     return JSONResponse({"ok": True, "job_id": job_id})
 
 
-@app.get("/jobs", response_class=HTMLResponse)
-async def jobs_page(request: Request):
+def _maintenance_template_context(
+    request: Request,
+    user_id: str,
+    *,
+    message: str = "",
+    message_kind: str = "info",
+) -> dict:
+    return {
+        "page": "maintenance",
+        "jobs": jobs.list_jobs(user_id=user_id),
+        "maintenance_status": maintenance.get_maintenance_status(user_id),
+        "message": message,
+        "message_kind": message_kind,
+        **_stats("favorites", user_id=user_id),
+    }
+
+
+@app.get("/maintenance", response_class=HTMLResponse)
+async def maintenance_page(request: Request):
     user_id = _current_user_id(request)
     return templates.TemplateResponse(
         request,
         "jobs.html",
+        _maintenance_template_context(request, user_id),
+    )
+
+
+@app.get("/jobs", response_class=HTMLResponse)
+async def jobs_page(request: Request):
+    return await maintenance_page(request)
+
+
+@app.get("/maintenance/status", response_class=HTMLResponse)
+async def maintenance_status_fragment(request: Request):
+    user_id = _current_user_id(request)
+    return templates.TemplateResponse(
+        request,
+        "_maintenance_status.html",
+        _maintenance_template_context(request, user_id),
+    )
+
+
+@app.post("/maintenance/run", response_class=HTMLResponse)
+async def enqueue_standard_maintenance(request: Request, max_pages: int = Form(500)):
+    user_id = _current_user_id(request)
+    job_ids = maintenance.enqueue_full_maintenance(user_id, max_pages=max_pages)
+    return templates.TemplateResponse(
+        request,
+        "_maintenance_status.html",
+        _maintenance_template_context(
+            request,
+            user_id,
+            message=f"已加入标准维护队列：{len(job_ids)} 个任务。",
+            message_kind="success",
+        ),
+    )
+
+
+@app.post("/maintenance/backup", response_class=HTMLResponse)
+async def backup_sqlite_now(request: Request):
+    user_id = _current_user_id(request)
+    try:
+        result = maintenance.create_sqlite_backup()
+        message = f"已生成 SQLite 备份：{result.path.name}"
+        message_kind = "success"
+    except Exception as e:
+        logger.exception("Manual SQLite backup failed: {}", e)
+        message = f"备份失败：{e}"
+        message_kind = "danger"
+    return templates.TemplateResponse(
+        request,
+        "_maintenance_status.html",
+        _maintenance_template_context(request, user_id, message=message, message_kind=message_kind),
+    )
+
+
+@app.post("/maintenance/diagnostics", response_class=HTMLResponse)
+async def create_diagnostics_now(request: Request):
+    user_id = _current_user_id(request)
+    try:
+        result = diagnostics.create_diagnostic_bundle(diagnostics.DEFAULT_OUTPUT_DIR)
+        message = f"诊断包已生成：{result.path.name}"
+        message_kind = "success"
+    except Exception as e:
+        logger.exception("Diagnostic bundle failed: {}", e)
+        message = f"诊断包生成失败：{e}"
+        message_kind = "danger"
+    return templates.TemplateResponse(
+        request,
+        "_maintenance_status.html",
+        _maintenance_template_context(request, user_id, message=message, message_kind=message_kind),
+    )
+
+
+@app.post("/maintenance/restore/validate", response_class=HTMLResponse)
+async def validate_restore_backup(request: Request, backup_path: str = Form("")):
+    report = maintenance.validate_sqlite_backup(backup_path)
+    return templates.TemplateResponse(
+        request,
+        "_restore_preview.html",
         {
-            "page": "jobs",
-            "jobs": jobs.list_jobs(user_id=user_id),
-            **_stats("favorites", user_id=user_id),
+            "restore_report": report,
+            "restore_message": "",
+            "restore_message_kind": "info",
         },
+    )
+
+
+@app.post("/maintenance/restore", response_class=HTMLResponse)
+async def restore_backup(
+    request: Request,
+    backup_path: str = Form(""),
+    confirm_text: str = Form(""),
+):
+    user_id = _current_user_id(request)
+    report = maintenance.validate_sqlite_backup(backup_path)
+    if (confirm_text or "").strip() != "恢复":
+        return templates.TemplateResponse(
+            request,
+            "_restore_preview.html",
+            {
+                "restore_report": report,
+                "restore_message": "没有输入确认文字，未执行恢复。",
+                "restore_message_kind": "danger",
+            },
+            status_code=400,
+        )
+    active_jobs = [
+        job for job in jobs.list_jobs(user_id=user_id, limit=200)
+        if job.get("status") in {"pending", "running"}
+    ]
+    if active_jobs:
+        return templates.TemplateResponse(
+            request,
+            "_restore_preview.html",
+            {
+                "restore_report": report,
+                "restore_message": "后台队列还有等待或运行中的任务，请等任务结束后再恢复。",
+                "restore_message_kind": "danger",
+            },
+            status_code=409,
+        )
+    try:
+        _stop_background_workers()
+        result = maintenance.restore_sqlite_backup(
+            backup_path,
+            close_connection=db_module.close_connection,
+        )
+        init_schema()
+        _job_worker_stop.clear()
+        _start_background_workers()
+        message = f"已恢复数据库。恢复前安全备份：{result.safety_backup_path.name}"
+        message_kind = "success"
+    except Exception as e:
+        logger.exception("SQLite restore failed: {}", e)
+        try:
+            init_schema()
+            _job_worker_stop.clear()
+            _start_background_workers()
+        except Exception:
+            logger.exception("Could not restart database connection after failed restore")
+        message = f"恢复失败：{e}"
+        message_kind = "danger"
+    return templates.TemplateResponse(
+        request,
+        "_maintenance_status.html",
+        _maintenance_template_context(request, user_id, message=message, message_kind=message_kind),
     )
 
 

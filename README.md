@@ -42,6 +42,9 @@
 | **后台 jobs 队列** | ✅ | SQLite 队列 + Web worker + 重试退避 + stale running 恢复 + `/jobs` 状态页 |
 | **导出 / 备份** | ✅ | `recall export` 支持 JSON / Markdown / SQLite backup |
 | **每周自动化** | ✅ | Windows 计划任务脚本：crawl + index + digest + backup |
+| **维护中心** | ✅ | `/maintenance` 集中查看服务、同步、索引、备份、失败任务，并可手动入队标准维护、校验和恢复 SQLite 备份、导出诊断包 |
+| **服务生命周期** | ✅ | `recall serve` 写 PID 状态、防重复启动；`recall status` / `recall stop` 管理本地 Web 服务 |
+| **诊断包** | ✅ | `recall diagnose` 导出脱敏环境、服务、任务和日志摘要，排除 `.env`、数据库和浏览器登录态 |
 | **整理 / 清理** | ✅ | 分类合并、单条移动分类、批量取消、收藏/喜欢重复视图 |
 | **体验增强** | ✅ | 头像缓存代理、folder 信号注入、Web 回忆角、主题 digest、Ollama/本地二级标签 |
 | **服务器部署** | ⏸ 暂缓 | 不作为当前个人工具路线的优先事项 |
@@ -113,6 +116,16 @@ uv run recall serve
 
 浏览器打开 `http://127.0.0.1:8000`。
 
+长期使用时可以打开 `http://127.0.0.1:8000/maintenance`，查看服务、最近同步、索引、备份和后台队列状态，也可以手动执行一次标准维护、立即生成 SQLite 备份、校验后恢复已有备份，或导出脱敏诊断包。
+
+查看/停止本地 Web 服务：
+
+```powershell
+uv run recall status
+uv run recall stop
+uv run recall diagnose
+```
+
 ### 8. 每周收 digest
 
 ```powershell
@@ -138,6 +151,8 @@ uv run recall digest --dry-run      # 预览 HTML
 
 首次同步和首次索引可能需要较长时间；索引阶段会下载本地模型。数据仍保存在本机 `data/` 目录，安装包不会上传你的数据库、登录资料或浏览器 profile。
 
+日常维护入口在 `/maintenance`：它会显示服务状态、最近同步、失败任务和 SQLite 备份状态，并提供“执行一次标准维护”“立即生成 SQLite 备份”“校验并准备恢复”和“导出诊断包”操作。恢复前会先做 SQLite 完整性和必要表检查，并要求输入确认文字；恢复时会先额外保存一份恢复前安全备份。诊断包只包含脱敏环境、服务、任务和日志摘要，不包含 `.env`、数据库、浏览器 profile 或登录态。安装包启动脚本会先检查 `recall status`，避免重复启动多个本地 Web 服务；运行时下载和缓存会放到 `D:\codexDownload\douyinclaude-runtime`。
+
 维护者发布新版时，推送 `v*` 标签会自动生成 Release，并把 `DouyinRecallSetup.exe` 作为下载附件上传。
 
 本地也可以用 Inno Setup 手动生成安装包：
@@ -162,7 +177,7 @@ uv run recall digest --dry-run      # 预览 HTML
 
 ---
 
-## CLI 命令一览（17 个）
+## CLI 命令一览（20 个）
 
 | 命令 | 阶段 | 说明 |
 |---|---|---|
@@ -176,6 +191,9 @@ uv run recall digest --dry-run      # 预览 HTML
 | `search` | M3 | 命令行搜索测试 |
 | `digest` | M2 | 发周报邮件 |
 | `serve` | M3/M4 | 启动 web UI |
+| `status` | 运维 | 查看本地 Web 服务是否正在运行、PID 和访问地址 |
+| `stop` | 运维 | 停止由 `recall serve` 记录的本地 Web 服务 |
+| `diagnose` | 运维 | 导出脱敏诊断包，排除 `.env`、数据库和浏览器登录态 |
 | `uncollect` | M5 | 通过抖音 API 取消收藏一条 |
 | `unlike` | M5 | 通过抖音 API 取消喜欢一条 |
 | `export` | 运维 | 导出 JSON / Markdown / SQLite 备份 |
@@ -217,7 +235,7 @@ python tests/test_parser.py
 
 ```
 src/
-  cli.py                  # 17 个 CLI 命令
+  cli.py                  # 20 个 CLI 命令
   config.py               # pydantic-settings
   db.py                   # SQLite schema + 迁移
   models.py               # Favorite dataclass

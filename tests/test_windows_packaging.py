@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -24,14 +25,32 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn(".venv\\*", script)
         self.assertIn("AGENTS.md", script)
         self.assertIn(".git\\*", script)
+        self.assertNotIn("createallsubdirs", script)
+
+    def test_inno_version_matches_project_version(self) -> None:
+        project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        script = read("DouyinRecall.iss")
+
+        project_version = re.search(r'^version = "([^"]+)"', project, re.MULTILINE)
+        installer_version = re.search(r'^#define MyAppVersion "([^"]+)"', script, re.MULTILINE)
+
+        self.assertIsNotNone(project_version)
+        self.assertIsNotNone(installer_version)
+        self.assertEqual(project_version.group(1), installer_version.group(1))
 
     def test_launcher_prepares_runtime_and_opens_local_web_ui(self) -> None:
         launcher = read("start-douyin-recall.ps1")
 
+        self.assertIn("D:\\codexDownload", launcher)
+        self.assertIn("$DownloadRoot", launcher)
+        self.assertIn("$env:UV_CACHE_DIR", launcher)
+        self.assertIn("$env:PLAYWRIGHT_BROWSERS_PATH", launcher)
+        self.assertNotIn("$env:TEMP", launcher)
         self.assertIn("Copy-Item", launcher)
         self.assertIn(".env.example", launcher)
         self.assertIn("uv sync", launcher)
         self.assertIn("playwright install chromium", launcher)
+        self.assertIn("uv run recall status", launcher)
         self.assertIn("uv run recall serve", launcher)
         self.assertIn("http://127.0.0.1:", launcher)
 

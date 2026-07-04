@@ -331,6 +331,14 @@ def get_connection() -> sqlite3.Connection:
     return _CACHED_CONN
 
 
+def close_connection() -> None:
+    """Close the cached SQLite connection before replacing the database file."""
+    global _CACHED_CONN
+    if _CACHED_CONN is not None:
+        _CACHED_CONN.close()
+        _CACHED_CONN = None
+
+
 @contextmanager
 def transaction() -> Iterator[sqlite3.Connection]:
     conn = get_connection()

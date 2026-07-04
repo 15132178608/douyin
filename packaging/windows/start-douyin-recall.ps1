@@ -7,6 +7,10 @@ $DataRoot = Join-Path $AppRoot "data"
 $LogsDir = Join-Path $DataRoot "logs"
 $EnvPath = Join-Path $AppRoot ".env"
 $EnvExamplePath = Join-Path $AppRoot ".env.example"
+$DownloadRoot = "D:\codexDownload\douyinclaude-runtime"
+$UvDownloadDir = Join-Path $DownloadRoot "uv"
+$UvCacheDir = Join-Path $DownloadRoot "uv-cache"
+$PlaywrightBrowsersDir = Join-Path $DownloadRoot "ms-playwright"
 
 function Write-Step {
     param([string]$Message)
@@ -30,7 +34,8 @@ function Find-Uv {
     }
 
     Write-Step "uv not found; installing uv for the current Windows user"
-    $installer = Join-Path $env:TEMP "install-uv.ps1"
+    New-Item -ItemType Directory -Path $UvDownloadDir -Force | Out-Null
+    $installer = Join-Path $UvDownloadDir "install-uv.ps1"
     Invoke-WebRequest -Uri "https://astral.sh/uv/install.ps1" -OutFile $installer
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
 
@@ -62,6 +67,11 @@ try {
     Set-Location $AppRoot
     New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $DownloadRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $UvCacheDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $PlaywrightBrowsersDir -Force | Out-Null
+    $env:UV_CACHE_DIR = $UvCacheDir
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightBrowsersDir
 
     if (-not (Test-Path $EnvPath)) {
         if (-not (Test-Path $EnvExamplePath)) {
@@ -93,6 +103,9 @@ try {
 
     $port = Get-WebPort
     $url = "http://127.0.0.1:$port"
+
+    Write-Step "Checking local web server status with: uv run recall status"
+    & $uv "run" "recall" "status"
 
     try {
         Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 2 | Out-Null

@@ -2,14 +2,40 @@
 
 {% block content %}
 <header>
-  <h1>后台队列</h1>
-  <span class="stat">查看同步、索引和批量移除是否在后台正常执行</span>
+  <h1>维护中心</h1>
+  <span class="stat">同步、索引、备份和后台队列</span>
 </header>
 
 <p style="color: var(--text-secondary); font-size: 14px; line-height: 1.6; margin: 0 0 24px; max-width: 760px;">
-  这里是排查用的状态页。同步收藏/喜欢、生成索引、批量取消收藏或取消喜欢时，操作会先进入队列再执行；如果失败，会显示错误、次数和下次重试时间。
+  这里集中处理本地长期使用需要的维护动作。标准维护会依次同步收藏、同步喜欢、重建增量索引并生成 SQLite 备份；如果抖音登录态过期，失败任务会留在下方队列表里。
 </p>
 
+<div class="maintenance-actions">
+  <form hx-post="/maintenance/run"
+        hx-target="#maintenance-status"
+        hx-swap="innerHTML">
+    <button class="btn-primary" type="submit" data-disable-on-request>执行一次标准维护</button>
+  </form>
+  <form hx-post="/maintenance/backup"
+        hx-target="#maintenance-status"
+        hx-swap="innerHTML">
+    <button class="btn-secondary" type="submit" data-disable-on-request>立即生成 SQLite 备份</button>
+  </form>
+  <form hx-post="/maintenance/diagnostics"
+        hx-target="#maintenance-status"
+        hx-swap="innerHTML">
+    <button class="btn-secondary" type="submit" data-disable-on-request>导出诊断包</button>
+  </form>
+</div>
+
+<div id="maintenance-status"
+     hx-get="/maintenance/status"
+     hx-trigger="load, every 10s"
+     hx-swap="innerHTML">
+  {% include "_maintenance_status.html" %}
+</div>
+
+<h2 class="section-title">后台队列</h2>
 <div id="jobs-status"
      hx-get="/jobs/status"
      hx-trigger="every 5s"

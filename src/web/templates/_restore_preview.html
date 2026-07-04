@@ -1,0 +1,42 @@
+<div class="maintenance-card restore-preview">
+  <h2>恢复前校验</h2>
+  {% if restore_message %}
+    <div class="maintenance-message {{ restore_message_kind or 'info' }}">{{ restore_message }}</div>
+  {% endif %}
+
+  {% if restore_report.ok %}
+    <p class="maintenance-main">{{ restore_report.name }} 可以用于恢复。</p>
+    <div class="maintenance-run-list">
+      <div class="maintenance-run">
+        <span class="maintenance-run-label">完整性</span>
+        <span class="maintenance-badge ok">{{ restore_report.integrity_check }}</span>
+      </div>
+      <div class="maintenance-run">
+        <span class="maintenance-run-label">收藏</span>
+        <span class="maintenance-meta">{{ restore_report.counts.favorites }} 条</span>
+      </div>
+      <div class="maintenance-run">
+        <span class="maintenance-run-label">喜欢</span>
+        <span class="maintenance-meta">{{ restore_report.counts.likes }} 条</span>
+      </div>
+    </div>
+    <form class="restore-confirm-form"
+          hx-post="/maintenance/restore"
+          hx-target="#maintenance-status"
+          hx-swap="outerHTML">
+      <input type="hidden" name="backup_path" value="{{ restore_report.path }}">
+      <label class="restore-confirm-label">
+        输入“恢复”确认覆盖当前数据库
+        <input name="confirm_text" autocomplete="off" placeholder="恢复">
+      </label>
+      <button class="btn-secondary" type="submit" data-disable-on-request>确认恢复</button>
+    </form>
+  {% else %}
+    <p class="maintenance-main">这个文件不能用于恢复。</p>
+    <div class="maintenance-attention-list">
+      {% for error in restore_report.errors %}
+      <span class="maintenance-badge danger">{{ error }}</span>
+      {% endfor %}
+    </div>
+  {% endif %}
+</div>

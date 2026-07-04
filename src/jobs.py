@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 import time
 import traceback
 from typing import Any
 
 from loguru import logger
 
+from src.config import PROJECT_ROOT
 from src.db import get_connection
 from src.tenancy import DEFAULT_USER_ID, normalize_user_id
 
@@ -294,6 +296,13 @@ class DefaultJobHandlers:
             content_kind=payload.get("content_kind") or "favorites",
             user_id=user_id,
         )
+
+    def backup_sqlite(self, user_id: str, payload: dict) -> None:
+        from src import exporter
+
+        output_dir = Path(payload.get("output_dir") or (PROJECT_ROOT / "data" / "exports"))
+        result = exporter.backup_sqlite(output_dir)
+        logger.info("SQLite backup created for {}: {} ({} rows)", user_id, result.path, result.count)
 
     def uncollect(self, user_id: str, payload: dict) -> None:
         from src import accounts

@@ -1,0 +1,277 @@
+"""
+Server lifecycle state tests.
+
+Run:
+    python tests/test_server_runtime.py
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from src import server_runtime
+
+
+def test_write_and_read_server_state_round_trips_pid_and_url() -> None:
+    with TemporaryDirectory() as tmp:
+        state = server_runtime.write_server_state(
+            pid=1234,
+            host="127.0.0.1",
+            port=8000,
+            runtime_dir=Path(tmp),
+        )
+
+        loaded = server_runtime.read_server_state(runtime_dir=Path(tmp))
+
+        assert state.pid == 1234
+        assert loaded is not None
+        assert loaded.pid == 1234
+        assert loaded.host == "127.0.0.1"
+        assert loaded.port == 8000
+        assert loaded.url == "http://127.0.0.1:8000"
+        assert (Path(tmp) / "server.pid").read_text(encoding="utf-8").strip() == "1234"
+
+
+def test_get_server_status_distinguishes_running_from_stale_pid() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        server_runtime.write_server_state(pid=2222, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        running = server_runtime.get_server_status(
+            runtime_dir=runtime_dir,
+            process_checker=lambda pid: pid == 2222,
+        )
+        stale = server_runtime.get_server_status(
+            runtime_dir=runtime_dir,
+            process_checker=lambda pid: False,
+        )
+
+        assert running["state"] == "running"
+        assert running["url"] == "http://127.0.0.1:8000"
+        assert stale["state"] == "stale"
+        assert stale["pid"] == 2222
+
+
+def test_should_start_server_blocks_duplicate_running_process() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        server_runtime.write_server_state(pid=3333, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        decision = server_runtime.should_start_server(
+            runtime_dir=runtime_dir,
+            process_checker=lambda pid: pid == 3333,
+            port_owner_checker=lambda port: 3333,
+        )
+
+        assert decision["ok"] is False
+        assert "已在运行" in decision["message"]
+        assert decision["status"]["url"] == "http://127.0.0.1:8000"
+
+
+def test_should_start_server_clears_running_pid_when_port_has_no_listener() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        server_runtime.write_server_state(pid=3334, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        decision = server_runtime.should_start_server(
+            runtime_dir=runtime_dir,
+            process_checker=lambda pid: pid == 3334,
+            port_owner_checker=lambda port: None,
+        )
+
+        assert decision["ok"] is True
+        assert server_runtime.read_server_state(runtime_dir=runtime_dir) is None
+        assert "没有发现端口监听" in decision["message"]
+
+
+def test_should_start_server_clears_running_pid_when_port_owner_mismatches() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        server_runtime.write_server_state(pid=3335, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        decision = server_runtime.should_start_server(
+            runtime_dir=runtime_dir,
+            process_checker=lambda pid: pid == 3335,
+            port_owner_checker=lambda port: 9999,
+        )
+
+        assert decision["ok"] is True
+        assert server_runtime.read_server_state(runtime_dir=runtime_dir) is None
+        assert "不匹配" in decision["message"]
+
+
+def test_stop_recorded_server_calls_terminator_and_clears_state() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        stopped: list[int] = []
+        process_states = [True, False]
+        owners = [4444, None]
+        server_runtime.write_server_state(pid=4444, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        result = server_runtime.stop_recorded_server(
+            runtime_dir=runtime_dir,
+            process_checker=lambda pid: process_states.pop(0),
+            port_owner_checker=lambda port: owners.pop(0),
+            terminator=lambda pid: stopped.append(pid),
+            wait_attempts=1,
+            wait_interval_seconds=0,
+        )
+
+        assert result["stopped"] is True
+        assert stopped == [4444]
+        assert server_runtime.read_server_state(runtime_dir=runtime_dir) is None
+        assert not (runtime_dir / "server.pid").exists()
+
+
+def test_stop_recorded_server_refuses_when_recorded_pid_does_not_own_port() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        stopped: list[int] = []
+        server_runtime.write_server_state(pid=5555, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        result = server_runtime.stop_recorded_server(
+            runtime_dir=runtime_dir,
+            process_checker=lambda pid: pid == 5555,
+            port_owner_checker=lambda port: 9999,
+            terminator=lambda pid: stopped.append(pid),
+        )
+
+        assert result["stopped"] is False
+        assert stopped == []
+        assert server_runtime.read_server_state(runtime_dir=runtime_dir) is None
+        assert "不匹配" in result["message"]
+
+
+def test_stop_recorded_server_refuses_when_port_has_no_listener() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        stopped: list[int] = []
+        server_runtime.write_server_state(pid=6666, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        result = server_runtime.stop_recorded_server(
+            runtime_dir=runtime_dir,
+            process_checker=lambda pid: pid == 6666,
+            port_owner_checker=lambda port: None,
+            terminator=lambda pid: stopped.append(pid),
+        )
+
+        assert result["stopped"] is False
+        assert stopped == []
+        assert server_runtime.read_server_state(runtime_dir=runtime_dir) is None
+        assert "没有发现端口监听" in result["message"]
+
+
+def test_stop_recorded_server_keeps_state_when_terminator_fails() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        server_runtime.write_server_state(pid=7777, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        result = server_runtime.stop_recorded_server(
+            runtime_dir=runtime_dir,
+            process_checker=lambda pid: pid == 7777,
+            port_owner_checker=lambda port: 7777,
+            terminator=lambda pid: (_ for _ in ()).throw(RuntimeError("taskkill failed")),
+        )
+
+        assert result["stopped"] is False
+        assert server_runtime.read_server_state(runtime_dir=runtime_dir) is not None
+        assert "停止失败" in result["message"]
+
+
+def test_stop_recorded_server_waits_for_port_to_release_before_clearing_state() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        sleeps: list[float] = []
+        owners = [7778, 7778, None]
+        process_states = [True, False, False]
+        server_runtime.write_server_state(pid=7778, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        result = server_runtime.stop_recorded_server(
+            runtime_dir=runtime_dir,
+            process_checker=lambda pid: process_states.pop(0),
+            port_owner_checker=lambda port: owners.pop(0),
+            terminator=lambda pid: None,
+            wait_attempts=3,
+            wait_interval_seconds=0.01,
+            sleeper=lambda seconds: sleeps.append(seconds),
+        )
+
+        assert result["stopped"] is True
+        assert sleeps == [0.01]
+        assert server_runtime.read_server_state(runtime_dir=runtime_dir) is None
+
+
+def test_stop_recorded_server_keeps_state_when_port_remains_after_terminator() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        process_states = [True, False]
+        server_runtime.write_server_state(pid=7779, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        result = server_runtime.stop_recorded_server(
+            runtime_dir=runtime_dir,
+            process_checker=lambda pid: process_states.pop(0),
+            port_owner_checker=lambda port: 7779,
+            terminator=lambda pid: None,
+            wait_attempts=1,
+            wait_interval_seconds=0,
+            sleeper=lambda seconds: None,
+        )
+
+        assert result["stopped"] is False
+        assert server_runtime.read_server_state(runtime_dir=runtime_dir) is not None
+        assert "未确认停止" in result["message"]
+
+
+def test_windows_terminator_uses_force_and_raises_on_taskkill_failure() -> None:
+    calls: list[list[str]] = []
+
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "This process can only be terminated forcefully."
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return Result()
+
+    with patch.object(server_runtime.sys, "platform", "win32"):
+        with patch.object(server_runtime.subprocess, "run", fake_run):
+            try:
+                server_runtime.terminate_process(8888)
+            except RuntimeError as e:
+                assert "taskkill failed" in str(e)
+            else:
+                raise AssertionError("terminate_process should raise when taskkill fails")
+
+    assert calls == [["taskkill", "/PID", "8888", "/T", "/F"]]
+
+
+if __name__ == "__main__":
+    tests = [
+        test_write_and_read_server_state_round_trips_pid_and_url,
+        test_get_server_status_distinguishes_running_from_stale_pid,
+        test_should_start_server_blocks_duplicate_running_process,
+        test_should_start_server_clears_running_pid_when_port_has_no_listener,
+        test_should_start_server_clears_running_pid_when_port_owner_mismatches,
+        test_stop_recorded_server_calls_terminator_and_clears_state,
+        test_stop_recorded_server_refuses_when_recorded_pid_does_not_own_port,
+        test_stop_recorded_server_refuses_when_port_has_no_listener,
+        test_stop_recorded_server_keeps_state_when_terminator_fails,
+        test_stop_recorded_server_waits_for_port_to_release_before_clearing_state,
+        test_stop_recorded_server_keeps_state_when_port_remains_after_terminator,
+        test_windows_terminator_uses_force_and_raises_on_taskkill_failure,
+    ]
+    failed = 0
+    for test in tests:
+        try:
+            test()
+            print(f"PASS  {test.__name__}")
+        except AssertionError as e:
+            print(f"FAIL  {test.__name__}: {e}")
+            failed += 1
+        except Exception as e:
+            print(f"ERROR {test.__name__}: {type(e).__name__}: {e}")
+            failed += 1
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    raise SystemExit(failed)

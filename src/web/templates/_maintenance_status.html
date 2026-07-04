@@ -1,0 +1,103 @@
+{% set attention_codes = maintenance_status.attention_codes %}
+{% if message %}
+<div class="maintenance-message {{ message_kind or 'info' }}">{{ message }}</div>
+{% endif %}
+
+<div class="maintenance-status-grid">
+  <section class="maintenance-card">
+    <h2>最近同步</h2>
+    <div class="maintenance-run-list">
+      {% for key, run in maintenance_status.crawl_runs.items() %}
+      <div class="maintenance-run">
+        <span class="maintenance-run-label">{{ run.label }}</span>
+        {% if run.latest %}
+          <span class="maintenance-badge {{ 'danger' if run.latest.status == 'failed' else 'ok' if run.latest.status == 'success' else '' }}">
+            {{ run.latest.status }}
+          </span>
+          <span class="maintenance-meta">{{ run.latest.finished_at or run.latest.started_at }}</span>
+        {% else %}
+          <span class="maintenance-badge muted">未同步</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="maintenance-card">
+    <h2>索引状态</h2>
+    <div class="maintenance-run-list">
+      <div class="maintenance-run">
+        <span class="maintenance-run-label">收藏</span>
+        <span class="maintenance-meta">{{ maintenance_status.favorites.indexed }} / {{ maintenance_status.favorites.total }}</span>
+      </div>
+      <div class="maintenance-run">
+        <span class="maintenance-run-label">喜欢</span>
+        <span class="maintenance-meta">{{ maintenance_status.likes.indexed }} / {{ maintenance_status.likes.total }}</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="maintenance-card">
+    <h2>服务状态</h2>
+    <p class="maintenance-main">{{ maintenance_status.server.message }}</p>
+    {% if maintenance_status.server.url %}
+      <p class="maintenance-meta">{{ maintenance_status.server.url }} · pid={{ maintenance_status.server.pid }}</p>
+    {% else %}
+      <p class="maintenance-meta">可用 `uv run recall serve` 启动。</p>
+    {% endif %}
+  </section>
+
+  <section class="maintenance-card">
+    <h2>最近备份</h2>
+    {% if maintenance_status.backups.latest %}
+      <p class="maintenance-main">{{ maintenance_status.backups.latest.name }}</p>
+      <p class="maintenance-meta">{{ maintenance_status.backups.latest.size_bytes }} bytes · {{ maintenance_status.backups.latest.modified_at }}</p>
+    {% else %}
+      <p class="maintenance-main">还没有 SQLite 备份</p>
+      <p class="maintenance-meta">{{ maintenance_status.backups.output_dir }}</p>
+    {% endif %}
+    {% if maintenance_status.backups["items"] %}
+      <div class="backup-list">
+        {% for backup in maintenance_status.backups["items"] %}
+        <form hx-post="/maintenance/restore/validate"
+              hx-target="#restore-preview"
+              hx-swap="innerHTML">
+          <input type="hidden" name="backup_path" value="{{ backup.path }}">
+          <button class="backup-restore-btn" type="submit">校验并准备恢复</button>
+        </form>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="maintenance-card">
+    <h2>需要注意</h2>
+    {% if attention_codes %}
+      <div class="maintenance-attention-list">
+        {% if "failed_jobs" in attention_codes %}
+        <span class="maintenance-badge danger">有失败任务</span>
+        {% endif %}
+        {% if "no_backups" in attention_codes %}
+        <span class="maintenance-badge warn">还没有备份</span>
+        {% endif %}
+        {% if "latest_favorites_crawl_failed" in attention_codes %}
+        <span class="maintenance-badge danger">收藏同步失败</span>
+        {% endif %}
+        {% if "latest_likes_crawl_failed" in attention_codes %}
+        <span class="maintenance-badge danger">喜欢同步失败</span>
+        {% endif %}
+        {% if "favorites_needs_index" in attention_codes %}
+        <span class="maintenance-badge warn">收藏需索引</span>
+        {% endif %}
+        {% if "likes_needs_index" in attention_codes %}
+        <span class="maintenance-badge warn">喜欢需索引</span>
+        {% endif %}
+      </div>
+    {% else %}
+      <p class="maintenance-main">暂无异常</p>
+      <p class="maintenance-meta">同步、队列和备份状态都正常。</p>
+    {% endif %}
+  </section>
+</div>
+
+<div id="restore-preview"></div>

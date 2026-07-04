@@ -1207,6 +1207,180 @@
       .setup-actions { grid-template-columns: 1fr; }
     }
 
+    .maintenance-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 0 0 18px;
+    }
+    .maintenance-actions form {
+      margin: 0;
+    }
+    .maintenance-actions button {
+      min-width: 180px;
+      padding: 10px 14px;
+      font-size: 13px;
+    }
+    .maintenance-message {
+      margin: 0 0 14px;
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+    .maintenance-message.success {
+      border-color: rgba(48, 209, 88, 0.24);
+      background: rgba(48, 209, 88, 0.08);
+      color: #6be08a;
+    }
+    .maintenance-message.danger {
+      border-color: rgba(255, 69, 58, 0.24);
+      background: rgba(255, 69, 58, 0.08);
+      color: #ff8a85;
+    }
+    .maintenance-status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 12px;
+      margin: 0 0 26px;
+    }
+    .maintenance-card {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: var(--bg-card);
+      padding: 14px;
+      min-width: 0;
+    }
+    .maintenance-card h2,
+    .section-title {
+      margin: 0 0 12px;
+      color: var(--text-primary);
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+    .section-title {
+      margin-top: 6px;
+      font-size: 18px;
+    }
+    .maintenance-run-list,
+    .maintenance-attention-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .maintenance-run {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      font-size: 13px;
+    }
+    .maintenance-run-label {
+      min-width: 32px;
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+    .maintenance-main {
+      margin: 0 0 6px;
+      color: var(--text-primary);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .maintenance-meta {
+      color: var(--text-secondary);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+    .maintenance-badge {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-secondary);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .maintenance-badge.ok {
+      background: rgba(48, 209, 88, 0.10);
+      color: #6be08a;
+    }
+    .maintenance-badge.warn {
+      background: rgba(255, 214, 10, 0.10);
+      color: var(--accent-yellow);
+    }
+    .maintenance-badge.danger {
+      background: rgba(255, 69, 58, 0.12);
+      color: #ff8a85;
+    }
+    .maintenance-badge.muted {
+      color: var(--text-tertiary);
+    }
+    .backup-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .backup-list form {
+      margin: 0;
+    }
+    .backup-restore-btn {
+      width: 100%;
+      padding: 7px 9px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-primary);
+      cursor: pointer;
+      font-size: 12px;
+      text-align: left;
+    }
+    .backup-restore-btn:hover {
+      border-color: rgba(37, 244, 238, 0.35);
+      background: rgba(37, 244, 238, 0.06);
+    }
+    .restore-preview {
+      margin: -8px 0 24px;
+    }
+    .restore-confirm-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+      margin-top: 14px;
+    }
+    .restore-confirm-label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+    .restore-confirm-label input {
+      width: 100%;
+      padding: 9px 10px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      outline: none;
+    }
+    .restore-confirm-label input:focus {
+      border-color: var(--brand-cyan);
+    }
+    @media (max-width: 620px) {
+      .maintenance-actions { flex-direction: column; }
+      .maintenance-actions button { width: 100%; }
+      .restore-confirm-form { grid-template-columns: 1fr; }
+    }
+
     /* 通用 */
     .empty {
       text-align: center;
@@ -1351,6 +1525,7 @@
       <a href="{{ notes_url }}" class="view-link {% if page == 'notes' %}active{% endif %}">备注</a>
       <a href="{{ memories_url }}" class="view-link {% if page == 'memories' %}active{% endif %}">回忆角</a>
       <a href="{{ duplicates_url }}" class="view-link {% if page == 'duplicates' %}active{% endif %}">重合</a>
+      <a href="/maintenance" class="view-link {% if page == 'maintenance' %}active{% endif %}">维护</a>
     </div>
   </div>
 </nav>

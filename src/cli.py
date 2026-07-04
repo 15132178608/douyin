@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -22,6 +23,8 @@ from loguru import logger
 
 from src.config import PROJECT_ROOT, settings
 from src import db as db_module
+from src import diagnostics
+from src import server_runtime
 
 
 # ============================================================
@@ -959,11 +962,51 @@ def serve_cmd(host: str | None, port: int | None) -> None:
     db_module.init_schema()
     h = host or settings.web_host
     p = port or settings.web_port
+    decision = server_runtime.should_start_server()
+    if not decision["ok"]:
+        click.echo(decision["message"])
+        click.echo("  如需停止：uv run recall stop")
+        return
+    state = server_runtime.write_server_state(pid=os.getpid(), host=h, port=p)
     click.echo(f"\n启动 Web UI: http://{h}:{p}")
+    click.echo(f"  · 服务状态文件: {server_runtime.DEFAULT_RUNTIME_DIR / server_runtime.PID_FILENAME}")
     click.echo("  · 浏览器打开上面这个地址")
     click.echo("  · 第一次搜索时会加载 bge-m3 模型（~20 秒）")
-    click.echo("  · Ctrl+C 停止\n")
-    uvicorn.run("src.web.app:app", host=h, port=p, log_level="info")
+    click.echo("  · Ctrl+C 停止，或另开终端运行 `uv run recall stop`\n")
+    try:
+        uvicorn.run("src.web.app:app", host=h, port=p, log_level="info")
+    finally:
+        current = server_runtime.read_server_state()
+        if current and current.pid == state.pid:
+            server_runtime.clear_server_state()
+
+
+@cli.command("status")
+def status_cmd() -> None:
+    """查看本地 Web 服务是否正在运行。"""
+    status = server_runtime.get_server_status()
+    click.echo(status["message"])
+    if status.get("url"):
+        click.echo(f"URL: {status['url']}")
+    if status.get("pid"):
+        click.echo(f"PID: {status['pid']}")
+
+
+@cli.command("stop")
+def stop_cmd() -> None:
+    """停止由 recall serve 记录的本地 Web 服务。"""
+    result = server_runtime.stop_recorded_server()
+    click.echo(result["message"])
+
+
+@cli.command("diagnose")
+@click.option("--output", "output_dir", default=diagnostics.DEFAULT_OUTPUT_DIR,
+              type=click.Path(file_okay=False, path_type=Path),
+              help="诊断包输出目录；默认写到 data/diagnostics")
+def diagnose_cmd(output_dir: Path) -> None:
+    """导出脱敏诊断包，不包含 .env、数据库或浏览器登录态。"""
+    result = diagnostics.create_diagnostic_bundle(output_dir)
+    click.echo(f"诊断包已生成：{result.path}")
 
 
 @cli.command("doctor")

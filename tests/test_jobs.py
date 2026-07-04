@@ -9,8 +9,11 @@ from __future__ import annotations
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from src import db
+from src import exporter
 from src import jobs
 
 
@@ -152,12 +155,16 @@ def test_run_next_job_dispatches_known_jobs_and_marks_success() -> None:
         def uncollect(self, user_id: str, payload: dict) -> None:
             self.calls.append(("uncollect", user_id, payload))
 
+        def backup_sqlite(self, user_id: str, payload: dict) -> None:
+            self.calls.append(("backup_sqlite", user_id, payload))
+
     with isolated_jobs_db() as conn:
         handlers = FakeHandlers()
         jobs.enqueue_job("sync_favorites", user_id="alice", payload={"max_pages": 2})
         jobs.enqueue_job("sync_likes", user_id="alice", payload={"max_pages": 3})
         jobs.enqueue_job("index", user_id="alice", payload={"content_kind": "likes"})
         jobs.enqueue_job("uncollect", user_id="alice", payload={"content_kind": "favorites", "aweme_id": "a1"})
+        jobs.enqueue_job("backup_sqlite", user_id="alice")
 
         while jobs.run_next_job(handlers):
             pass
@@ -167,12 +174,40 @@ def test_run_next_job_dispatches_known_jobs_and_marks_success() -> None:
             ("sync_likes", "alice", {"max_pages": 3}),
             ("index", "alice", {"content_kind": "likes"}),
             ("uncollect", "alice", {"content_kind": "favorites", "aweme_id": "a1"}),
+            ("backup_sqlite", "alice", {}),
         ]
         statuses = [
             r["status"]
             for r in conn.execute("SELECT status FROM job_queue ORDER BY id").fetchall()
         ]
-        assert statuses == ["success", "success", "success", "success"]
+        assert statuses == ["success", "success", "success", "success", "success"]
+
+
+def test_default_backup_sqlite_handler_writes_backup_to_payload_output_dir() -> None:
+    with isolated_jobs_db() as conn, TemporaryDirectory() as tmp:
+        conn.execute(
+            """
+            INSERT INTO favorites (
+                user_id, id, title, first_seen_at, last_seen_at, is_removed
+            ) VALUES ('alice', 'a1', 'backup me', '2026-07-04', '2026-07-04', 0)
+            """
+        )
+
+        original_exporter_get_connection = exporter.get_connection
+        exporter.get_connection = lambda: conn
+        try:
+            jobs.DefaultJobHandlers().backup_sqlite("alice", {"output_dir": tmp})
+        finally:
+            exporter.get_connection = original_exporter_get_connection
+
+        backups = list(Path(tmp).glob("recall-backup-*.db"))
+        assert len(backups) == 1
+        copied = sqlite3.connect(backups[0])
+        try:
+            count = copied.execute("SELECT COUNT(*) FROM favorites").fetchone()[0]
+        finally:
+            copied.close()
+        assert count == 1
 
 
 def test_run_next_job_marks_failure_when_handler_raises() -> None:
@@ -198,6 +233,7 @@ if __name__ == "__main__":
         test_claim_next_job_skips_pending_jobs_until_next_run_at,
         test_recover_stale_running_jobs_requeues_expired_running_work,
         test_run_next_job_dispatches_known_jobs_and_marks_success,
+        test_default_backup_sqlite_handler_writes_backup_to_payload_output_dir,
         test_run_next_job_marks_failure_when_handler_raises,
     ]
     failed = 0

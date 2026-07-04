@@ -132,6 +132,57 @@ def test_auth_page_links_to_background_queue_with_conditional_status() -> None:
     assert '"job_summary": _job_queue_summary(user_id)' in app_source
 
 
+def test_maintenance_center_exposes_backup_and_full_maintenance_actions() -> None:
+    jobs_template = read_template("jobs.html")
+    maintenance_status = read_template("_maintenance_status.html")
+    restore_preview = read_template("_restore_preview.html")
+    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    base = read_template("base.html")
+
+    assert "维护中心" in jobs_template
+    assert 'hx-post="/maintenance/run"' in jobs_template
+    assert 'hx-post="/maintenance/backup"' in jobs_template
+    assert 'hx-post="/maintenance/diagnostics"' in jobs_template
+    assert 'hx-get="/maintenance/status"' in jobs_template
+    assert "最近同步" in maintenance_status
+    assert "服务状态" in maintenance_status
+    assert "maintenance_status.server" in maintenance_status
+    assert "最近备份" in maintenance_status
+    assert "maintenance_status.backups.items" not in maintenance_status
+    assert 'maintenance_status.backups["items"]' in maintenance_status
+    assert 'hx-post="/maintenance/restore/validate"' in maintenance_status
+    assert 'hx-post="/maintenance/restore"' in restore_preview
+    assert 'name="confirm_text"' in restore_preview
+    assert "输入“恢复”" in restore_preview
+    assert "attention_codes" in maintenance_status
+    assert '"/maintenance"' in app_source
+    assert "enqueue_full_maintenance" in app_source
+    assert "restore_sqlite_backup" in app_source
+    assert "create_diagnostic_bundle" in app_source
+    assert "backup_sqlite" in app_source
+    assert 'href="/maintenance"' in base
+
+
+def test_cli_exposes_server_lifecycle_commands_and_serve_guard() -> None:
+    cli_source = (ROOT / "src" / "cli.py").read_text(encoding="utf-8")
+
+    assert 'from src import server_runtime' in cli_source
+    assert '@cli.command("status")' in cli_source
+    assert '@cli.command("stop")' in cli_source
+    assert "should_start_server" in cli_source
+    assert "write_server_state" in cli_source
+    assert "clear_server_state" in cli_source
+    assert "stop_recorded_server" in cli_source
+
+
+def test_cli_exposes_diagnostic_bundle_command() -> None:
+    cli_source = (ROOT / "src" / "cli.py").read_text(encoding="utf-8")
+
+    assert 'from src import diagnostics' in cli_source
+    assert '@cli.command("diagnose")' in cli_source
+    assert "create_diagnostic_bundle" in cli_source
+
+
 def test_setup_page_contains_first_run_sections_and_reuses_existing_endpoints() -> None:
     setup = read_template("setup.html") + read_template("_auth_status.html")
     setup_status = read_template("_setup_status.html")
@@ -307,6 +358,9 @@ if __name__ == "__main__":
         test_topbar_does_not_show_or_poll_uncollect_bridge_status,
         test_navigation_separates_modules_from_views,
         test_auth_page_links_to_background_queue_with_conditional_status,
+        test_maintenance_center_exposes_backup_and_full_maintenance_actions,
+        test_cli_exposes_server_lifecycle_commands_and_serve_guard,
+        test_cli_exposes_diagnostic_bundle_command,
         test_setup_page_contains_first_run_sections_and_reuses_existing_endpoints,
         test_home_empty_state_links_to_setup,
         test_desktop_pagination_blocks_mobile_load_more_trigger,
