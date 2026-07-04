@@ -8,6 +8,8 @@
 
 ## 首次启动下载很慢
 
+安装包会先运行启动前健康检查：确认安装目录、日志目录和 `D:\codexDownload\douyinclaude-runtime` 可写；如果本机还没有 uv，还会检查 uv 下载入口是否可访问。失败时会在启动窗口直接显示中文原因和修复建议。
+
 首次启动会自动准备 Python 依赖、Playwright Chromium 浏览器和本地模型。下载和缓存统一放在：
 
 ```text

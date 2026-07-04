@@ -79,6 +79,21 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:$port/maintenance", launcher)
         self.assertIn("D:\\codexDownload\\douyinclaude-runtime", launcher)
 
+    def test_launcher_runs_startup_preflight_before_downloading_runtime(self) -> None:
+        launcher = read("start-douyin-recall.ps1")
+
+        self.assertIn("function Test-DirectoryWritable", launcher)
+        self.assertIn("function Test-WebEndpoint", launcher)
+        self.assertIn("function Assert-StartupPreflight", launcher)
+        self.assertIn("安装目录可写", launcher)
+        self.assertIn("运行时缓存目录可写", launcher)
+        self.assertIn("uv 下载入口可访问", launcher)
+        self.assertIn("https://astral.sh/uv/install.ps1", launcher)
+        self.assertIn("请检查 D:\\codexDownload 的写入权限", launcher)
+        self.assertIn("请检查网络、代理或防火墙", launcher)
+        self.assertIn("Remove-Item -LiteralPath $ProbePath -Force", launcher)
+        self.assertLess(launcher.index("Assert-StartupPreflight"), launcher.index("$uv = Find-Uv"))
+
     def test_build_script_requires_inno_setup_and_creates_setup_exe(self) -> None:
         build = read("build-installer.ps1")
 
@@ -113,6 +128,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("首次启动", notes)
         self.assertIn("D:\\codexDownload\\douyinclaude-runtime", notes)
         self.assertIn("UV_LINK_MODE", notes)
+        self.assertIn("启动前健康检查", notes)
         self.assertIn("recall stop", notes)
         self.assertIn("/maintenance", notes)
 
@@ -127,6 +143,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("uv run recall status", doc)
         self.assertIn("uv run recall stop", doc)
         self.assertIn("uv run recall diagnose", doc)
+        self.assertIn("启动前健康检查", doc)
         self.assertIn("/maintenance", doc)
 
 

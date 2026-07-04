@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.9
+
+- Installer launch script now runs startup preflight checks before downloading runtime dependencies.
+- Preflight checks verify the install directory, log directory, and `D:\codexDownload` runtime cache are writable.
+- If uv is not installed yet, preflight checks that the uv installer URL is reachable and reports a Chinese fix hint for network, proxy, or firewall issues.
+
+See [docs/releases/v0.1.9.md](docs/releases/v0.1.9.md).
+
 ## v0.1.8
 
 - Installer launch script now sets `UV_LINK_MODE=copy` when using the shared runtime cache on `D:\codexDownload`.

@@ -12,6 +12,7 @@ $DownloadRoot = "D:\codexDownload\douyinclaude-runtime"
 $UvDownloadDir = Join-Path $DownloadRoot "uv"
 $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
 $PlaywrightBrowsersDir = Join-Path $DownloadRoot "ms-playwright"
+$UvInstallScriptUrl = "https://astral.sh/uv/install.ps1"
 
 function Write-StartLog {
     param([string]$Message)
@@ -33,6 +34,83 @@ function Write-Step {
     Write-StartLog $Message
 }
 
+function Test-DirectoryWritable {
+    param(
+        [string]$Name,
+        [string]$Path,
+        [string]$FixHint
+    )
+
+    Write-Step "启动前健康检查：$Name"
+    try {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        $ProbePath = Join-Path $Path ".douyin-recall-write-test.tmp"
+        Set-Content -Path $ProbePath -Value "ok" -Encoding UTF8
+        Remove-Item -LiteralPath $ProbePath -Force
+    }
+    catch {
+        throw "$Name 失败：无法写入 $Path。$FixHint。原始错误：$($_.Exception.Message)"
+    }
+}
+
+function Test-UvAvailable {
+    if ($env:UV_EXE -and (Test-Path $env:UV_EXE)) {
+        return $true
+    }
+    if (Get-Command "uv.exe" -ErrorAction SilentlyContinue) {
+        return $true
+    }
+    $userUv = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
+    return (Test-Path $userUv)
+}
+
+function Test-WebEndpoint {
+    param(
+        [string]$Name,
+        [string]$Uri,
+        [string]$FixHint
+    )
+
+    Write-Step "启动前健康检查：$Name"
+    try {
+        Invoke-WebRequest -Uri $Uri -UseBasicParsing -Method Head -TimeoutSec 10 | Out-Null
+    }
+    catch {
+        try {
+            Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec 10 | Out-Null
+        }
+        catch {
+            throw "$Name 失败：无法访问 $Uri。$FixHint。原始错误：$($_.Exception.Message)"
+        }
+    }
+}
+
+function Assert-StartupPreflight {
+    Test-DirectoryWritable `
+        -Name "安装目录可写" `
+        -Path $AppRoot `
+        -FixHint "请检查当前 Windows 用户是否有安装目录写入权限，或重新安装到当前用户目录"
+    Test-DirectoryWritable `
+        -Name "日志目录可写" `
+        -Path $LogsDir `
+        -FixHint "请检查安装目录下 data\logs 的写入权限"
+    Test-DirectoryWritable `
+        -Name "运行时缓存目录可写" `
+        -Path $DownloadRoot `
+        -FixHint "请检查 D:\codexDownload 的写入权限，或手动创建该目录后重试"
+
+    if (-not (Test-UvAvailable)) {
+        Test-WebEndpoint `
+            -Name "uv 下载入口可访问" `
+            -Uri $UvInstallScriptUrl `
+            -FixHint "请检查网络、代理或防火墙；如果公司网络拦截，请先配置代理后重试"
+    }
+    else {
+        Write-Step "启动前健康检查：uv 下载入口可访问"
+        Write-Host "uv 已安装，跳过下载入口检查。"
+    }
+}
+
 function Find-Uv {
     if ($env:UV_EXE -and (Test-Path $env:UV_EXE)) {
         return (Resolve-Path $env:UV_EXE).Path
@@ -51,7 +129,7 @@ function Find-Uv {
     Write-Step "uv not found; installing uv for the current Windows user"
     New-Item -ItemType Directory -Path $UvDownloadDir -Force | Out-Null
     $installer = Join-Path $UvDownloadDir "install-uv.ps1"
-    Invoke-WebRequest -Uri "https://astral.sh/uv/install.ps1" -OutFile $installer
+    Invoke-WebRequest -Uri $UvInstallScriptUrl -OutFile $installer
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
 
     if (Test-Path $userUv) {
@@ -95,6 +173,7 @@ function Write-Troubleshooting {
 
 try {
     Set-Location $AppRoot
+    Assert-StartupPreflight
     New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
     New-Item -ItemType Directory -Path $DownloadRoot -Force | Out-Null
