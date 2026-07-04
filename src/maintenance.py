@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 from typing import Any
@@ -26,6 +27,8 @@ REQUIRED_RESTORE_TABLES = {
     "crawl_runs",
     "like_crawl_runs",
 }
+RECOVERY_BACKUP_PATTERNS = ("recall-backup-*.db", "pre-install-recall-*.db")
+BACKUP_TIMESTAMP_RE = re.compile(r"(\d{8}-\d{6})")
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,40 @@ def list_sqlite_backups(output_dir: Path | None = None, *, limit: int = 8) -> li
         return []
     files = [p for p in root.glob("recall-backup-*.db") if p.is_file()]
     files.sort(key=lambda p: (p.name, p.stat().st_mtime), reverse=True)
+    items: list[BackupInfo] = []
+    for path in files[: max(1, int(limit or 1))]:
+        stat = path.stat()
+        items.append(
+            BackupInfo(
+                name=path.name,
+                path=str(path),
+                size_bytes=int(stat.st_size),
+                modified_at=datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            )
+        )
+    return items
+
+
+def list_recovery_backups(output_dir: Path | None = None, *, limit: int = 8) -> list[BackupInfo]:
+    """Return recent user-created and installer-created recovery backups."""
+    root = _backup_dir(output_dir)
+    if not root.exists():
+        return []
+    files_by_path: dict[Path, Path] = {}
+    for pattern in RECOVERY_BACKUP_PATTERNS:
+        for path in root.glob(pattern):
+            if path.is_file():
+                files_by_path[path.resolve()] = path
+    files = list(files_by_path.values())
+    def sort_key(path: Path) -> tuple[str, float, str]:
+        timestamp = BACKUP_TIMESTAMP_RE.search(path.name)
+        return (
+            timestamp.group(1) if timestamp else "",
+            path.stat().st_mtime,
+            path.name,
+        )
+
+    files.sort(key=sort_key, reverse=True)
     items: list[BackupInfo] = []
     for path in files[: max(1, int(limit or 1))]:
         stat = path.stat()
@@ -281,6 +318,26 @@ def validate_sqlite_backup(backup_path: Path | str) -> dict:
 
     report["ok"] = not report["errors"]
     return report
+
+
+def verify_latest_backup(output_dir: Path | None = None) -> dict:
+    backups = list_recovery_backups(output_dir, limit=1)
+    if not backups:
+        return {
+            "ok": False,
+            "backup": None,
+            "validation": None,
+            "errors": ["没有找到可校验的备份文件。"],
+        }
+
+    backup = backups[0]
+    validation = validate_sqlite_backup(backup.path)
+    return {
+        "ok": bool(validation["ok"]),
+        "backup": backup.__dict__,
+        "validation": validation,
+        "errors": list(validation["errors"]),
+    }
 
 
 def restore_sqlite_backup(

@@ -553,6 +553,50 @@ def export_cmd(export_format: str, kind: str, output_dir: Path, user_id: str | N
         click.echo(f"{label}: {result.count} 条 -> {result.path}")
 
 
+@cli.command("verify-backup")
+@click.option("--output", "output_dir", default=PROJECT_ROOT / "data" / "exports",
+              type=click.Path(file_okay=False, path_type=Path),
+              show_default=True, help="备份目录；不传 --path 时校验这里的最新备份")
+@click.option("--path", "backup_path", default=None,
+              type=click.Path(dir_okay=False, path_type=Path),
+              help="校验指定 SQLite 备份文件")
+def verify_backup_cmd(output_dir: Path, backup_path: Path | None) -> None:
+    """只读校验最新或指定 SQLite 备份是否可恢复。"""
+    from src import maintenance
+
+    if backup_path is not None:
+        validation = maintenance.validate_sqlite_backup(backup_path)
+        report = {
+            "ok": bool(validation["ok"]),
+            "backup": {"name": backup_path.name, "path": str(backup_path)},
+            "validation": validation,
+            "errors": list(validation["errors"]),
+        }
+    else:
+        report = maintenance.verify_latest_backup(output_dir)
+
+    if not report["ok"]:
+        _safe_echo("SQLite backup check failed.", err=True)
+        backup = report.get("backup")
+        if backup:
+            _safe_echo(f"backup: {backup['path']}", err=True)
+        for error in report["errors"]:
+            _safe_echo(error, err=True)
+        sys.exit(1)
+
+    backup = report["backup"]
+    validation = report["validation"]
+    counts = validation["counts"]
+    required_tables = "ok" if validation["required_tables_present"] else "missing"
+
+    _safe_echo(f"SQLite backup OK: {backup['path']}")
+    _safe_echo(f"integrity: {validation['integrity_check']}")
+    _safe_echo(f"required tables: {required_tables}")
+    _safe_echo(f"users: {counts['users']}")
+    _safe_echo(f"favorites: {counts['favorites']}")
+    _safe_echo(f"likes: {counts['likes']}")
+
+
 @cli.command("tag")
 @click.argument("item_ids", nargs=-1)
 @click.option("--kind", type=click.Choice(["favorites", "likes"]), default="favorites",

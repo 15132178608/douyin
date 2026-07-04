@@ -179,6 +179,50 @@ def test_validate_sqlite_backup_rejects_non_database_file() -> None:
         assert report["errors"]
 
 
+def test_list_recovery_backups_includes_manual_and_preinstall_backups() -> None:
+    with TemporaryDirectory() as tmp:
+        backup_dir = Path(tmp)
+        manual = backup_dir / "recall-backup-20260704-100000.db"
+        preinstall = backup_dir / "pre-install-recall-20260705-100000.db"
+        ignored = backup_dir / "notes.txt"
+        manual.write_bytes(b"manual")
+        preinstall.write_bytes(b"preinstall")
+        ignored.write_text("ignore", encoding="utf-8")
+
+        items = maintenance.list_recovery_backups(backup_dir, limit=4)
+
+        assert [item.name for item in items] == [
+            "pre-install-recall-20260705-100000.db",
+            "recall-backup-20260704-100000.db",
+        ]
+
+
+def test_verify_latest_backup_validates_newest_recovery_backup() -> None:
+    with TemporaryDirectory() as tmp:
+        backup_dir = Path(tmp)
+        older = backup_dir / "recall-backup-20260704-100000.db"
+        newer = backup_dir / "pre-install-recall-20260705-100000.db"
+        create_test_db(older, favorite_title="older")
+        create_test_db(newer, favorite_title="newer")
+
+        report = maintenance.verify_latest_backup(backup_dir)
+
+        assert report["ok"] is True
+        assert report["backup"]["name"] == "pre-install-recall-20260705-100000.db"
+        assert report["validation"]["counts"]["favorites"] == 1
+        assert report["validation"]["integrity_check"] == "ok"
+        assert report["errors"] == []
+
+
+def test_verify_latest_backup_reports_no_backups() -> None:
+    with TemporaryDirectory() as tmp:
+        report = maintenance.verify_latest_backup(Path(tmp))
+
+        assert report["ok"] is False
+        assert report["backup"] is None
+        assert "没有找到可校验的备份文件。" in report["errors"]
+
+
 def test_restore_sqlite_backup_replaces_target_and_creates_safety_backup() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -218,6 +262,9 @@ if __name__ == "__main__":
         test_enqueue_full_maintenance_adds_sync_index_and_backup_jobs_in_order,
         test_validate_sqlite_backup_reports_counts_and_required_tables,
         test_validate_sqlite_backup_rejects_non_database_file,
+        test_list_recovery_backups_includes_manual_and_preinstall_backups,
+        test_verify_latest_backup_validates_newest_recovery_backup,
+        test_verify_latest_backup_reports_no_backups,
         test_restore_sqlite_backup_replaces_target_and_creates_safety_backup,
     ]
     failed = 0

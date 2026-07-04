@@ -86,7 +86,7 @@
 - Windows 每周自动化：`scripts/run-weekly-maintenance.ps1` + `install-weekly-task.ps1`
 - `recall export`：JSON / Markdown / SQLite backup
 - Web 维护中心：`/maintenance` 汇总服务状态、最近同步、索引、备份、失败任务和版本更新状态，可手动入队标准维护、立即生成 SQLite 备份、校验并恢复已有备份、导出脱敏诊断包
-- 服务生命周期：`recall serve` 写 PID 状态、防重复启动；`recall status` / `recall stop` 管理本地 Web 服务；安装包启动脚本先检查运行状态，并把运行时下载和缓存放到 `D:\codexDownload\douyinclaude-runtime`；Windows 开始菜单提供控制入口、状态、停止、维护中心、诊断、日志、健康检查、陈旧状态修复、立即备份、备份目录和恢复中心快捷方式，控制入口会先显示本地状态摘要；安装器升级前会尽量保存 `data\exports\pre-install-recall-*.db`
+- 服务生命周期：`recall serve` 写 PID 状态、防重复启动；`recall status` / `recall stop` 管理本地 Web 服务；安装包启动脚本先检查运行状态，并把运行时下载和缓存放到 `D:\codexDownload\douyinclaude-runtime`；Windows 开始菜单提供控制入口、状态、停止、维护中心、诊断、日志、健康检查、陈旧状态修复、立即备份、备份目录、恢复中心和最新备份只读校验快捷方式，控制入口会先显示本地状态摘要；安装器升级前会尽量保存 `data\exports\pre-install-recall-*.db`
 - 诊断包导出：`recall diagnose` 生成脱敏 zip，包含环境、服务、任务和日志摘要，排除 `.env`、数据库、浏览器 profile 和登录态
 - 更新检查：`recall update` 和维护中心显示本地版本、最新 GitHub Release 与安装包链接；只读检查，不自动安装
 - 分类整理：合并簇、单条移动到其他簇、未分类桶手动整理
@@ -120,7 +120,7 @@
 3. **doctor 命令扩展**——检查 web、jobs worker、SMTP、浏览器 profile、头像缓存目录、模型缓存
 
 ### 高优：个人数据安全
-4. **备份 / 恢复 UI**——一键备份、恢复前校验和确认恢复已进入维护中心；下一步补默认保留最近 N 份和更清晰的恢复后重启提示
+4. **备份 / 恢复 UI**——一键备份、恢复前校验、确认恢复和最新备份只读恢复演练已进入维护链路；下一步补默认保留最近 N 份和更清晰的恢复后重启提示
 5. **诊断包导出**——已支持脱敏日志、环境、服务、任务状态导出；下一步补更多可读的失败原因解释
 6. **卸载说明**——程序卸载默认保留用户数据，并提醒如何手动备份/删除
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.14
+
+- Added `recall verify-backup` for read-only SQLite backup recovery checks.
+- Added `Douyin Recall Verify Backup` to installed Windows builds so users can validate the latest manual or pre-install backup from the Start Menu.
+- Recovery backup scanning now includes both `recall-backup-*.db` and `pre-install-recall-*.db` files under `data\exports`.
+
+See [docs/releases/v0.1.14.md](docs/releases/v0.1.14.md).
+
 ## v0.1.13
 
 - Added `Douyin Recall Backup Now`, `Douyin Recall Backups`, and `Douyin Recall Restore Center` Start Menu entries for installed Windows builds.

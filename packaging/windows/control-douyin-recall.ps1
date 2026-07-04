@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("menu", "start", "stop", "status", "maintenance", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore")]
+    [ValidateSet("menu", "start", "stop", "status", "maintenance", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore", "verify-backup")]
     [string]$Action = "menu"
 )
 
@@ -389,6 +389,14 @@ function Open-RestoreCenter {
     & $StartScript -OpenPath "/maintenance"
 }
 
+function Verify-LatestBackup {
+    Initialize-RuntimeEnvironment
+    Write-Header "Verify latest backup"
+    Write-Host "Start Menu entry: Douyin Recall Verify Backup"
+    New-Item -ItemType Directory -Path $ExportsDir -Force | Out-Null
+    Invoke-RecallCommand @('verify-backup', '--output', $ExportsDir)
+}
+
 function Invoke-HealthCheck {
     Write-ControlSummary
     Write-Header "Health check"
@@ -491,6 +499,7 @@ function Show-ControlMenu {
         Write-Host "10. Create SQLite backup"
         Write-Host "11. Open backups directory"
         Write-Host "12. Open restore center"
+        Write-Host "13. Verify latest backup"
         Write-Host "0. Exit"
         $choice = Read-Host "Choose"
 
@@ -507,6 +516,7 @@ function Show-ControlMenu {
             "10" { Create-SqliteBackup; Wait-BeforeExit; return }
             "11" { Open-BackupsDirectory; return }
             "12" { Open-RestoreCenter; return }
+            "13" { Verify-LatestBackup; Wait-BeforeExit; return }
             "0" { return }
             default { Write-Host "Invalid choice. Try again." -ForegroundColor Yellow }
         }
@@ -528,6 +538,7 @@ try {
         "backup" { Create-SqliteBackup; Wait-BeforeExit }
         "backups" { Open-BackupsDirectory }
         "restore" { Open-RestoreCenter }
+        "verify-backup" { Verify-LatestBackup; Wait-BeforeExit }
     }
 }
 catch {

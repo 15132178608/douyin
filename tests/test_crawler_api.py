@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import inspect
 import json
+import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import parse_qs
 
 from click.testing import CliRunner
 
+from src import db
 from src.cli import _console_safe, cli
 from src.crawler.douyin import (
     AUTH_QR_REGENERATE_FALLBACK_INTERVAL_S,
@@ -38,6 +40,30 @@ from src.crawler.douyin import (
     _is_login_required_payload,
     _should_refresh_login_screenshot,
 )
+
+
+def create_backup_db(path: Path, *, favorite_title: str = "backup") -> None:
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(db.SCHEMA_SQL)
+    conn.execute("ALTER TABLE favorites ADD COLUMN category_id INTEGER")
+    conn.execute("ALTER TABLE likes ADD COLUMN category_id INTEGER")
+    conn.execute(
+        """
+        INSERT INTO users (id, display_name, created_at)
+        VALUES ('default', '本地默认用户', '2026-07-04 00:00:00')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO favorites (
+            user_id, id, title, first_seen_at, last_seen_at, is_removed
+        ) VALUES ('default', 'fav-1', ?, '2026-07-04', '2026-07-04', 0)
+        """,
+        (favorite_title,),
+    )
+    conn.commit()
+    conn.close()
 
 
 def test_collection_query_contains_cursor_count_and_web_params() -> None:
@@ -248,6 +274,37 @@ def test_cli_exposes_auth_and_hidden_crawl_options() -> None:
     assert "--kind" in categorize.output
     assert "likes" in categorize.output
 
+    verify_backup = runner.invoke(cli, ["verify-backup", "--help"])
+    assert verify_backup.exit_code == 0
+    assert "--output" in verify_backup.output
+    assert "--path" in verify_backup.output
+
+
+def test_verify_backup_cli_reports_missing_backups() -> None:
+    runner = CliRunner()
+    with TemporaryDirectory() as tmp:
+        result = runner.invoke(cli, ["verify-backup", "--output", tmp])
+
+    combined = result.output + getattr(result, "stderr", "")
+    assert result.exit_code == 1
+    assert "没有找到可校验的备份文件。" in combined
+
+
+def test_verify_backup_cli_validates_latest_backup() -> None:
+    runner = CliRunner()
+    with TemporaryDirectory() as tmp:
+        backup_path = Path(tmp) / "recall-backup-20260705-100000.db"
+        create_backup_db(backup_path, favorite_title="valid cli backup")
+
+        result = runner.invoke(cli, ["verify-backup", "--output", tmp])
+
+    assert result.exit_code == 0
+    assert "SQLite backup OK:" in result.output
+    assert "integrity: ok" in result.output
+    assert "required tables: ok" in result.output
+    assert "favorites: 1" in result.output
+    assert str(backup_path) in result.output
+
 
 def test_console_safe_replaces_characters_current_terminal_cannot_encode() -> None:
     assert _console_safe("音乐🙈", encoding="gbk") == "音乐?"
@@ -272,6 +329,8 @@ if __name__ == "__main__":
         test_login_required_payload_detects_common_failures,
         test_crawler_defaults_to_hidden_api_mode,
         test_cli_exposes_auth_and_hidden_crawl_options,
+        test_verify_backup_cli_reports_missing_backups,
+        test_verify_backup_cli_validates_latest_backup,
         test_console_safe_replaces_characters_current_terminal_cannot_encode,
     ]
     failed = 0

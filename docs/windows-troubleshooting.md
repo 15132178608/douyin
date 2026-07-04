@@ -56,6 +56,7 @@ C:\Users\<你的用户名>\AppData\Local\Programs\DouyinRecall\data\logs
 - `Douyin Recall Backup Now`：立即生成 SQLite 备份，写入 `data\exports`。
 - `Douyin Recall Backups`：打开 `data\exports` 备份目录。
 - `Douyin Recall Restore Center`：打开 `/maintenance` 的恢复中心；恢复前仍会校验备份并要求输入确认文字。
+- `Douyin Recall Verify Backup`：只读校验 `data\exports` 里最新的手动备份或安装前备份，不会替换当前数据库。
 
 安装新版时，安装器会尽量在覆盖应用文件前复制当前数据库：
 
@@ -73,12 +74,14 @@ uv run recall stop
 uv run recall status
 uv run recall diagnose
 uv run recall update
+uv run recall verify-backup
 ```
 
 - `uv run recall status`：查看本地 Web 服务是否还在运行、PID 和访问地址。
 - `uv run recall stop`：停止由 `recall serve` 记录的本地 Web 服务，适合处理忘记关闭导致后台占用的问题。
 - `uv run recall diagnose`：导出脱敏诊断包，排查失败任务、服务状态和日志摘要。
 - `uv run recall update`：检查 GitHub Release 上是否有新版安装包；只读检查，不会自动下载或安装。
+- `uv run recall verify-backup`：只读校验最新的 `recall-backup-*.db` 或 `pre-install-recall-*.db` 是否可读取、完整性通过且必要表存在。
 
 如果网页能打开，维护中心在：
 
@@ -129,4 +132,4 @@ uv run recall update
 uv run recall stop
 ```
 
-也可以先点击 `Douyin Recall Backup Now` 手动生成一份备份；安装器本身还会尽量生成 `pre-install-recall-*.db` 安全备份。
+也可以先点击 `Douyin Recall Backup Now` 手动生成一份备份；安装器本身还会尽量生成 `pre-install-recall-*.db` 安全备份。备份生成后可以点击 `Douyin Recall Verify Backup`，或运行 `uv run recall verify-backup` 做一次只读恢复演练。

@@ -1,5 +1,5 @@
 #define MyAppName "Douyin Recall"
-#define MyAppVersion "0.1.13"
+#define MyAppVersion "0.1.14"
 #define MyAppPublisher "xiaojiang"
 
 #ifndef SourceRoot
@@ -43,6 +43,7 @@ Name: "{autoprograms}\Douyin Recall Repair State"; Filename: "{sys}\WindowsPower
 Name: "{autoprograms}\Douyin Recall Backup Now"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""backup"""; WorkingDir: "{app}"
 Name: "{autoprograms}\Douyin Recall Backups"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""backups"""; WorkingDir: "{app}"
 Name: "{autoprograms}\Douyin Recall Restore Center"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""restore"""; WorkingDir: "{app}"
+Name: "{autoprograms}\Douyin Recall Verify Backup"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\control-douyin-recall.ps1"" -Action ""verify-backup"""; WorkingDir: "{app}"
 Name: "{autodesktop}\Douyin Recall"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\packaging\windows\start-douyin-recall.ps1"""; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
