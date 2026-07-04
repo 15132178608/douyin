@@ -695,7 +695,7 @@ def _maintenance_template_context(
     return {
         "page": "maintenance",
         "jobs": jobs.list_jobs(user_id=user_id),
-        "maintenance_status": maintenance.get_maintenance_status(user_id),
+        "maintenance_status": maintenance.get_maintenance_status(user_id, include_update=True),
         "message": message,
         "message_kind": message_kind,
         **_stats("favorites", user_id=user_id),

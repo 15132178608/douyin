@@ -110,6 +110,30 @@ def test_status_reports_last_runs_backups_and_attention_items() -> None:
         assert "latest_likes_crawl_failed" in status["attention_codes"]
 
 
+def test_status_can_include_update_status_for_maintenance_center() -> None:
+    with isolated_maintenance_db() as _conn, TemporaryDirectory() as tmp:
+        status = maintenance.get_maintenance_status(
+            "default",
+            backup_dir=Path(tmp),
+            include_update=True,
+            update_status_getter=lambda: {
+                "local_version": "0.1.6",
+                "latest_version": "0.1.7",
+                "update_available": True,
+                "release_url": "https://github.com/15132178608/douyin/releases/tag/v0.1.7",
+                "asset_name": "DouyinRecallSetup.exe",
+                "asset_url": "https://example.test/DouyinRecallSetup.exe",
+                "checked_at": "2026-07-05T00:00:00+00:00",
+                "error": None,
+            },
+        )
+
+        assert status["update"]["local_version"] == "0.1.6"
+        assert status["update"]["latest_version"] == "0.1.7"
+        assert status["update"]["update_available"] is True
+        assert status["update"]["asset_name"] == "DouyinRecallSetup.exe"
+
+
 def test_enqueue_full_maintenance_adds_sync_index_and_backup_jobs_in_order() -> None:
     with isolated_maintenance_db() as conn:
         job_ids = maintenance.enqueue_full_maintenance("default", max_pages=12)
@@ -190,6 +214,7 @@ def test_restore_sqlite_backup_replaces_target_and_creates_safety_backup() -> No
 if __name__ == "__main__":
     tests = [
         test_status_reports_last_runs_backups_and_attention_items,
+        test_status_can_include_update_status_for_maintenance_center,
         test_enqueue_full_maintenance_adds_sync_index_and_backup_jobs_in_order,
         test_validate_sqlite_backup_reports_counts_and_required_tables,
         test_validate_sqlite_backup_rejects_non_database_file,

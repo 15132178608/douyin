@@ -10,6 +10,7 @@ from typing import Any
 
 from src import jobs
 from src import server_runtime
+from src import update_check
 from src.config import PROJECT_ROOT
 from src.content.kinds import get_content_kind, list_content_kinds
 from src.db import get_connection
@@ -158,6 +159,8 @@ def get_maintenance_status(
     user_id: str = DEFAULT_USER_ID,
     *,
     backup_dir: Path | None = None,
+    include_update: bool = False,
+    update_status_getter=None,
 ) -> dict:
     uid = normalize_user_id(user_id)
     backups = list_sqlite_backups(backup_dir)
@@ -179,6 +182,11 @@ def get_maintenance_status(
         if summary["needs_index"]:
             attention_codes.append(f"{key}_needs_index")
 
+    update_status = None
+    if include_update:
+        getter = update_status_getter or update_check.get_cached_update_status
+        update_status = getter()
+
     return {
         "user_id": uid,
         "contents": contents,
@@ -193,6 +201,7 @@ def get_maintenance_status(
             "latest": backups[0].__dict__ if backups else None,
             "items": [item.__dict__ for item in backups],
         },
+        "update": update_status,
         "attention_codes": attention_codes,
         "needs_attention": bool(attention_codes),
     }

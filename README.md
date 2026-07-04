@@ -45,6 +45,7 @@
 | **维护中心** | ✅ | `/maintenance` 集中查看服务、同步、索引、备份、失败任务，并可手动入队标准维护、校验和恢复 SQLite 备份、导出诊断包 |
 | **服务生命周期** | ✅ | `recall serve` 写 PID 状态、防重复启动；`recall status` / `recall stop` 管理本地 Web 服务 |
 | **诊断包** | ✅ | `recall diagnose` 导出脱敏环境、服务、任务和日志摘要，排除 `.env`、数据库和浏览器登录态 |
+| **版本更新检查** | ✅ | `recall update` 和 `/maintenance` 显示本地版本、最新 Release 和安装包链接；只读检查，不自动安装 |
 | **整理 / 清理** | ✅ | 分类合并、单条移动分类、批量取消、收藏/喜欢重复视图 |
 | **体验增强** | ✅ | 头像缓存代理、folder 信号注入、Web 回忆角、主题 digest、Ollama/本地二级标签 |
 | **服务器部署** | ⏸ 暂缓 | 不作为当前个人工具路线的优先事项 |
@@ -124,6 +125,7 @@ uv run recall serve
 uv run recall status
 uv run recall stop
 uv run recall diagnose
+uv run recall update
 ```
 
 ### 8. 每周收 digest
@@ -151,7 +153,7 @@ uv run recall digest --dry-run      # 预览 HTML
 
 首次同步和首次索引可能需要较长时间；索引阶段会下载本地模型。数据仍保存在本机 `data/` 目录，安装包不会上传你的数据库、登录资料或浏览器 profile。
 
-日常维护入口在 `/maintenance`：它会显示服务状态、最近同步、失败任务和 SQLite 备份状态，并提供“执行一次标准维护”“立即生成 SQLite 备份”“校验并准备恢复”和“导出诊断包”操作。恢复前会先做 SQLite 完整性和必要表检查，并要求输入确认文字；恢复时会先额外保存一份恢复前安全备份。诊断包只包含脱敏环境、服务、任务和日志摘要，不包含 `.env`、数据库、浏览器 profile 或登录态。安装包启动脚本会先检查 `recall status`，避免重复启动多个本地 Web 服务；运行时下载和缓存会放到 `D:\codexDownload\douyinclaude-runtime`。
+日常维护入口在 `/maintenance`：它会显示服务状态、最近同步、失败任务、SQLite 备份状态和版本更新状态，并提供“执行一次标准维护”“立即生成 SQLite 备份”“校验并准备恢复”和“导出诊断包”操作。恢复前会先做 SQLite 完整性和必要表检查，并要求输入确认文字；恢复时会先额外保存一份恢复前安全备份。诊断包只包含脱敏环境、服务、任务和日志摘要，不包含 `.env`、数据库、浏览器 profile 或登录态。安装包启动脚本会先检查 `recall status`，避免重复启动多个本地 Web 服务；运行时下载和缓存会放到 `D:\codexDownload\douyinclaude-runtime`。
 
 如果安装后打不开、首次下载失败、SmartScreen 拦截或忘记关闭后台服务，启动窗口会显示常用恢复命令和日志位置；完整处理步骤见 [`docs/windows-troubleshooting.md`](./docs/windows-troubleshooting.md)。
 
@@ -179,7 +181,7 @@ uv run recall digest --dry-run      # 预览 HTML
 
 ---
 
-## CLI 命令一览（20 个）
+## CLI 命令一览（21 个）
 
 | 命令 | 阶段 | 说明 |
 |---|---|---|
@@ -196,6 +198,7 @@ uv run recall digest --dry-run      # 预览 HTML
 | `status` | 运维 | 查看本地 Web 服务是否正在运行、PID 和访问地址 |
 | `stop` | 运维 | 停止由 `recall serve` 记录的本地 Web 服务 |
 | `diagnose` | 运维 | 导出脱敏诊断包，排除 `.env`、数据库和浏览器登录态 |
+| `update` | 运维 | 检查 GitHub Release 最新安装包；不会自动下载或安装 |
 | `uncollect` | M5 | 通过抖音 API 取消收藏一条 |
 | `unlike` | M5 | 通过抖音 API 取消喜欢一条 |
 | `export` | 运维 | 导出 JSON / Markdown / SQLite 备份 |

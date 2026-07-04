@@ -46,11 +46,13 @@ uv run recall status
 uv run recall stop
 uv run recall status
 uv run recall diagnose
+uv run recall update
 ```
 
 - `uv run recall status`：查看本地 Web 服务是否还在运行、PID 和访问地址。
 - `uv run recall stop`：停止由 `recall serve` 记录的本地 Web 服务，适合处理忘记关闭导致后台占用的问题。
 - `uv run recall diagnose`：导出脱敏诊断包，排查失败任务、服务状态和日志摘要。
+- `uv run recall update`：检查 GitHub Release 上是否有新版安装包；只读检查，不会自动下载或安装。
 
 如果网页能打开，维护中心在：
 
@@ -82,3 +84,17 @@ uv run recall stop
 2. 确认 `D:\codexDownload\douyinclaude-runtime` 可以写入。
 3. 运行 `uv run recall diagnose` 生成诊断包。
 4. 带上 `data\logs\start-douyin-recall.log` 和诊断包摘要继续排查。
+
+## 想确认是否有新版
+
+在安装目录运行：
+
+```powershell
+uv run recall update
+```
+
+它只会显示当前版本、最新 Release 和 `DouyinRecallSetup.exe` 下载链接，不会自动替换文件。安装新版前建议先运行：
+
+```powershell
+uv run recall stop
+```

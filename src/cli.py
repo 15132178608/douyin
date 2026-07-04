@@ -25,6 +25,7 @@ from src.config import PROJECT_ROOT, settings
 from src import db as db_module
 from src import diagnostics
 from src import server_runtime
+from src import update_check
 
 
 # ============================================================
@@ -1007,6 +1008,39 @@ def diagnose_cmd(output_dir: Path) -> None:
     """导出脱敏诊断包，不包含 .env、数据库或浏览器登录态。"""
     result = diagnostics.create_diagnostic_bundle(output_dir)
     click.echo(f"诊断包已生成：{result.path}")
+
+
+@cli.command("update")
+@click.option("--no-network", is_flag=True, default=False,
+              help="只显示当前版本，不联网检查 GitHub Release")
+@click.option("--force", is_flag=True, default=False,
+              help="忽略 1 小时缓存，重新检查 GitHub Release")
+def update_cmd(no_network: bool, force: bool) -> None:
+    """检查新版安装包；不会自动下载或安装。"""
+    if no_network:
+        click.echo(f"当前版本: {update_check.read_local_version()}")
+        click.echo("未联网检查最新版本。")
+        return
+
+    status = update_check.get_cached_update_status(force=force)
+    click.echo(f"当前版本: {status['local_version']}")
+    if status.get("latest_version"):
+        click.echo(f"最新版本: {status['latest_version']}")
+    if status.get("error"):
+        click.echo(f"更新检查失败: {status['error']}")
+        click.echo(f"Release 页面: {status.get('release_url')}")
+        return
+    if status.get("update_available"):
+        click.echo("发现新版安装包。这个命令只检查更新，不会自动安装。")
+        if status.get("asset_url"):
+            click.echo(f"{status['asset_name']}: {status['asset_url']}")
+        if status.get("release_url"):
+            click.echo(f"Release 页面: {status['release_url']}")
+        click.echo("安装前建议先运行: uv run recall stop")
+    else:
+        click.echo("当前已是最新版本。")
+        if status.get("release_url"):
+            click.echo(f"Release 页面: {status['release_url']}")
 
 
 @cli.command("doctor")

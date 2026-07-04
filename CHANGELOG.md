@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.7
+
+- Added a read-only GitHub Release update checker with a one-hour cache.
+- Added `uv run recall update` to show the local version, latest Release, and installer link without downloading or installing anything.
+- Added a version/update card to `/maintenance` so local installs can see whether a newer Windows installer is available.
+
+See [docs/releases/v0.1.7.md](docs/releases/v0.1.7.md).
+
 ## v0.1.6
 
 - Installer launch failures now print recovery commands for `recall status`, `recall stop`, and `recall diagnose`.

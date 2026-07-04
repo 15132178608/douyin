@@ -48,6 +48,32 @@
   </section>
 
   <section class="maintenance-card">
+    <h2>版本更新</h2>
+    {% set update = maintenance_status.update %}
+    {% if update %}
+      <p class="maintenance-main">当前版本 {{ update.local_version }}</p>
+      {% if update.error %}
+        <p class="maintenance-meta">无法检查最新版本：{{ update.error }}</p>
+        <p class="maintenance-meta">可手动打开 GitHub Releases，或运行 `uv run recall update`。</p>
+      {% elif update.update_available %}
+        <p class="maintenance-meta">最新版本 {{ update.latest_version }} 可安装。</p>
+        {% if update.asset_url %}
+          <p class="maintenance-meta"><a href="{{ update.asset_url }}" target="_blank" rel="noopener">下载 DouyinRecallSetup.exe</a></p>
+        {% elif update.release_url %}
+          <p class="maintenance-meta"><a href="{{ update.release_url }}" target="_blank" rel="noopener">打开 Release 页面</a></p>
+        {% endif %}
+        <p class="maintenance-meta">安装前可先运行 `uv run recall stop`，数据和登录资料不会随安装包覆盖。</p>
+      {% else %}
+        <p class="maintenance-meta">已是最新版本{% if update.latest_version %}（{{ update.latest_version }}）{% endif %}。</p>
+        <p class="maintenance-meta">手动检查：`uv run recall update`。</p>
+      {% endif %}
+    {% else %}
+      <p class="maintenance-main">未检查更新</p>
+      <p class="maintenance-meta">可运行 `uv run recall update` 查看最新安装包。</p>
+    {% endif %}
+  </section>
+
+  <section class="maintenance-card">
     <h2>最近备份</h2>
     {% if maintenance_status.backups.latest %}
       <p class="maintenance-main">{{ maintenance_status.backups.latest.name }}</p>

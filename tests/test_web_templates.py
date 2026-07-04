@@ -146,7 +146,11 @@ def test_maintenance_center_exposes_backup_and_full_maintenance_actions() -> Non
     assert 'hx-get="/maintenance/status"' in jobs_template
     assert "最近同步" in maintenance_status
     assert "服务状态" in maintenance_status
+    assert "版本更新" in maintenance_status
     assert "maintenance_status.server" in maintenance_status
+    assert "maintenance_status.update" in maintenance_status
+    assert "DouyinRecallSetup.exe" in maintenance_status
+    assert "uv run recall update" in maintenance_status
     assert "最近备份" in maintenance_status
     assert "maintenance_status.backups.items" not in maintenance_status
     assert 'maintenance_status.backups["items"]' in maintenance_status
@@ -181,6 +185,15 @@ def test_cli_exposes_diagnostic_bundle_command() -> None:
     assert 'from src import diagnostics' in cli_source
     assert '@cli.command("diagnose")' in cli_source
     assert "create_diagnostic_bundle" in cli_source
+
+
+def test_cli_exposes_update_check_command() -> None:
+    cli_source = (ROOT / "src" / "cli.py").read_text(encoding="utf-8")
+
+    assert 'from src import update_check' in cli_source
+    assert '@cli.command("update")' in cli_source
+    assert "get_cached_update_status" in cli_source
+    assert "--no-network" in cli_source
 
 
 def test_setup_page_contains_first_run_sections_and_reuses_existing_endpoints() -> None:

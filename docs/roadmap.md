@@ -85,9 +85,10 @@
 - jobs 队列：失败自动重试 + 指数退避 + stale running 恢复 + `/jobs` 状态页
 - Windows 每周自动化：`scripts/run-weekly-maintenance.ps1` + `install-weekly-task.ps1`
 - `recall export`：JSON / Markdown / SQLite backup
-- Web 维护中心：`/maintenance` 汇总服务状态、最近同步、索引、备份、失败任务，可手动入队标准维护、立即生成 SQLite 备份、校验并恢复已有备份、导出脱敏诊断包
+- Web 维护中心：`/maintenance` 汇总服务状态、最近同步、索引、备份、失败任务和版本更新状态，可手动入队标准维护、立即生成 SQLite 备份、校验并恢复已有备份、导出脱敏诊断包
 - 服务生命周期：`recall serve` 写 PID 状态、防重复启动；`recall status` / `recall stop` 管理本地 Web 服务；安装包启动脚本先检查运行状态，并把运行时下载和缓存放到 `D:\codexDownload\douyinclaude-runtime`
 - 诊断包导出：`recall diagnose` 生成脱敏 zip，包含环境、服务、任务和日志摘要，排除 `.env`、数据库、浏览器 profile 和登录态
+- 更新检查：`recall update` 和维护中心显示本地版本、最新 GitHub Release 与安装包链接；只读检查，不自动安装
 - 分类整理：合并簇、单条移动到其他簇、未分类桶手动整理
 - 批量清理：批量取消收藏 / 喜欢入队，复用 jobs 节流执行
 - 重复视图：`/duplicates` 显示收藏和喜欢重复的视频
