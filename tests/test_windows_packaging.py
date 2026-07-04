@@ -8,10 +8,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGING = ROOT / "packaging" / "windows"
 WORKFLOW = ROOT / ".github" / "workflows" / "windows-installer.yml"
+RELEASE_NOTES_DIR = ROOT / "docs" / "releases"
 
 
 def read(name: str) -> str:
     return (PACKAGING / name).read_text(encoding="utf-8")
+
+
+def project_version() -> str:
+    project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(r'^version = "([^"]+)"', project, re.MULTILINE)
+    assert match is not None
+    return match.group(1)
 
 
 class WindowsPackagingTests(unittest.TestCase):
@@ -42,6 +50,8 @@ class WindowsPackagingTests(unittest.TestCase):
         launcher = read("start-douyin-recall.ps1")
 
         self.assertIn("D:\\codexDownload", launcher)
+        self.assertIn("首次启动会下载 Python 依赖和 Playwright 浏览器", launcher)
+        self.assertIn("Windows SmartScreen 可能提示风险", launcher)
         self.assertIn("$DownloadRoot", launcher)
         self.assertIn("$env:UV_CACHE_DIR", launcher)
         self.assertIn("$env:PLAYWRIGHT_BROWSERS_PATH", launcher)
@@ -67,10 +77,28 @@ class WindowsPackagingTests(unittest.TestCase):
 
         self.assertIn("tags:", workflow)
         self.assertIn("'v*'", workflow)
+        self.assertIn("CHANGELOG.md", workflow)
         self.assertIn("contents: write", workflow)
         self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
-        self.assertIn("gh release create", workflow)
+        self.assertIn('"release", "create"', workflow)
+        self.assertIn("& gh @releaseArgs", workflow)
+        self.assertIn("docs/releases/${env:GITHUB_REF_NAME}.md", workflow)
+        self.assertIn("--notes-file", workflow)
         self.assertIn("packaging/windows/out/DouyinRecallSetup.exe", workflow)
+
+    def test_release_notes_document_installer_caveats_and_local_ops(self) -> None:
+        version = project_version()
+        notes_path = RELEASE_NOTES_DIR / f"v{version}.md"
+        self.assertTrue(notes_path.exists(), f"missing release notes: {notes_path}")
+        notes = notes_path.read_text(encoding="utf-8")
+
+        self.assertIn(f"v{version}", notes)
+        self.assertIn("未签名", notes)
+        self.assertIn("SmartScreen", notes)
+        self.assertIn("首次启动", notes)
+        self.assertIn("D:\\codexDownload\\douyinclaude-runtime", notes)
+        self.assertIn("recall stop", notes)
+        self.assertIn("/maintenance", notes)
 
 
 if __name__ == "__main__":

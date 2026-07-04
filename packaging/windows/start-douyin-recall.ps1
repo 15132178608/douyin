@@ -73,6 +73,11 @@ try {
     $env:UV_CACHE_DIR = $UvCacheDir
     $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightBrowsersDir
 
+    Write-Host ""
+    Write-Host "提示：当前安装包未签名，Windows SmartScreen 可能提示风险；请只使用 GitHub Release 页面下载的安装包。"
+    Write-Host "提示：首次启动会下载 Python 依赖和 Playwright 浏览器，缓存目录：$DownloadRoot"
+    Write-Host "提示：首次生成搜索索引时还会下载本地模型，耗时取决于网络。"
+
     if (-not (Test-Path $EnvPath)) {
         if (-not (Test-Path $EnvExamplePath)) {
             throw "Missing .env.example in $AppRoot"

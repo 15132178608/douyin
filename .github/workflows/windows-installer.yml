@@ -13,6 +13,7 @@ on:
       - "src/**"
       - "scripts/**"
       - "docs/**"
+      - "CHANGELOG.md"
       - "README.md"
       - ".env.example"
       - "pyproject.toml"
@@ -49,7 +50,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${env:GITHUB_REF_NAME}" `
-            "packaging/windows/out/DouyinRecallSetup.exe" `
-            --title "${env:GITHUB_REF_NAME}" `
-            --notes "Windows installer for Douyin Recall ${env:GITHUB_REF_NAME}."
+          $notesPath = "docs/releases/${env:GITHUB_REF_NAME}.md"
+          $releaseArgs = @(
+            "release", "create", "${env:GITHUB_REF_NAME}",
+            "packaging/windows/out/DouyinRecallSetup.exe",
+            "--title", "${env:GITHUB_REF_NAME}"
+          )
+          if (Test-Path $notesPath) {
+            $releaseArgs += @("--notes-file", $notesPath)
+          }
+          else {
+            $releaseArgs += @("--notes", "Windows installer for Douyin Recall ${env:GITHUB_REF_NAME}.")
+          }
+          & gh @releaseArgs
