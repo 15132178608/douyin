@@ -242,7 +242,7 @@ def test_service_audit_identifies_recorded_service_owning_port() -> None:
         assert audit["action"] == "stop"
         assert audit["recorded_pid"] == 1111
         assert audit["port_owner_pid"] == 1111
-        assert "uv run recall stop" in audit["next_step"]
+        assert "uv run python -m src.cli stop" in audit["next_step"]
 
 
 def test_service_audit_identifies_external_listener_without_state() -> None:
@@ -258,7 +258,7 @@ def test_service_audit_identifies_external_listener_without_state() -> None:
         assert audit["action"] == "inspect_external"
         assert audit["recorded_pid"] is None
         assert audit["port_owner_pid"] == 2222
-        assert "不要用 recall stop" in audit["next_step"]
+        assert "不要用 python -m src.cli stop" in audit["next_step"]
 
 
 def test_service_audit_identifies_stale_record() -> None:
@@ -349,7 +349,7 @@ def test_status_command_prints_service_audit_guidance() -> None:
         "recorded_pid": 1111,
         "port_owner_pid": 1111,
         "message": "Recorded Douyin Recall service owns port 8000.",
-        "next_step": "uv run recall stop",
+        "next_step": "uv run python -m src.cli stop",
         "status": status,
     }
 
@@ -360,7 +360,7 @@ def test_status_command_prints_service_audit_guidance() -> None:
     assert result.exit_code == 0
     assert "Service audit: own_service_running" in result.output
     assert "Port owner PID: 1111" in result.output
-    assert "Next step: uv run recall stop" in result.output
+    assert "Next step: uv run python -m src.cli stop" in result.output
 
 
 def test_windows_terminator_uses_force_and_raises_on_taskkill_failure() -> None:
@@ -387,6 +387,39 @@ def test_windows_terminator_uses_force_and_raises_on_taskkill_failure() -> None:
     assert calls == [["taskkill", "/PID", "8888", "/T", "/F"]]
 
 
+def test_windows_process_checker_tolerates_non_utf8_tasklist_output() -> None:
+    calls: list[list[str]] = []
+
+    class Result:
+        returncode = 0
+        stdout = b'\xff\xfe"python.exe","1234","Console","1","10,000 K"\r\n'
+        stderr = b""
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        assert kwargs["capture_output"] is True
+        assert kwargs["check"] is False
+        assert "text" not in kwargs or kwargs["text"] is False
+        return Result()
+
+    with patch.object(server_runtime.sys, "platform", "win32"):
+        with patch.object(server_runtime.subprocess, "run", fake_run):
+            assert server_runtime.is_process_running(1234) is True
+
+    assert calls == [["tasklist", "/FI", "PID eq 1234", "/FO", "CSV", "/NH"]]
+
+
+def test_windows_process_checker_handles_missing_stdout_without_crashing() -> None:
+    class Result:
+        returncode = 1
+        stdout = None
+        stderr = b"\xff"
+
+    with patch.object(server_runtime.sys, "platform", "win32"):
+        with patch.object(server_runtime.subprocess, "run", lambda *args, **kwargs: Result()):
+            assert server_runtime.is_process_running(1234) is False
+
+
 if __name__ == "__main__":
     tests = [
         test_write_and_read_server_state_round_trips_pid_and_url,
@@ -408,6 +441,8 @@ if __name__ == "__main__":
         test_service_audit_identifies_clear_port_without_state,
         test_status_command_prints_service_audit_guidance,
         test_windows_terminator_uses_force_and_raises_on_taskkill_failure,
+        test_windows_process_checker_tolerates_non_utf8_tasklist_output,
+        test_windows_process_checker_handles_missing_stdout_without_crashing,
     ]
     failed = 0
     for test in tests:

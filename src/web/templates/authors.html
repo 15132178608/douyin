@@ -32,6 +32,6 @@
   {% endfor %}
 </div>
 {% else %}
-<div class="empty">还没有{{ content_label }}数据。先跑 <code>recall {{ 'crawl' if content_kind == 'favorites' else 'crawl-likes' }}</code>。</div>
+<div class="empty">还没有{{ content_label }}数据。同步完成后会按作者自动整理到这里。</div>
 {% endif %}
 {% endblock %}

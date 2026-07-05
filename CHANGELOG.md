@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.20
+
+- First-run setup now opens directly to Douyin QR binding and automatically queues sync/index work after login.
+- Existing 收藏/喜欢 items stay visible during background sync, with consistent progress banners and lightweight local animation instead of full-list polling.
+- Installed-build QA now preserves the real Inno Setup install registration while testing isolated installs, preventing QA directories from becoming the user's active install location.
+
+See [docs/releases/v0.1.20.md](docs/releases/v0.1.20.md).
+
 ## v0.1.19
 
 - Windows startup and `Douyin Recall Prepare Runtime` now print coarse step progress, so first-run dependency setup shows which step is running and which steps may take several minutes.

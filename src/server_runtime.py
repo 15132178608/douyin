@@ -113,10 +113,14 @@ def is_process_running(pid: int) -> bool:
         result = subprocess.run(
             ["tasklist", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"],
             capture_output=True,
-            text=True,
             check=False,
         )
-        return str(pid) in result.stdout
+        stdout = result.stdout or b""
+        if isinstance(stdout, bytes):
+            text = stdout.decode("utf-8", errors="ignore")
+        else:
+            text = str(stdout)
+        return str(pid) in text
     try:
         os.kill(pid, 0)
         return True
@@ -189,13 +193,13 @@ def get_service_audit(
                 "clear",
                 "start",
                 f"端口 {port} 没有后台 Web 服务占用。",
-                "需要使用时运行 uv run recall serve，或点击 Douyin Recall。",
+                "需要使用时运行 uv run python -m src.cli serve，或点击 Douyin Recall。",
             )
         return audit(
             "external_listener",
             "inspect_external",
             f"端口 {port} 正被 pid={port_owner_pid} 占用，但没有本项目服务记录。",
-            f"不要用 recall stop 结束未知进程；请先确认 pid={port_owner_pid}，或修改 .env 的 WEB_PORT 后重试。",
+            f"不要用 python -m src.cli stop 结束未知进程；请先确认 pid={port_owner_pid}，或修改 .env 的 WEB_PORT 后重试。",
         )
 
     if status["state"] == "stale":
@@ -204,13 +208,13 @@ def get_service_audit(
                 "stale_record",
                 "repair",
                 f"发现陈旧服务记录 pid={recorded_pid}，端口 {port} 没有监听。",
-                "运行 uv run recall stop，或点击 Douyin Recall Repair State 清理陈旧状态。",
+                "运行 uv run python -m src.cli stop，或点击 Douyin Recall Repair State 清理陈旧状态。",
             )
         return audit(
             "stale_record_with_listener",
             "repair",
             f"服务记录 pid={recorded_pid} 已陈旧，但端口 {port} 正被 pid={port_owner_pid} 占用。",
-            f"先运行 uv run recall stop 或 Douyin Recall Repair State 清理项目状态；不要结束 pid={port_owner_pid}，除非你确认它是可关闭的进程。",
+            f"先运行 uv run python -m src.cli stop 或 Douyin Recall Repair State 清理项目状态；不要结束 pid={port_owner_pid}，除非你确认它是可关闭的进程。",
         )
 
     if port_owner_pid is None:
@@ -218,20 +222,20 @@ def get_service_audit(
             "record_without_listener",
             "repair",
             f"服务记录 pid={recorded_pid} 仍存在，但端口 {port} 没有监听。",
-            "运行 uv run recall stop，或点击 Douyin Recall Repair State 清理状态，然后重新检查。",
+            "运行 uv run python -m src.cli stop，或点击 Douyin Recall Repair State 清理状态，然后重新检查。",
         )
     if recorded_pid is not None and int(port_owner_pid) == int(recorded_pid):
         return audit(
             "own_service_running",
             "stop",
             f"Douyin Recall 记录的服务 pid={recorded_pid} 正在占用端口 {port}。",
-            "运行 uv run recall stop，或点击 Douyin Recall Stop Service。",
+            "运行 uv run python -m src.cli stop，或点击 Douyin Recall Stop Service。",
         )
     return audit(
         "record_port_mismatch",
         "repair",
         f"服务记录 pid={recorded_pid} 与端口 {port} 的 owner pid={port_owner_pid} 不一致。",
-        f"运行 uv run recall stop 或 Douyin Recall Repair State 清理项目状态；不要结束 pid={port_owner_pid}，除非你确认它是可关闭的进程。",
+        f"运行 uv run python -m src.cli stop 或 Douyin Recall Repair State 清理项目状态；不要结束 pid={port_owner_pid}，除非你确认它是可关闭的进程。",
     )
 
 
@@ -275,11 +279,20 @@ def terminate_process(pid: int) -> None:
         result = subprocess.run(
             ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
             capture_output=True,
-            text=True,
             check=False,
         )
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip()
+            stderr = result.stderr or b""
+            stdout = result.stdout or b""
+            if isinstance(stderr, bytes):
+                stderr_text = stderr.decode("utf-8", errors="ignore")
+            else:
+                stderr_text = str(stderr)
+            if isinstance(stdout, bytes):
+                stdout_text = stdout.decode("utf-8", errors="ignore")
+            else:
+                stdout_text = str(stdout)
+            detail = (stderr_text or stdout_text or "").strip()
             raise RuntimeError(f"taskkill failed for pid={int(pid)}: {detail}")
         return
     os.kill(pid, signal.SIGTERM)

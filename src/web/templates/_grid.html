@@ -1,5 +1,8 @@
 {% if items %}
 {% set show_batch_select = true %}
+{% if work_state %}
+  {% include "_work_progress.html" %}
+{% endif %}
 {% if batch_action_url is defined %}
 <form id="batch-action-form"
       class="batch-toolbar"
@@ -44,5 +47,5 @@
 </div>
 {% include "_pagination.html" %}
 {% else %}
-<div class="empty">{{ empty_msg or "没找到。" }}</div>
+{% include "_empty_state.html" %}
 {% endif %}

@@ -56,6 +56,32 @@ def test_batch_selection_has_persistent_state_and_bulk_actions() -> None:
     assert "path.indexOf(\"/batch/unlike\")" in base
 
 
+def test_empty_content_states_are_user_facing_not_cli_instructions() -> None:
+    combined = "\n".join(
+        [
+            read_template("_grid.html"),
+            read_template("_empty_state.html"),
+            read_template("authors.html"),
+            read_template("timeline.html"),
+        ]
+    )
+    base = read_template("base.html")
+    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+
+    assert "recall crawl" not in combined
+    assert "recall crawl-likes" not in combined
+    assert "正在整理" in app_source
+    assert "后台同步完成后会自动出现在这里" in app_source
+    assert "同步{{ content_label }}" in combined
+    assert 'hx-get="{{ empty_state.sync_url }}"' in combined
+    assert 'hx-post="/jobs/sync"' in combined
+    assert "去维护中心" in combined
+    assert "empty-panel" in base
+    assert "emptySpin" in base
+    assert "def _empty_state_context" in app_source
+    assert '"/likes/empty-status"' in app_source
+
+
 def test_card_layout_keeps_note_below_and_removes_inline_category_picker() -> None:
     card = read_template("_card.html")
     base = read_template("base.html")
@@ -92,6 +118,14 @@ def test_web_startup_does_not_warm_uncollect_bridge_or_lock_profile() -> None:
     assert "_uncollect_worker.warmup" not in startup_block
     assert "uncollect-bridge-warmup" not in startup_block
     assert "jobs.run_forever" in startup_block
+
+
+def test_web_startup_recovers_interrupted_jobs_before_worker_loop() -> None:
+    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    startup_block = app_source.split("def _start_background_workers", 1)[1].split("def _maybe_prewarm_first_run_auth", 1)[0]
+
+    assert "jobs.recover_stale_running_jobs(stale_after_seconds=0)" in startup_block
+    assert startup_block.index("jobs.recover_stale_running_jobs(stale_after_seconds=0)") < startup_block.index("jobs.run_forever")
 
 
 def test_topbar_does_not_show_or_poll_uncollect_bridge_status() -> None:
@@ -150,7 +184,7 @@ def test_maintenance_center_exposes_backup_and_full_maintenance_actions() -> Non
     assert "maintenance_status.server" in maintenance_status
     assert "maintenance_status.update" in maintenance_status
     assert "DouyinRecallSetup.exe" in maintenance_status
-    assert "uv run recall update" in maintenance_status
+    assert "uv run python -m src.cli update" in maintenance_status
     assert "最近备份" in maintenance_status
     assert "抖音登录" in maintenance_status
     assert "登录态可能过期" in maintenance_status
@@ -201,32 +235,194 @@ def test_cli_exposes_update_check_command() -> None:
 
 
 def test_setup_page_contains_first_run_sections_and_reuses_existing_endpoints() -> None:
-    setup = read_template("setup.html") + read_template("_auth_status.html")
-    setup_status = read_template("_setup_status.html")
+    setup = (
+        read_template("setup.html")
+        + read_template("_setup_auth_status.html")
+        + read_template("_setup_scan_state.html")
+        + read_template("_setup_success_motion.html")
+    )
     app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
 
-    assert "本地环境" in setup
-    assert "绑定抖音账号" in setup
-    assert "同步数据" in setup
-    assert "生成搜索索引" in setup
-    assert "完成" in setup
-    assert 'hx-post="/auth/start"' in setup
-    assert 'hx-post="/jobs/sync"' in setup
-    assert 'hx-post="/jobs/index"' in setup
-    assert 'hx-get="/setup/status"' in setup
-    assert "favorites.total" in setup_status
-    assert "likes.total" in setup_status
+    assert "扫码登录抖音" in setup
+    assert "打开抖音 App 扫一扫" in setup
+    assert "正在生成二维码" in setup
+    assert 'hx-trigger="every 1s"' in setup
+    assert "auth_status in ('starting', 'qr_ready')" not in setup
+    assert "auth_status == 'starting'" in setup
+    assert 'hx-target="#setup-auth-status-area"' in setup
+    assert "启动浏览器" not in setup
+    assert "后台队列" not in setup
+    assert "返回首页" not in setup
+    assert "自动整理进度" not in setup
+    assert 'hx-post="/setup/auth-start"' in setup
+    assert 'hx-get="/setup/auth-status"' in setup
+    assert 'hx-get="/setup/scan-state?qr={{ qr_version }}"' in setup
+    assert 'hx-post="/jobs/sync"' not in setup
+    assert 'hx-post="/jobs/index"' not in setup
+    assert 'hx-get="/setup/status"' not in setup
+    assert "_ensure_douyin_auth_started(user_id)" in app_source
+    assert "_enqueue_first_run_jobs(user_id)" in app_source
+    assert '"/setup/auth-start"' in app_source
+    assert '"/setup/auth-status"' in app_source
+    assert '"/setup/scan-state"' in app_source
     assert '"/setup"' in app_source
     assert "get_onboarding_status" in app_source
 
 
-def test_home_empty_state_links_to_setup() -> None:
+def test_setup_scan_waiting_status_does_not_repaint_while_polling() -> None:
+    setup = (
+        read_template("setup.html")
+        + read_template("_setup_auth_status.html")
+        + read_template("_setup_scan_state.html")
+        + read_template("_setup_success_motion.html")
+    )
+    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    scan_endpoint = app_source.split("async def setup_scan_state_fragment", 1)[1].split(
+        "\n\n@app.", 1
+    )[0]
+
+    assert 'id="setup-scan-state"' in setup
+    assert 'id="setup-scan-poller"' in setup
+    assert 'hx-target="#setup-scan-state"' not in setup
+    assert 'hx-target="#setup-auth-status-area"' in setup
+    assert "Response(status_code=204)" in scan_endpoint
+    assert 'context["auth_status"] == "qr_ready"' in scan_endpoint
+    assert 'context["auth_status"] == "confirmed"' in scan_endpoint
+    assert 'state == "confirmed"' in scan_endpoint
+    assert '"_setup_auth_status.html"' in scan_endpoint
+
+
+def test_setup_auth_shows_confirmed_state_before_background_sync_finishes() -> None:
+    setup = (
+        read_template("_setup_auth_status.html")
+        + read_template("_setup_scan_state.html")
+        + read_template("_setup_success_motion.html")
+    )
+    base = read_template("base.html")
+    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    auth_worker = app_source.split("def _run_douyin_auth", 1)[1].split(
+        "def _ensure_douyin_auth_started", 1
+    )[0]
+
+    assert "auth_status in ('confirmed', 'success')" in setup
+    assert "setup-success-motion" in setup
+    assert "setup-success-ring" in setup
+    assert "setup-sync-dots" in setup
+    assert "data-auth-success" in setup
+    assert "@keyframes setupSuccessIn" in base
+    assert "@keyframes setupSuccessRipple" in base
+    assert "@keyframes setupSyncDot" in base
+    assert "prefers-reduced-motion: reduce" in base
+    assert 'hx-get="/setup/scan-state?state=confirmed"' in setup
+    assert 'status": "confirmed"' in auth_worker
+    assert "def on_login_confirmed" in auth_worker
+    assert "on_login_confirmed=on_login_confirmed" in auth_worker
+    assert '"confirmed", "success", "failed"' in app_source
+    assert auth_worker.index("on_login_confirmed=on_login_confirmed") < auth_worker.index("profile = {}")
+
+
+def test_setup_page_is_scan_first_not_a_step_by_step_wizard() -> None:
+    setup = (
+        read_template("setup.html")
+        + read_template("_setup_auth_status.html")
+        + read_template("_setup_scan_state.html")
+        + read_template("_setup_success_motion.html")
+    )
+    base = read_template("base.html")
+
+    assert "setup-scan-shell" in setup
+    assert "setup-qr-panel" in setup
+    assert "setup-card" in setup
+    assert "setup-scan-card" in setup
+    assert "data-auth-success" in setup
+    assert "setup-main-grid" not in setup
+    assert "setup-primary-copy" not in setup
+    assert "setup-progress-area" not in setup
+    assert "setup-status-grid" not in setup
+    assert "setup-privacy-notes" not in setup
+    assert "setup-wizard" not in setup
+    assert "setup-stepper" not in setup
+    assert "setup-progress-fill" not in setup
+    assert "data-setup-wizard" not in setup
+    assert "data-setup-panel" not in setup
+    assert "data-setup-prev" not in setup
+    assert "data-setup-next" not in setup
+    assert "上一步" not in setup
+    assert "下一步" not in setup
+    assert "setupWizardShowStep" not in setup
+    assert "setup-grid" not in setup
+    assert "{% if page != 'setup' %}" in base
+    assert "setup-only-body" in base
+    assert ".setup-scan-shell" in base
+    assert ".setup-qr-panel" in base
+    assert ".setup-card" in base
+    assert ".setup-scan-card" in base
+    assert ".setup-stepper" not in base
+    assert ".setup-wizard-footer" not in base
+
+
+def test_mobile_setup_layout_prevents_horizontal_overflow() -> None:
+    base = read_template("base.html")
+
+    assert "@media (max-width: 760px)" in base
+    assert ".topbar-main {" in base
+    assert "grid-template-columns: minmax(0, 1fr) auto" in base
+    assert ".view-nav {" in base
+    assert "grid-template-columns: repeat(4, minmax(0, 1fr))" in base
+    assert ".container {" in base
+    assert "max-width: 100%" in base
+    assert "overflow-x: hidden" in base
+    assert ".setup-scan-shell {" in base
+    assert ".setup-qr-panel {" in base
+    assert "overflow-wrap: anywhere" in base
+
+
+def test_home_redirects_first_run_to_scan_setup_instead_of_showing_empty_shell() -> None:
     index = read_template("index.html")
     app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
 
-    assert 'href="/setup"' in index
-    assert "开始设置" in index
-    assert "onboarding_status" in app_source
+    assert 'href="/setup"' not in index
+    assert "开始设置" not in index
+    assert "_should_show_setup_before_home" in app_source
+    assert 'RedirectResponse("/setup", status_code=303)' in app_source
+    assert "_should_auto_start_setup_auth(status)" in app_source
+
+
+def test_local_browser_runtime_does_not_require_user_installed_chrome() -> None:
+    source_paths = [
+        ROOT / "src" / "web" / "app.py",
+        ROOT / "src" / "jobs.py",
+        ROOT / "src" / "cli.py",
+        ROOT / "src" / "uncollector" / "douyin.py",
+    ]
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in source_paths)
+
+    assert 'browser_channel="chrome"' not in combined
+    assert 'browser_channel: Optional[str] = "chrome"' not in combined
+
+
+def test_setup_qr_auth_does_not_show_internal_browser_window() -> None:
+    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    auth_block = app_source.split("def _run_douyin_auth", 1)[1].split(
+        "def _ensure_douyin_auth_started", 1
+    )[0]
+
+    assert "headless=False" not in auth_block
+    assert "headless=True" in auth_block
+    assert "hide_window=True" in auth_block
+
+
+def test_local_first_run_prewarms_qr_auth_on_web_startup() -> None:
+    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    startup_block = app_source.split("def _start_background_workers", 1)[1].split(
+        "def _stop_background_workers", 1
+    )[0]
+
+    assert "_maybe_prewarm_first_run_auth()" in startup_block
+    assert "def _maybe_prewarm_first_run_auth" in app_source
+    assert "settings.web_auth_required" in app_source
+    assert "_should_auto_start_setup_auth(status)" in app_source
+    assert "_ensure_douyin_auth_started(user_id)" in app_source
 
 
 def test_desktop_pagination_blocks_mobile_load_more_trigger() -> None:
@@ -379,7 +575,12 @@ if __name__ == "__main__":
         test_cli_exposes_server_lifecycle_commands_and_serve_guard,
         test_cli_exposes_diagnostic_bundle_command,
         test_setup_page_contains_first_run_sections_and_reuses_existing_endpoints,
-        test_home_empty_state_links_to_setup,
+        test_setup_page_is_scan_first_not_a_step_by_step_wizard,
+        test_mobile_setup_layout_prevents_horizontal_overflow,
+        test_home_redirects_first_run_to_scan_setup_instead_of_showing_empty_shell,
+        test_local_browser_runtime_does_not_require_user_installed_chrome,
+        test_setup_qr_auth_does_not_show_internal_browser_window,
+        test_local_first_run_prewarms_qr_auth_on_web_startup,
         test_desktop_pagination_blocks_mobile_load_more_trigger,
         test_desktop_pagination_has_number_links_and_direct_edges,
         test_desktop_pagination_page_size_follows_grid_columns,

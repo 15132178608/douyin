@@ -56,9 +56,10 @@
   </button>
 
   {% elif auth_status == 'success' %}
-  <a href="/" class="btn btn-primary"
+  <span data-auth-success="true" hidden></span>
+  <a href="/jobs" class="btn btn-primary"
      style="display:block;text-align:center;text-decoration:none;margin-bottom:12px;">
-    前往首页同步
+    查看自动同步进度
   </a>
   <button class="btn btn-secondary"
           hx-post="/auth/start"
@@ -69,7 +70,7 @@
 
   {% elif auth_status in ('starting', 'qr_ready') %}
   <button class="btn btn-secondary" disabled>
-    {%- if auth_status == 'starting' -%}正在启动浏览器...{%- else -%}等待手机扫码...{%- endif -%}
+    {%- if auth_status == 'starting' -%}正在生成二维码...{%- else -%}等待手机扫码...{%- endif -%}
   </button>
   {% endif %}
 

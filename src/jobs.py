@@ -148,7 +148,7 @@ def recover_stale_running_jobs(*, stale_after_seconds: int = DEFAULT_STALE_RUNNI
     """Put old running jobs back in the queue so a crashed worker does not stall them forever."""
     conn = get_connection()
     now = _now()
-    threshold = datetime.fromtimestamp(now.timestamp() - max(1, int(stale_after_seconds)), timezone.utc)
+    threshold = datetime.fromtimestamp(now.timestamp() - max(0, int(stale_after_seconds)), timezone.utc)
     stale_rows = conn.execute(
         """
         SELECT id, attempts, max_attempts
@@ -243,7 +243,6 @@ class DefaultJobHandlers:
                 api_mode=True,
                 max_api_pages=max_pages,
                 hide_window=True,
-                browser_channel="chrome",
                 profile_path=accounts.profile_path_for_user(user_id),
             ) as crawler:
                 self._refresh_douyin_profile(user_id, crawler)
@@ -272,7 +271,6 @@ class DefaultJobHandlers:
                 api_mode=True,
                 max_api_pages=max_pages,
                 hide_window=True,
-                browser_channel="chrome",
                 profile_path=accounts.profile_path_for_user(user_id),
             ) as crawler:
                 self._refresh_douyin_profile(user_id, crawler)
@@ -315,7 +313,6 @@ class DefaultJobHandlers:
         log_id = payload.get("log_id")
         worker = PersistentUncollectWorker(
             profile_path=accounts.profile_path_for_user(user_id),
-            browser_channel="chrome",
         )
         try:
             if content_kind == "likes":

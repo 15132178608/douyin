@@ -214,6 +214,25 @@ def test_auth_refresh_uses_server_expiry_and_regenerates_qr() -> None:
     assert "LOGIN_SCAN_CODE" in REGENERATE_LOGIN_QR_JS
 
 
+def test_auth_panel_does_not_wait_for_douyin_network_idle_before_showing_qr() -> None:
+    source = inspect.getsource(DouyinCrawler._open_auth_panel)
+
+    assert "wait_for_load_state(\"networkidle\"" not in source
+    assert "typeof window.showAccount === 'function'" in source
+    assert "time.sleep(0.25)" in source
+
+
+def test_qr_auth_notifies_scan_confirmation_quickly() -> None:
+    source = inspect.getsource(DouyinCrawler.authorize_by_qr)
+
+    assert "on_login_confirmed" in source
+    assert "notify_login_confirmed()" in source
+    assert "_has_usable_login_state(timeout_ms=1_000)" in source
+    assert "time.sleep(2)" not in source
+    assert "timeout_ms=10_000" not in source
+    assert "time.sleep(0.5)" in source
+
+
 def test_login_required_payload_detects_common_failures() -> None:
     assert _is_login_required_payload({"status_code": 8, "status_msg": "login required"}) is True
     assert _is_login_required_payload({"status_code": 10008, "message": "请登录"}) is True
@@ -326,6 +345,7 @@ if __name__ == "__main__":
         test_auth_qr_api_payload_extracts_image_and_expiry,
         test_auth_qr_payload_writes_stable_display_copy_and_metadata,
         test_auth_refresh_uses_server_expiry_and_regenerates_qr,
+        test_auth_panel_does_not_wait_for_douyin_network_idle_before_showing_qr,
         test_login_required_payload_detects_common_failures,
         test_crawler_defaults_to_hidden_api_mode,
         test_cli_exposes_auth_and_hidden_crawl_options,

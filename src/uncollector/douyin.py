@@ -200,7 +200,7 @@ class PersistentUncollectBridge:
         allow_page_fallback: bool = False,
         headless: bool = True,
         hide_window: bool = True,
-        browser_channel: Optional[str] = "chrome",
+        browser_channel: Optional[str] = None,
         profile_path: Optional[Path] = None,
     ) -> None:
         self.cdp_endpoint = cdp_endpoint
@@ -367,7 +367,7 @@ class PersistentUncollectWorker:
         allow_page_fallback: bool = False,
         headless: bool = True,
         hide_window: bool = True,
-        browser_channel: Optional[str] = "chrome",
+        browser_channel: Optional[str] = None,
         profile_path: Optional[Path] = None,
     ) -> None:
         self._bridge_kwargs = {
@@ -528,7 +528,7 @@ def _cdp_context(cdp_endpoint: str):
 def _profile_context(
     headless: bool = True,
     hide_window: bool = True,
-    browser_channel: Optional[str] = "chrome",
+    browser_channel: Optional[str] = None,
     profile_path: Optional[Path] = None,
 ):
     from playwright.sync_api import sync_playwright
@@ -828,7 +828,7 @@ def uncollect_many(
     allow_page_fallback: bool = False,
     headless: bool = True,
     hide_window: bool = True,
-    browser_channel: Optional[str] = "chrome",
+    browser_channel: Optional[str] = None,
     profile_path: Optional[Path] = None,
 ) -> list[UncollectResult]:
     ids = [str(x).strip() for x in aweme_ids if str(x).strip()]
@@ -886,7 +886,7 @@ def uncollect_one(
     allow_page_fallback: bool = False,
     headless: bool = True,
     hide_window: bool = True,
-    browser_channel: Optional[str] = "chrome",
+    browser_channel: Optional[str] = None,
     profile_path: Optional[Path] = None,
 ) -> UncollectResult:
     logger.info("Uncollect attempt: aweme_id={}, dry_run={}", aweme_id, dry_run)
@@ -913,7 +913,7 @@ def unlike_many(
     timeout_ms: int = 25000,
     headless: bool = True,
     hide_window: bool = True,
-    browser_channel: Optional[str] = "chrome",
+    browser_channel: Optional[str] = None,
     profile_path: Optional[Path] = None,
 ) -> list[UncollectResult]:
     ids = [str(x).strip() for x in aweme_ids if str(x).strip()]
@@ -960,7 +960,7 @@ def unlike_one(
     timeout_ms: int = 25000,
     headless: bool = True,
     hide_window: bool = True,
-    browser_channel: Optional[str] = "chrome",
+    browser_channel: Optional[str] = None,
     profile_path: Optional[Path] = None,
 ) -> UncollectResult:
     logger.info("Unlike attempt: aweme_id={}, dry_run={}", aweme_id, dry_run)

@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from src import accounts
 from src import db
 from src import jobs
+from src import onboarding
 from src.config import settings
 from src.web import app as web_app
 
@@ -36,11 +37,13 @@ def isolated_web_accounts_db():
     original_web_get_connection = web_app.get_connection
     original_accounts_get_connection = accounts.get_connection
     original_jobs_get_connection = jobs.get_connection
+    original_onboarding_get_connection = onboarding.get_connection
     original_auth_required = settings.web_auth_required
 
     web_app.get_connection = lambda: conn
     accounts.get_connection = lambda: conn
     jobs.get_connection = lambda: conn
+    onboarding.get_connection = lambda: conn
     settings.web_auth_required = True
     try:
         yield conn
@@ -48,6 +51,7 @@ def isolated_web_accounts_db():
         web_app.get_connection = original_web_get_connection
         accounts.get_connection = original_accounts_get_connection
         jobs.get_connection = original_jobs_get_connection
+        onboarding.get_connection = original_onboarding_get_connection
         settings.web_auth_required = original_auth_required
         conn.close()
 
@@ -166,6 +170,32 @@ def test_job_enqueue_routes_scope_sync_and_index_to_session_user() -> None:
         assert '"force": true' in rows[1]["payload_json"]
 
 
+def test_first_run_jobs_enqueue_sync_and_index_once_per_session_user() -> None:
+    with isolated_web_accounts_db() as conn:
+        conn.execute(
+            "INSERT INTO users (id, display_name, created_at) VALUES ('alice', 'Alice', '2026-05-26 00:00:00')"
+        )
+
+        first = web_app._enqueue_first_run_jobs("alice")
+        second = web_app._enqueue_first_run_jobs("alice")
+
+        rows = conn.execute(
+            "SELECT user_id, kind, payload_json, status FROM job_queue ORDER BY id"
+        ).fetchall()
+        assert first == ["sync_favorites", "sync_likes", "index", "index"]
+        assert second == []
+        assert [(r["user_id"], r["kind"], r["status"]) for r in rows] == [
+            ("alice", "sync_favorites", "pending"),
+            ("alice", "sync_likes", "pending"),
+            ("alice", "index", "pending"),
+            ("alice", "index", "pending"),
+        ]
+        assert '"content_kind": "favorites"' in rows[0]["payload_json"]
+        assert '"content_kind": "likes"' in rows[1]["payload_json"]
+        assert '"content_kind": "favorites"' in rows[2]["payload_json"]
+        assert '"content_kind": "likes"' in rows[3]["payload_json"]
+
+
 def test_jobs_status_page_only_shows_current_session_user_jobs() -> None:
     with isolated_web_accounts_db() as conn:
         conn.execute(
@@ -265,6 +295,7 @@ if __name__ == "__main__":
         test_protected_page_redirects_without_session_when_auth_required,
         test_uncollect_route_enqueues_background_job_for_session_user,
         test_job_enqueue_routes_scope_sync_and_index_to_session_user,
+        test_first_run_jobs_enqueue_sync_and_index_once_per_session_user,
         test_jobs_status_page_only_shows_current_session_user_jobs,
         test_auth_profile_refresh_updates_current_session_user_only,
         test_auth_profile_refresh_reports_expired_login_without_overwriting_existing_profile,

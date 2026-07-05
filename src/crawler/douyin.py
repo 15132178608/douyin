@@ -1224,6 +1224,7 @@ class DouyinCrawler:
         panel_timeout_s: int = 60,
         screenshot_path: Path | None = None,
         on_qr_capture: Callable[[AuthQrCapture], None] | None = None,
+        on_login_confirmed: Callable[[], None] | None = None,
     ) -> AuthResult:
         """
         Headless QR login flow.
@@ -1232,21 +1233,44 @@ class DouyinCrawler:
         and keep polling the API until scanning succeeds and cookies are persisted.
         """
         assert self._page is not None, "DouyinCrawler must be used as context manager"
+        auth_started_at = time.perf_counter()
         screenshot_path = screenshot_path or DEFAULT_AUTH_SCREENSHOT_PATH
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
         handler = None
         previous_callback = self._auth_qr_capture_callback
         self._auth_qr_capture_callback = on_qr_capture
+        login_confirmed_notified = False
+
+        def notify_login_confirmed() -> None:
+            nonlocal login_confirmed_notified
+            if login_confirmed_notified:
+                return
+            login_confirmed_notified = True
+            if on_login_confirmed is None:
+                return
+            try:
+                on_login_confirmed()
+            except Exception as e:
+                logger.warning("Login confirmation callback failed: {}", e)
+
         try:
-            if self._has_usable_login_state():
+            if self._has_usable_login_state(timeout_ms=1_000):
+                logger.info("QR auth skipped because existing login state is usable.")
                 return AuthResult(True, "当前 profile 已有可用登录态，无需扫码。", None)
+            logger.info("QR auth login-state check finished in {:.2f}s.", time.perf_counter() - auth_started_at)
 
             self._auth_qr_capture = None
             handler = self._attach_auth_qr_capture(screenshot_path)
             initial_login_cookie = self._login_cookie_fingerprint()
 
             try:
+                panel_started_at = time.perf_counter()
                 self._open_auth_panel(panel_timeout_s=panel_timeout_s)
+                logger.info(
+                    "QR auth panel opened in {:.2f}s, total {:.2f}s.",
+                    time.perf_counter() - panel_started_at,
+                    time.perf_counter() - auth_started_at,
+                )
             except Exception as e:
                 try:
                     self._save_login_screenshot(screenshot_path, allow_page_fallback=True)
@@ -1257,8 +1281,9 @@ class DouyinCrawler:
             state = self._auth_visual_state()
             if state.get("has_one_click_login"):
                 self._confirm_scanned_login_if_needed()
-                time.sleep(2)
-                if self._has_usable_login_state():
+                notify_login_confirmed()
+                time.sleep(0.5)
+                if self._has_usable_login_state(timeout_ms=2_000):
                     return AuthResult(True, "扫码后的确认登录已自动完成，登录态已保存。", None)
 
             if self._has_current_auth_qr_capture(screenshot_path):
@@ -1298,13 +1323,15 @@ class DouyinCrawler:
             while time.time() < scan_deadline:
                 state = self._auth_visual_state()
                 if state.get("has_one_click_login") and self._confirm_scanned_login_if_needed():
-                    time.sleep(2)
-                    if self._has_usable_login_state():
+                    notify_login_confirmed()
+                    time.sleep(0.5)
+                    if self._has_usable_login_state(timeout_ms=2_000):
                         return AuthResult(True, "扫码后的确认登录已自动完成，登录态已保存。", screenshot_path)
 
                 current_login_cookie = self._login_cookie_fingerprint()
                 if current_login_cookie and current_login_cookie != initial_login_cookie:
-                    if self._is_api_logged_in(timeout_ms=10_000):
+                    notify_login_confirmed()
+                    if self._is_api_logged_in(timeout_ms=2_000):
                         return AuthResult(True, "扫码授权成功，登录态已保存。", screenshot_path)
                     logger.warning("Login cookie changed but collection API is still unauthenticated; keep waiting.")
 
@@ -1330,7 +1357,7 @@ class DouyinCrawler:
                     next_refresh = _next_auth_qr_refresh_time(
                         self._auth_qr_capture.expire_time if self._auth_qr_capture else None
                     )
-                time.sleep(2)
+                time.sleep(0.5)
 
             return AuthResult(False, f"等待扫码超时（{timeout_s}s）。二维码截图：{screenshot_path}", screenshot_path)
         finally:
@@ -1339,17 +1366,14 @@ class DouyinCrawler:
 
     def _open_auth_panel(self, panel_timeout_s: int = 60) -> None:
         assert self._page is not None
+        opened_at = time.perf_counter()
         deadline = time.time() + max(panel_timeout_s, 5)
         nav_timeout_ms = max(5_000, int(max(panel_timeout_s, 5) * 1000))
         try:
             self._page.goto(DOUYIN_HOME_URL, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+            logger.info("Auth page domcontentloaded in {:.2f}s.", time.perf_counter() - opened_at)
         except Exception as e:
             logger.warning("Auth page navigation timed out/failed, continuing with current DOM: {}", e)
-        try:
-            remaining_ms = max(1_000, int((deadline - time.time()) * 1000))
-            self._page.wait_for_load_state("networkidle", timeout=min(15_000, remaining_ms))
-        except Exception:
-            pass
 
         last_result = None
         while time.time() < deadline:
@@ -1357,11 +1381,15 @@ class DouyinCrawler:
                 ready = self._page.evaluate("typeof window.showAccount === 'function'")
                 if ready:
                     last_result = self._page.evaluate(SHOW_LOGIN_PANEL_JS)
-                    logger.info("Login panel trigger result: {}", last_result)
+                    logger.info(
+                        "Login panel trigger result after {:.2f}s: {}",
+                        time.perf_counter() - opened_at,
+                        last_result,
+                    )
                     break
             except Exception as e:
                 last_result = {"ok": False, "reason": str(e)}
-            time.sleep(1)
+            time.sleep(0.25)
 
         if not (isinstance(last_result, dict) and last_result.get("ok")):
             logger.warning("Login panel was not triggered: {}", last_result)
@@ -1371,7 +1399,13 @@ class DouyinCrawler:
             except Exception as e:
                 logger.warning("Login button fallback failed: {}", e)
 
+        visual_started_at = time.perf_counter()
         self._wait_for_auth_visual(timeout_s=max(1, int(deadline - time.time())))
+        logger.info(
+            "Auth visual wait finished in {:.2f}s, total {:.2f}s.",
+            time.perf_counter() - visual_started_at,
+            time.perf_counter() - opened_at,
+        )
 
     def _regenerate_login_qr(self, panel_timeout_s: int = 20) -> None:
         assert self._page is not None
@@ -1569,7 +1603,7 @@ class DouyinCrawler:
                 interesting.append((str(name), str(cookie.get("value") or "")))
         return tuple(sorted(interesting))
 
-    def _has_usable_login_state(self) -> bool:
+    def _has_usable_login_state(self, timeout_ms: int = 5_000) -> bool:
         if not self._has_login_cookies():
             return False
         try:
@@ -1577,7 +1611,7 @@ class DouyinCrawler:
         except Exception as e:
             logger.debug("Could not prepare API page for login-state check: {}", e)
             return False
-        return self._is_api_logged_in(timeout_ms=5_000)
+        return self._is_api_logged_in(timeout_ms=timeout_ms)
 
     # ------------------------------------------------------------------
     # helpers

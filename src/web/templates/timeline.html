@@ -24,6 +24,6 @@
 {% endfor %}
 
 {% if not sections %}
-<div class="empty">{{ content_label }}库还是空的，先跑 <code>recall {{ 'crawl' if content_kind == 'favorites' else 'crawl-likes' }}</code></div>
+<div class="empty">{{ content_label }}库还是空的。同步完成后会按时间自动整理到这里。</div>
 {% endif %}
 {% endblock %}

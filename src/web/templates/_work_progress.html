@@ -1,0 +1,29 @@
+<div class="work-progress-panel">
+  <div class="work-progress-head">
+    <div>
+      <p class="work-progress-title">
+        <span class="work-progress-spinner" aria-hidden="true"></span>
+        <span>{{ work_state.title }}</span>
+      </p>
+      <p class="work-progress-detail">{{ work_state.detail }}</p>
+    </div>
+    <div class="work-progress-meta">
+      {% if work_state.elapsed_text %}<span>{{ work_state.elapsed_text }}</span>{% endif %}
+      <span>{{ work_state.eta_text }}</span>
+    </div>
+  </div>
+  <div class="work-progress-track"
+       role="progressbar"
+       aria-valuemin="0"
+       aria-valuemax="100"
+       aria-valuenow="{{ work_state.percent }}">
+    <span class="work-progress-fill" style="width: {{ work_state.percent }}%"></span>
+  </div>
+  <div class="work-progress-foot">
+    <span class="work-progress-stage">
+      <span class="work-progress-live-dot" aria-hidden="true"></span>
+      <span>{{ work_state.stage }}</span>
+    </span>
+    <span>{{ work_state.percent }}%</span>
+  </div>
+</div>

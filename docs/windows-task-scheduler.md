@@ -13,12 +13,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-weekly-maintenance.ps1
 脚本会执行这些命令：
 
 ```powershell
-uv run recall crawl
-uv run recall crawl-likes
-uv run recall index --kind favorites
-uv run recall index --kind likes
-uv run recall digest --kind favorites
-uv run recall export --format sqlite
+uv run python -m src.cli crawl
+uv run python -m src.cli crawl-likes
+uv run python -m src.cli index --kind favorites
+uv run python -m src.cli index --kind likes
+uv run python -m src.cli digest --kind favorites
+uv run python -m src.cli export --format sqlite
 ```
 
 如果你也想给喜欢列表发周报，加 `-SendLikesDigest`：

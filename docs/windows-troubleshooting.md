@@ -20,17 +20,17 @@ D:\codexDownload\douyinclaude-runtime
 
 安装包启动脚本会设置 `UV_LINK_MODE=copy`。这是为了避免缓存目录在 D 盘、安装目录在 C 盘时，`uv` 因跨盘 hardlink 不可用而打印 warning；它不会改变下载目录，也不会影响数据目录。
 
-如果首次启动卡在 uv、Python 依赖、Playwright Chromium 或数据库初始化，可以点击开始菜单里的 `Douyin Recall Prepare Runtime`。这个入口只准备运行时：安装或定位 uv、执行 `uv sync`、`playwright install chromium`、`recall init-db` 和 `recall status`；它不会启动本地 Web 服务，也不会打开浏览器。网络恢复后可以反复运行它。启动脚本和 Prepare Runtime 都会显示步骤级进度；看到“首次运行可能需要几分钟”时，通常是在下载或准备依赖。Prepare Runtime 成功结束后会打印准备摘要，包括已完成步骤、安装目录、运行时缓存、浏览器缓存、日志目录和下一步启动入口。
+如果首次启动卡在 uv、Python 依赖、Playwright Chromium 或数据库初始化，可以点击开始菜单里的 `Douyin Recall Prepare Runtime`。这个入口只准备运行时：安装或定位 uv、执行 `uv sync`、`playwright install chromium`、`python -m src.cli init-db` 和 `python -m src.cli status`；它不会启动本地 Web 服务，也不会打开浏览器。网络恢复后可以反复运行它。启动脚本和 Prepare Runtime 都会显示步骤级进度；看到“首次运行可能需要几分钟”时，通常是在下载或准备依赖。Prepare Runtime 成功结束后会打印准备摘要，包括已完成步骤、安装目录、运行时缓存、浏览器缓存、日志目录和下一步启动入口。
 
-从 v0.1.19 开始，点击 `Douyin Recall` 首次启动时还会打开一个本地状态页，文件位于：
+启动脚本会在本地写入一个准备状态文件，供失败排查时查看：
 
 ```text
 data\runtime\startup-status.html
 ```
 
-这个页面只是本地 `file://` 页面，不会额外启动 Web 服务，也不会对外开放端口。启动脚本会持续重写这个页面，让浏览器自动刷新显示“检查本地环境、准备 Python 运行环境、下载/安装 Playwright Chromium、初始化本地数据库、启动本地 Web 服务”等步骤。成功时页面会显示“准备完成”；失败时会显示“准备失败”、当前失败阶段、运行时缓存、日志位置和 `uv run recall diagnose`。
+正常启动不会再自动打开这个准备页，也不会显示 PowerShell 进度窗口。安装完成或点击 `Douyin Recall` 后，主快捷方式会先通过隐藏的 `wscript.exe` 启动器调用后台脚本，脚本会在后台准备依赖并启动本地 Web 服务，只有确认 `http://127.0.0.1:<端口>` 已经可访问后才打开最终页面。如果启动失败，错误会写入 `data\logs\start-douyin-recall.log` 和 `startup-status.html`，可通过 `Douyin Recall Control`、`Douyin Recall Health Check` 或 `Douyin Recall Logs` 查看。
 
-从 v0.1.18 开始，启动失败窗口会直接显示 `失败阶段`、`可能原因` 和 `建议下一步`。如果失败发生在 `uv sync`、`playwright install chromium`、`recall init-db` 或 `recall serve`，提示会指向对应的重试入口、日志或健康检查。`Douyin Recall Prepare Runtime` 失败时也会显示 `Prepare failed at step:`、`Likely cause:` 和 `Recommended next step:`，用于确认是依赖、浏览器、数据库还是最终状态检查卡住。
+从 v0.1.18 开始，启动失败窗口会直接显示 `失败阶段`、`可能原因` 和 `建议下一步`。如果失败发生在 `uv sync`、`playwright install chromium`、`python -m src.cli init-db` 或 `python -m src.cli serve`，提示会指向对应的重试入口、日志或健康检查。`Douyin Recall Prepare Runtime` 失败时也会显示 `Prepare failed at step:`、`Likely cause:` 和 `Recommended next step:`，用于确认是依赖、浏览器、数据库还是最终状态检查卡住。
 
 ## 启动失败先看哪里
 
@@ -85,19 +85,19 @@ data\exports\pre-install-recall-*.db
 在安装目录打开 PowerShell，优先按这个顺序排查：
 
 ```powershell
-uv run recall status
-uv run recall stop
-uv run recall status
-uv run recall diagnose
-uv run recall update
-uv run recall verify-backup
+uv run python -m src.cli status
+uv run python -m src.cli stop
+uv run python -m src.cli status
+uv run python -m src.cli diagnose
+uv run python -m src.cli update
+uv run python -m src.cli verify-backup
 ```
 
-- `uv run recall status`：查看本地 Web 服务是否还在运行、PID、端口 owner 和安全下一步。
-- `uv run recall stop`：停止由 `recall serve` 记录的本地 Web 服务，适合处理忘记关闭导致后台占用的问题。
-- `uv run recall diagnose`：导出脱敏诊断包，排查失败任务、服务状态和日志摘要。
-- `uv run recall update`：检查 GitHub Release 上是否有新版安装包；只读检查，不会自动下载或安装。
-- `uv run recall verify-backup`：只读校验最新的 `recall-backup-*.db` 或 `pre-install-recall-*.db` 是否可读取、完整性通过且必要表存在。
+- `uv run python -m src.cli status`：查看本地 Web 服务是否还在运行、PID、端口 owner 和安全下一步。
+- `uv run python -m src.cli stop`：停止由 `python -m src.cli serve` 记录的本地 Web 服务，适合处理忘记关闭导致后台占用的问题。
+- `uv run python -m src.cli diagnose`：导出脱敏诊断包，排查失败任务、服务状态和日志摘要。
+- `uv run python -m src.cli update`：检查 GitHub Release 上是否有新版安装包；只读检查，不会自动下载或安装。
+- `uv run python -m src.cli verify-backup`：只读校验最新的 `recall-backup-*.db` 或 `pre-install-recall-*.db` 是否可读取、完整性通过且必要表存在。
 
 如果网页能打开，维护中心在：
 
@@ -118,34 +118,34 @@ http://127.0.0.1:8000/auth
 先运行：
 
 ```powershell
-uv run recall status
+uv run python -m src.cli status
 ```
 
 输出里的 `Service audit` 是关键：
 
-- `own_service_running`：记录的 Douyin Recall 服务正在占用端口。不想继续占用后台资源时，运行 `uv run recall stop` 或点击 `Douyin Recall Stop Service`。
-- `stale_record` / `record_without_listener` / `record_port_mismatch`：状态文件和实际端口不一致。运行 `uv run recall stop` 或点击 `Douyin Recall Repair State` 清理本项目状态后再检查。
+- `own_service_running`：记录的 Douyin Recall 服务正在占用端口。不想继续占用后台资源时，运行 `uv run python -m src.cli stop` 或点击 `Douyin Recall Stop Service`。
+- `stale_record` / `record_without_listener` / `record_port_mismatch`：状态文件和实际端口不一致。运行 `uv run python -m src.cli stop` 或点击 `Douyin Recall Repair State` 清理本项目状态后再检查。
 - `external_listener`：端口被别的进程占用，但没有本项目服务记录。不要用本项目工具去结束它；先确认那个 PID，或修改 `.env` 里的 `WEB_PORT`。
 - `clear`：没有服务记录，也没有端口监听，不需要清理。
 
 如果状态里显示本项目服务正在运行，但你不想继续占用后台资源，运行：
 
 ```powershell
-uv run recall stop
+uv run python -m src.cli stop
 ```
 
 如果你是从安装包安装的，也可以直接点击开始菜单里的 `Douyin Recall Stop Service`。
 
 如果状态摘要或健康检查提示 `server.json` / `server.pid` 已陈旧，且服务进程已经不存在，可以点击 `Douyin Recall Repair State` 清理这两个状态文件。
 
-不要直接批量结束不认识的进程。`recall stop` 只会停止本项目记录的本地 Web 服务。
+不要直接批量结束不认识的进程。`python -m src.cli stop` 只会停止本项目记录的本地 Web 服务。
 
 ## 安装后仍然打不开
 
 1. 确认安装目录里存在 `.env` 和 `.env.example`。
 2. 确认 `D:\codexDownload\douyinclaude-runtime` 可以写入。
 3. 点击 `Douyin Recall Prepare Runtime` 单独重试运行时准备；它不会启动本地 Web 服务。
-4. 点击 `Douyin Recall Diagnostics`，或运行 `uv run recall diagnose` 生成诊断包。
+4. 点击 `Douyin Recall Diagnostics`，或运行 `uv run python -m src.cli diagnose` 生成诊断包。
 5. 带上 `data\logs\start-douyin-recall.log` 和诊断包摘要继续排查。
 
 ## 想确认是否有新版
@@ -153,13 +153,13 @@ uv run recall stop
 在安装目录运行：
 
 ```powershell
-uv run recall update
+uv run python -m src.cli update
 ```
 
 它只会显示当前版本、最新 Release 和 `DouyinRecallSetup.exe` 下载链接，不会自动替换文件。安装新版前建议先运行：
 
 ```powershell
-uv run recall stop
+uv run python -m src.cli stop
 ```
 
-也可以先点击 `Douyin Recall Backup Now` 手动生成一份备份；安装器本身还会尽量生成 `pre-install-recall-*.db` 安全备份。备份生成后可以点击 `Douyin Recall Verify Backup`，或运行 `uv run recall verify-backup` 做一次只读恢复演练。
+也可以先点击 `Douyin Recall Backup Now` 手动生成一份备份；安装器本身还会尽量生成 `pre-install-recall-*.db` 安全备份。备份生成后可以点击 `Douyin Recall Verify Backup`，或运行 `uv run python -m src.cli verify-backup` 做一次只读恢复演练。

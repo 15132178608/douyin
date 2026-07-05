@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
 from src.categorize import cluster
 from src import jobs
+from src import onboarding
 from src.db import SCHEMA_SQL
 from src.embedding import indexer
 from src.web import app as web_app
@@ -37,6 +38,7 @@ def isolated_web_db():
     original_web_get_connection = web_app.get_connection
     original_cluster_get_connection = cluster.get_connection
     original_jobs_get_connection = jobs.get_connection
+    original_onboarding_get_connection = onboarding.get_connection
     original_index_one = indexer.index_one
 
     def get_connection():
@@ -45,6 +47,7 @@ def isolated_web_db():
     web_app.get_connection = get_connection
     cluster.get_connection = get_connection
     jobs.get_connection = get_connection
+    onboarding.get_connection = get_connection
     indexer.index_one = lambda *args, **kwargs: None
     try:
         yield conn
@@ -52,6 +55,7 @@ def isolated_web_db():
         web_app.get_connection = original_web_get_connection
         cluster.get_connection = original_cluster_get_connection
         jobs.get_connection = original_jobs_get_connection
+        onboarding.get_connection = original_onboarding_get_connection
         indexer.index_one = original_index_one
         conn.close()
 
@@ -282,6 +286,110 @@ def test_favorites_home_supports_mobile_load_more_and_desktop_pagination() -> No
         assert desktop_page.status_code == 200
         assert "paged favorites 000" in desktop_page.text
         assert "第 2 / 2 页" in desktop_page.text
+
+
+def test_empty_favorites_home_redirects_to_scan_setup() -> None:
+    with isolated_web_db():
+        client = TestClient(web_app.app)
+
+        response = client.get("/", follow_redirects=False)
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/setup"
+
+
+def test_empty_likes_home_uses_user_facing_sync_state_instead_of_cli_hint() -> None:
+    with isolated_web_db() as conn:
+        insert_item(conn, "favorites", "fav-1", "favorite only", "fav author")
+        jobs.enqueue_job("sync_likes", user_id="default", payload={"content_kind": "likes"})
+        client = TestClient(web_app.app)
+
+        response = client.get("/likes")
+
+        assert response.status_code == 200
+        assert "正在整理喜欢" in response.text
+        assert "后台同步完成后会自动出现在这里" in response.text
+        assert "recall crawl-likes" not in response.text
+        assert "recall crawl" not in response.text
+        assert 'hx-get="/likes/empty-status"' in response.text
+        assert "去维护中心" in response.text
+
+
+def test_empty_likes_sync_state_shows_progress_eta_and_waiting_motion() -> None:
+    with isolated_web_db() as conn:
+        insert_item(conn, "favorites", "fav-1", "favorite only", "fav author")
+        job_id = jobs.enqueue_job("sync_likes", user_id="default", payload={"content_kind": "likes"})
+        started_at = datetime.now(timezone.utc) - timedelta(seconds=75)
+        conn.execute(
+            "UPDATE job_queue SET status = 'running', started_at = ?, attempts = 1 WHERE id = ?",
+            (started_at, job_id),
+        )
+        client = TestClient(web_app.app)
+
+        response = client.get("/likes")
+
+        assert response.status_code == 200
+        assert "正在读取抖音数据" in response.text
+        assert "已等待" in response.text
+        assert "预计还需" in response.text
+        assert 'role="progressbar"' in response.text
+        assert "empty-wait-dots" in response.text
+
+
+def test_likes_home_shows_index_progress_without_hiding_local_items() -> None:
+    with isolated_web_db() as conn:
+        insert_item(conn, "favorites", "fav-1", "favorite only", "fav author")
+        insert_item(conn, "likes", "like-1", "liked first", "like author")
+        insert_item(conn, "likes", "like-2", "liked second", "like author")
+        conn.execute("INSERT INTO likes_vec (id) VALUES ('default:like-1')")
+        job_id = jobs.enqueue_job("index", user_id="default", payload={"content_kind": "likes"})
+        started_at = datetime.now(timezone.utc) - timedelta(seconds=20)
+        conn.execute(
+            "UPDATE job_queue SET status = 'running', started_at = ?, attempts = 1 WHERE id = ?",
+            (started_at, job_id),
+        )
+        client = TestClient(web_app.app)
+
+        response = client.get("/likes")
+
+        assert response.status_code == 200
+        assert "liked first" in response.text
+        assert "liked second" in response.text
+        assert "正在建立喜欢搜索索引" in response.text
+        assert "1 / 2 已索引" in response.text
+        assert 'role="progressbar"' in response.text
+
+
+def test_existing_items_use_stable_background_sync_banner_for_favorites_and_likes() -> None:
+    with isolated_web_db() as conn:
+        insert_item(conn, "favorites", "fav-1", "favorite item", "fav author")
+        insert_item(conn, "likes", "like-1", "liked item", "like author")
+        favorite_job_id = jobs.enqueue_job("sync_favorites", user_id="default", payload={"content_kind": "favorites"})
+        like_job_id = jobs.enqueue_job("sync_likes", user_id="default", payload={"content_kind": "likes"})
+        started_at = datetime.now(timezone.utc) - timedelta(seconds=75)
+        conn.execute(
+            "UPDATE job_queue SET status = 'running', started_at = ?, attempts = 1 WHERE id = ?",
+            (started_at, like_job_id),
+        )
+        client = TestClient(web_app.app)
+
+        favorites_response = client.get("/")
+        likes_response = client.get("/likes")
+
+        assert favorites_response.status_code == 200
+        assert likes_response.status_code == 200
+        assert "正在后台更新收藏" in favorites_response.text
+        assert "正在后台更新喜欢" in likes_response.text
+        assert "可以继续浏览" in favorites_response.text
+        assert "可以继续浏览" in likes_response.text
+        assert "正在整理收藏" not in favorites_response.text
+        assert "正在整理喜欢" not in likes_response.text
+        assert "work-progress-spinner" in favorites_response.text
+        assert "work-progress-spinner" in likes_response.text
+        assert "work-progress-fill" in favorites_response.text
+        assert "work-progress-fill" in likes_response.text
+        assert 'hx-trigger="every 3s"' not in favorites_response.text
+        assert 'hx-trigger="every 3s"' not in likes_response.text
 
 
 def test_likes_author_and_category_pages_use_likes_tables() -> None:

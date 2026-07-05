@@ -20,9 +20,9 @@
   {% if not status.has_profile %}
     下一步：先扫码绑定抖音账号。
   {% elif not status.has_any_items %}
-    下一步：选择同步收藏或喜欢，后台任务会自动执行。
+    已绑定账号，正在自动同步收藏和喜欢；可打开后台队列查看进度。
   {% elif status.favorites.needs_index or status.likes.needs_index %}
-    下一步：已有数据，可以生成搜索索引；也可以先进入首页浏览。
+    已有数据，搜索索引会在首次任务中自动生成；也可以先进入首页浏览。
   {% elif status.jobs.failed %}
     有任务失败，请打开后台队列查看原因，通常重新绑定后再同步即可。
   {% else %}

@@ -138,6 +138,27 @@ def test_recover_stale_running_jobs_requeues_expired_running_work() -> None:
         assert rows[fresh_id][0] == "running"
 
 
+def test_recover_stale_running_jobs_can_recover_immediately_on_startup() -> None:
+    with isolated_jobs_db() as conn:
+        job_id = jobs.enqueue_job("sync_likes", user_id="alice")
+        conn.execute(
+            "UPDATE job_queue SET status = 'running', started_at = ?, attempts = 1 WHERE id = ?",
+            (datetime.now(timezone.utc), job_id),
+        )
+
+        recovered = jobs.recover_stale_running_jobs(stale_after_seconds=0)
+
+        row = conn.execute(
+            "SELECT status, started_at, next_run_at, error_message FROM job_queue WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        assert recovered == 1
+        assert row["status"] == "pending"
+        assert row["started_at"] is None
+        assert row["next_run_at"] is not None
+        assert "stale running job recovered" in row["error_message"]
+
+
 def test_run_next_job_dispatches_known_jobs_and_marks_success() -> None:
     class FakeHandlers:
         def __init__(self) -> None:
@@ -232,6 +253,7 @@ if __name__ == "__main__":
         test_fail_job_requeues_until_max_attempts_with_backoff,
         test_claim_next_job_skips_pending_jobs_until_next_run_at,
         test_recover_stale_running_jobs_requeues_expired_running_work,
+        test_recover_stale_running_jobs_can_recover_immediately_on_startup,
         test_run_next_job_dispatches_known_jobs_and_marks_success,
         test_default_backup_sqlite_handler_writes_backup_to_payload_output_dir,
         test_run_next_job_marks_failure_when_handler_raises,

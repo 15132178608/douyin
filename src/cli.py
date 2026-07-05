@@ -139,7 +139,6 @@ def auth_cmd(timeout: int, panel_timeout: int, qr_path: Path | None,
         headless=False,
         api_mode=True,
         hide_window=not visible_debug,
-        browser_channel="chrome",
         profile_path=profile_path,
     ) as crawler:
         result = crawler.authorize_by_qr(
@@ -749,7 +748,6 @@ def uncollect_cmd(aweme_ids: tuple[str, ...], dry_run: bool, cdp: str | None,
         allow_page_fallback=page_fallback,
         headless=not visible_debug,
         hide_window=not visible_debug,
-        browser_channel="chrome",
         profile_path=profile_path,
     )
 
@@ -842,7 +840,6 @@ def unlike_cmd(aweme_ids: tuple[str, ...], dry_run: bool, cdp: str | None,
         dry_run=dry_run,
         headless=not visible_debug,
         hide_window=not visible_debug,
-        browser_channel="chrome",
         profile_path=profile_path,
     )
 
@@ -1010,14 +1007,14 @@ def serve_cmd(host: str | None, port: int | None) -> None:
     decision = server_runtime.should_start_server()
     if not decision["ok"]:
         click.echo(decision["message"])
-        click.echo("  如需停止：uv run recall stop")
+        click.echo("  如需停止：uv run python -m src.cli stop")
         return
     state = server_runtime.write_server_state(pid=os.getpid(), host=h, port=p)
     click.echo(f"\n启动 Web UI: http://{h}:{p}")
     click.echo(f"  · 服务状态文件: {server_runtime.DEFAULT_RUNTIME_DIR / server_runtime.PID_FILENAME}")
     click.echo("  · 浏览器打开上面这个地址")
     click.echo("  · 第一次搜索时会加载 bge-m3 模型（~20 秒）")
-    click.echo("  · Ctrl+C 停止，或另开终端运行 `uv run recall stop`\n")
+    click.echo("  · Ctrl+C 停止，或另开终端运行 `uv run python -m src.cli stop`\n")
     try:
         uvicorn.run("src.web.app:app", host=h, port=p, log_level="info")
     finally:
@@ -1047,7 +1044,7 @@ def status_cmd() -> None:
 
 @cli.command("stop")
 def stop_cmd() -> None:
-    """停止由 recall serve 记录的本地 Web 服务。"""
+    """停止由 python -m src.cli serve 记录的本地 Web 服务。"""
     result = server_runtime.stop_recorded_server()
     click.echo(result["message"])
 
@@ -1088,7 +1085,7 @@ def update_cmd(no_network: bool, force: bool) -> None:
             click.echo(f"{status['asset_name']}: {status['asset_url']}")
         if status.get("release_url"):
             click.echo(f"Release 页面: {status['release_url']}")
-        click.echo("安装前建议先运行: uv run recall stop")
+        click.echo("安装前建议先运行: uv run python -m src.cli stop")
     else:
         click.echo("当前已是最新版本。")
         if status.get("release_url"):

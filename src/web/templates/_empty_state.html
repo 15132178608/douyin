@@ -1,0 +1,54 @@
+<div class="empty empty-panel"
+     {% if empty_state and empty_state.state == 'syncing' %}
+     hx-get="{{ empty_state.sync_url }}"
+     hx-trigger="every 2s"
+     hx-target="#results"
+     hx-swap="innerHTML"
+     {% endif %}>
+  {% if empty_state %}
+  <div class="empty-icon {% if empty_state.state == 'failed' %}is-danger{% elif empty_state.state == 'syncing' %}is-syncing{% endif %}" aria-hidden="true">
+    {% if empty_state.state == 'failed' %}!{% elif empty_state.state == 'syncing' %}↻{% else %}+{% endif %}
+  </div>
+  <h2>{{ empty_state.title }}</h2>
+  <p>{{ empty_state.body }}</p>
+  {% if empty_state.progress %}
+  <div class="empty-progress">
+    <div class="empty-progress-meta">
+      <span>{{ empty_state.progress.stage }}</span>
+      <strong>{{ empty_state.progress.percent }}%</strong>
+    </div>
+    <div class="empty-progress-track"
+         role="progressbar"
+         aria-valuemin="0"
+         aria-valuemax="100"
+         aria-valuenow="{{ empty_state.progress.percent }}">
+      <span style="width: {{ empty_state.progress.percent }}%"></span>
+    </div>
+    <div class="empty-progress-note">
+      {% if empty_state.progress.elapsed_text %}<span>{{ empty_state.progress.elapsed_text }}</span>{% endif %}
+      <span>{{ empty_state.progress.eta_text }}</span>
+    </div>
+    <div class="empty-wait-dots" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+  </div>
+  {% endif %}
+  {% if empty_state.error %}
+  <p class="empty-error">{{ empty_state.error }}</p>
+  {% endif %}
+  <div class="empty-actions">
+    {% if empty_state.can_start_sync %}
+    <form hx-post="/jobs/sync"
+          hx-target="#results"
+          hx-swap="innerHTML">
+      <input type="hidden" name="kind" value="{{ content_kind }}">
+      <input type="hidden" name="max_pages" value="500">
+      <button class="btn-primary" type="submit">同步{{ content_label }}</button>
+    </form>
+    {% endif %}
+    <a class="btn-secondary empty-link" href="{{ empty_state.maintenance_url }}">去维护中心</a>
+  </div>
+  {% else %}
+  {{ empty_msg or "没找到。" }}
+  {% endif %}
+</div>

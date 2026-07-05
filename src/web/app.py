@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 import threading
+import time
 from typing import Optional
 from urllib.parse import quote, unquote, urlencode, urlparse
 
@@ -73,9 +74,50 @@ PAGINATION_WINDOW_SIZE = 7
 _AUTH_PUBLIC_PATHS = {"/login", "/logout"}
 
 # 每用户抖音扫码绑定状态：{user_id: {status, message, qr_path}}
-# status: idle | starting | qr_ready | success | failed
+# status: idle | starting | qr_ready | confirmed | success | failed
 _douyin_auth_sessions: dict[str, dict] = {}
 _douyin_auth_lock = threading.Lock()
+
+
+def _has_active_first_run_job(user_id: str, kind: str, content_kind: str) -> bool:
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT payload_json
+        FROM job_queue
+        WHERE user_id = ?
+          AND kind = ?
+          AND status IN ('pending', 'running')
+        """,
+        (normalize_user_id(user_id), kind),
+    ).fetchall()
+    if kind in {"sync_favorites", "sync_likes"}:
+        return bool(rows)
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        if (payload.get("content_kind") or "favorites") == content_kind:
+            return True
+    return False
+
+
+def _enqueue_first_run_jobs(user_id: str) -> list[str]:
+    normalized_user_id = normalize_user_id(user_id)
+    first_run_jobs = [
+        ("sync_favorites", "favorites", {"content_kind": "favorites", "max_pages": 500}),
+        ("sync_likes", "likes", {"content_kind": "likes", "max_pages": 500}),
+        ("index", "favorites", {"content_kind": "favorites"}),
+        ("index", "likes", {"content_kind": "likes"}),
+    ]
+    enqueued: list[str] = []
+    for kind, content_kind, payload in first_run_jobs:
+        if _has_active_first_run_job(normalized_user_id, kind, content_kind):
+            continue
+        jobs.enqueue_job(kind, user_id=normalized_user_id, payload=payload)
+        enqueued.append(kind)
+    return enqueued
 
 
 @app.middleware("http")
@@ -101,6 +143,9 @@ async def _attach_current_user(request: Request, call_next):
 def _start_background_workers() -> None:
     global _job_worker_thread
     if _job_worker_thread is None or not _job_worker_thread.is_alive():
+        recovered = jobs.recover_stale_running_jobs(stale_after_seconds=0)
+        if recovered:
+            logger.info("Recovered {} interrupted background job(s) before worker startup.", recovered)
         _job_worker_stop.clear()
         _job_worker_thread = threading.Thread(
             target=jobs.run_forever,
@@ -109,6 +154,20 @@ def _start_background_workers() -> None:
             daemon=True,
         )
         _job_worker_thread.start()
+    _maybe_prewarm_first_run_auth()
+
+
+def _maybe_prewarm_first_run_auth() -> None:
+    if settings.web_auth_required:
+        return
+    try:
+        user = accounts.ensure_default_user()
+        user_id = normalize_user_id(user["id"])
+        status = onboarding.get_onboarding_status(user_id)
+        if _should_auto_start_setup_auth(status):
+            _ensure_douyin_auth_started(user_id)
+    except Exception as e:
+        logger.warning("Could not prewarm first-run Douyin auth: {}", e)
 
 
 def _stop_background_workers() -> None:
@@ -185,6 +244,283 @@ def _stats(content_kind: str = "favorites", user_id: str = DEFAULT_USER_ID) -> d
     }
 
 
+def _coerce_datetime(value) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _elapsed_seconds(started_at, *, now: datetime | None = None) -> int:
+    start = _coerce_datetime(started_at)
+    if start is None:
+        return 0
+    current = now or datetime.now(timezone.utc)
+    return max(0, int((current - start).total_seconds()))
+
+
+def _format_duration_zh(seconds: int | float | None) -> str:
+    seconds = max(0, int(seconds or 0))
+    if seconds < 60:
+        return "不到 1 分钟"
+    minutes = max(1, round(seconds / 60))
+    if minutes < 60:
+        return f"{minutes} 分钟"
+    hours = minutes // 60
+    rest = minutes % 60
+    if rest == 0:
+        return f"{hours} 小时"
+    return f"{hours} 小时 {rest} 分钟"
+
+
+def _content_job_rows(content_kind: str, job_kind: str, user_id: str) -> list[dict]:
+    kind = get_content_kind(content_kind)
+    rows = get_connection().execute(
+        """
+        SELECT id, kind, payload_json, status, attempts, max_attempts,
+               next_run_at, created_at, started_at, finished_at, error_message
+        FROM job_queue
+        WHERE user_id = ?
+          AND kind = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT 30
+        """,
+        (normalize_user_id(user_id), job_kind),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        try:
+            payload = json.loads(item.get("payload_json") or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        if job_kind == "index" and (payload.get("content_kind") or "favorites") != kind.key:
+            continue
+        item["payload"] = payload
+        out.append(item)
+    return out
+
+
+def _latest_active_content_job(content_kind: str, job_kind: str, user_id: str) -> dict | None:
+    for job in _content_job_rows(content_kind, job_kind, user_id):
+        if job["status"] in {"pending", "running"}:
+            return job
+    return None
+
+
+def _sync_estimate_seconds(content_kind: str, user_id: str) -> int:
+    kind = get_content_kind(content_kind)
+    rows = get_connection().execute(
+        f"""
+        SELECT started_at, finished_at
+        FROM {kind.crawl_runs_table}
+        WHERE user_id = ?
+          AND status = 'success'
+          AND started_at IS NOT NULL
+          AND finished_at IS NOT NULL
+        ORDER BY finished_at DESC
+        LIMIT 5
+        """,
+        (normalize_user_id(user_id),),
+    ).fetchall()
+    durations: list[int] = []
+    for row in rows:
+        started = _coerce_datetime(row["started_at"])
+        finished = _coerce_datetime(row["finished_at"])
+        if started is None or finished is None:
+            continue
+        duration = int((finished - started).total_seconds())
+        if duration > 0:
+            durations.append(duration)
+    if durations:
+        return max(60, round(sum(durations) / len(durations)))
+    return 240 if kind.key == "likes" else 120
+
+
+def _sync_work_state(content_kind: str, user_id: str, job: dict, *, has_local_items: bool = False) -> dict:
+    kind = get_content_kind(content_kind)
+    refresh_url = f"{_kind_prefix(kind.key)}/empty-status" if kind.key != "favorites" else "/empty-status"
+    if has_local_items:
+        estimate = max(60, _sync_estimate_seconds(kind.key, user_id))
+        if job["status"] == "running":
+            elapsed = _elapsed_seconds(job["started_at"])
+            percent = min(92, max(12, int((elapsed / estimate) * 100)))
+            remaining = max(0, estimate - elapsed)
+            eta_text = "快完成了" if remaining <= 20 else f"预计还需 {_format_duration_zh(remaining)}"
+        else:
+            percent = 5
+            eta_text = "预计还需几分钟"
+        return {
+            "state": "syncing",
+            "title": f"正在后台更新{kind.label}",
+            "stage": "后台更新进行中",
+            "detail": "可以继续浏览，后台会自动同步最新数据并补全搜索索引。",
+            "percent": percent,
+            "elapsed_text": "",
+            "eta_text": eta_text,
+            "refresh_url": refresh_url,
+            "content_label": kind.label,
+        }
+
+    if job["status"] == "pending":
+        return {
+            "state": "syncing",
+            "title": f"正在整理{kind.label}",
+            "stage": "等待后台同步",
+            "detail": "后台队列正在排队，马上会开始读取抖音数据。",
+            "percent": 5,
+            "elapsed_text": "",
+            "eta_text": "预计还需几分钟",
+            "refresh_url": refresh_url,
+            "content_label": kind.label,
+        }
+
+    elapsed = _elapsed_seconds(job["started_at"])
+    estimate = max(60, _sync_estimate_seconds(kind.key, user_id))
+    percent = min(92, max(12, int((elapsed / estimate) * 100)))
+    remaining = max(0, estimate - elapsed)
+    eta_text = "快完成了" if remaining <= 20 else f"预计还需 {_format_duration_zh(remaining)}"
+    return {
+        "state": "syncing",
+        "title": f"正在整理{kind.label}",
+        "stage": "正在读取抖音数据",
+        "detail": "后台同步完成后会自动出现在这里。同步阶段的进度是根据历史耗时估算的。",
+        "percent": percent,
+        "elapsed_text": f"已等待 {_format_duration_zh(elapsed)}",
+        "eta_text": eta_text,
+        "refresh_url": refresh_url,
+        "content_label": kind.label,
+    }
+
+
+def _index_work_state(content_kind: str, user_id: str, job: dict, stats: dict) -> dict | None:
+    kind = get_content_kind(content_kind)
+    total = max(0, int(stats.get("total") or 0))
+    indexed = max(0, min(total, int(stats.get("indexed") or 0)))
+    if total <= 0 or indexed >= total:
+        return None
+    percent = max(3, min(99, int((indexed / total) * 100)))
+    elapsed = _elapsed_seconds(job["started_at"])
+    remaining_items = max(0, total - indexed)
+    if indexed > 0 and elapsed > 5:
+        seconds_per_item = elapsed / indexed
+        remaining_seconds = int(remaining_items * seconds_per_item)
+    else:
+        remaining_seconds = max(30, int(remaining_items * 0.35))
+    refresh_url = f"{_kind_prefix(kind.key)}/empty-status" if kind.key != "favorites" else "/empty-status"
+    return {
+        "state": "indexing",
+        "title": f"正在建立{kind.label}搜索索引",
+        "stage": f"{indexed} / {total} 已索引",
+        "detail": "数据已经在本地，索引完成后语义搜索会更完整。",
+        "percent": percent,
+        "elapsed_text": f"已等待 {_format_duration_zh(elapsed)}" if elapsed else "",
+        "eta_text": f"预计还需 {_format_duration_zh(remaining_seconds)}",
+        "refresh_url": refresh_url,
+        "content_label": kind.label,
+    }
+
+
+def _content_work_state(
+    content_kind: str,
+    user_id: str = DEFAULT_USER_ID,
+    *,
+    stats: dict | None = None,
+) -> dict | None:
+    kind = get_content_kind(content_kind)
+    user_id = normalize_user_id(user_id)
+    sync_kind = "sync_likes" if kind.key == "likes" else "sync_favorites"
+    active_sync = _latest_active_content_job(kind.key, sync_kind, user_id)
+    active_stats = stats or _stats(kind.key, user_id=user_id)
+    if active_sync is not None:
+        return _sync_work_state(
+            kind.key,
+            user_id,
+            active_sync,
+            has_local_items=int(active_stats.get("total") or 0) > 0,
+        )
+
+    active_index = _latest_active_content_job(kind.key, "index", user_id)
+    if active_index is None:
+        return None
+    return _index_work_state(kind.key, user_id, active_index, active_stats)
+
+
+def _content_sync_job_state(content_kind: str, user_id: str = DEFAULT_USER_ID) -> dict:
+    kind = get_content_kind(content_kind)
+    user_id = normalize_user_id(user_id)
+    job_kind = "sync_likes" if kind.key == "likes" else "sync_favorites"
+    rows = _content_job_rows(kind.key, job_kind, user_id)
+    if any(row["status"] in {"pending", "running"} for row in rows):
+        return {"state": "syncing", "error": "", "job_kind": job_kind}
+    for row in rows:
+        if row["status"] == "failed":
+            return {
+                "state": "failed",
+                "error": row["error_message"] or "",
+                "job_kind": job_kind,
+            }
+        if row["status"] == "success":
+            break
+    return {"state": "idle", "error": "", "job_kind": job_kind}
+
+
+def _empty_state_context(content_kind: str, user_id: str = DEFAULT_USER_ID) -> dict:
+    kind = get_content_kind(content_kind)
+    sync_state = _content_sync_job_state(kind.key, user_id=user_id)
+    stats = _stats(kind.key, user_id=user_id)
+    work_state = _content_work_state(kind.key, user_id=user_id, stats=stats)
+    prefix = _kind_prefix(kind.key)
+    sync_url = f"{prefix}/empty-status" if prefix else "/empty-status"
+    maintenance_url = "/maintenance"
+
+    if sync_state["state"] == "syncing":
+        return {
+            "state": "syncing",
+            "title": f"正在整理{kind.label}",
+            "body": f"后台同步完成后会自动出现在这里。{kind.label}较多时可能需要几分钟。",
+            "content_kind": kind.key,
+            "content_label": kind.label,
+            "sync_url": sync_url,
+            "maintenance_url": maintenance_url,
+            "can_start_sync": False,
+            "progress": work_state,
+        }
+    if sync_state["state"] == "failed":
+        return {
+            "state": "failed",
+            "title": f"{kind.label}同步失败",
+            "body": "登录态可能过期，或抖音接口暂时没有返回数据。可以去维护中心查看原因并重试。",
+            "error": sync_state.get("error", ""),
+            "content_kind": kind.key,
+            "content_label": kind.label,
+            "sync_url": sync_url,
+            "maintenance_url": maintenance_url,
+            "can_start_sync": True,
+        }
+    return {
+        "state": "idle",
+        "title": f"还没有同步{kind.label}",
+        "body": f"扫码登录后会自动同步；如果这里一直为空，可以手动发起一次{kind.label}同步。",
+        "content_kind": kind.key,
+        "content_label": kind.label,
+        "sync_url": sync_url,
+        "maintenance_url": maintenance_url,
+        "can_start_sync": True,
+    }
+
+
 def _row_get(row, key: str, default=None):
     try:
         return row[key]
@@ -225,6 +561,14 @@ def _current_user_id(request: Request) -> str:
     return normalize_user_id(getattr(request.state, "user_id", DEFAULT_USER_ID))
 
 
+def _should_show_setup_before_home(status: dict) -> bool:
+    return not bool(status.get("has_profile")) or not bool(status.get("has_any_items"))
+
+
+def _should_auto_start_setup_auth(status: dict) -> bool:
+    return _should_show_setup_before_home(status)
+
+
 def _fetch_douyin_profile_for_user(user_id: str) -> dict:
     from src.crawler.douyin import DouyinCrawler
 
@@ -232,7 +576,6 @@ def _fetch_douyin_profile_for_user(user_id: str) -> dict:
         headless=True,
         api_mode=True,
         hide_window=True,
-        browser_channel="chrome",
         profile_path=accounts.profile_path_for_user(user_id),
     ) as crawler:
         return crawler.get_self_profile()
@@ -310,6 +653,16 @@ def _run_douyin_auth(user_id: str) -> None:
     """后台线程：为指定用户运行抖音扫码授权，持续更新 _douyin_auth_sessions。"""
     from src.crawler.douyin import AuthQrCapture, DouyinCrawler
 
+    started_at = time.perf_counter()
+
+    def log_timing(stage: str) -> None:
+        logger.info(
+            "Douyin setup QR timing for {}: {} at {:.2f}s",
+            user_id,
+            stage,
+            time.perf_counter() - started_at,
+        )
+
     profile_path = accounts.profile_path_for_user(user_id)
     qr_dir = profile_path.parent / "auth"
     qr_dir.mkdir(parents=True, exist_ok=True)
@@ -323,39 +676,65 @@ def _run_douyin_auth(user_id: str) -> None:
                 "message": f"请用抖音 App 扫描二维码（有效期约 {ttl}，会自动刷新）",
                 "qr_path": str(capture.display_path or capture.path),
             }
+        log_timing("qr-ready")
+
+    def on_login_confirmed() -> None:
+        with _douyin_auth_lock:
+            current = _douyin_auth_sessions.get(user_id, {})
+            if current.get("status") not in {"success", "failed"}:
+                _douyin_auth_sessions[user_id] = {
+                    "status": "confirmed",
+                    "message": "扫码成功，正在自动同步...",
+                    "qr_path": None,
+                }
+        log_timing("login-confirmed")
 
     with _douyin_auth_lock:
         _douyin_auth_sessions[user_id] = {
             "status": "starting",
-            "message": "正在启动浏览器，请稍候...",
+            "message": "正在生成二维码，请稍候...",
             "qr_path": None,
         }
+    log_timing("thread-start")
     try:
         with DouyinCrawler(
-            headless=False,
+            headless=True,
             api_mode=True,
             hide_window=True,
-            browser_channel="chrome",
             profile_path=profile_path,
         ) as crawler:
+            log_timing("browser-ready")
             result = crawler.authorize_by_qr(
                 timeout_s=180,
                 screenshot_path=qr_path,
                 on_qr_capture=on_qr,
+                on_login_confirmed=on_login_confirmed,
             )
+            log_timing("auth-flow-finished")
             profile = {}
             if result.success:
                 try:
                     profile = crawler.get_self_profile()
+                    log_timing("profile-refreshed")
                 except Exception as e:
                     logger.warning("Could not refresh Douyin profile for {} after auth: {}", user_id, e)
         with _douyin_auth_lock:
             if result.success:
                 if profile:
                     accounts.update_douyin_profile(user_id, profile)
+                try:
+                    enqueued = _enqueue_first_run_jobs(user_id)
+                    sync_message = (
+                        "已自动开始同步收藏和喜欢，随后会生成搜索索引。"
+                        if enqueued
+                        else "同步和索引任务已在后台队列中。"
+                    )
+                except Exception as e:
+                    logger.exception("Could not enqueue first-run jobs for {} after auth: {}", user_id, e)
+                    sync_message = "绑定成功，但自动同步加入队列失败，请打开后台队列检查。"
                 _douyin_auth_sessions[user_id] = {
                     "status": "success",
-                    "message": f"{profile.get('nickname') or '抖音账号'}绑定成功！现在可以发起同步了。",
+                    "message": f"{profile.get('nickname') or '抖音账号'}绑定成功！{sync_message}",
                     "qr_path": None,
                 }
             else:
@@ -372,6 +751,21 @@ def _run_douyin_auth(user_id: str) -> None:
                 "message": f"出错了：{e}",
                 "qr_path": None,
             }
+
+
+def _ensure_douyin_auth_started(user_id: str, *, force: bool = False) -> None:
+    with _douyin_auth_lock:
+        current = _douyin_auth_sessions.get(user_id, {})
+        if not force and current.get("status") in ("starting", "qr_ready", "confirmed", "success", "failed"):
+            return
+        _douyin_auth_sessions[user_id] = {"status": "starting", "message": "正在生成二维码，请稍候...", "qr_path": None}
+        t = threading.Thread(
+            target=_run_douyin_auth,
+            args=(user_id,),
+            name=f"douyin-auth-{user_id}",
+            daemon=True,
+        )
+        t.start()
 
 
 def _job_queue_summary(user_id: str) -> dict:
@@ -411,17 +805,7 @@ async def auth_page(request: Request):
 @app.post("/auth/start", response_class=HTMLResponse)
 async def auth_start(request: Request):
     user_id = _current_user_id(request)
-    with _douyin_auth_lock:
-        current = _douyin_auth_sessions.get(user_id, {})
-        if current.get("status") not in ("starting", "qr_ready"):
-            _douyin_auth_sessions[user_id] = {"status": "starting", "message": "启动中...", "qr_path": None}
-            t = threading.Thread(
-                target=_run_douyin_auth,
-                args=(user_id,),
-                name=f"douyin-auth-{user_id}",
-                daemon=True,
-            )
-            t.start()
+    _ensure_douyin_auth_started(user_id, force=True)
     session = _douyin_auth_sessions.get(user_id, {})
     profile_exists = accounts.profile_path_for_user(user_id).exists()
     return templates.TemplateResponse(
@@ -500,21 +884,70 @@ async def auth_qr_image(request: Request):
 @app.get("/setup", response_class=HTMLResponse)
 async def setup_page(request: Request):
     user_id = _current_user_id(request)
-    session = _douyin_auth_sessions.get(user_id, {})
     status = onboarding.get_onboarding_status(user_id)
     profile_exists = bool(status.get("profile_path_exists") or status.get("has_profile"))
+    if _should_auto_start_setup_auth(status):
+        _ensure_douyin_auth_started(user_id)
     return templates.TemplateResponse(
         request,
         "setup.html",
         {
             "page": "setup",
             "status": status,
-            "auth_status": session.get("status", "idle"),
-            "auth_message": session.get("message", ""),
-            "qr_ready": session.get("status") == "qr_ready",
-            "profile_exists": profile_exists,
+            **_setup_auth_context(user_id, profile_exists=profile_exists),
             **_stats("favorites", user_id=user_id),
         },
+    )
+
+
+def _setup_auth_context(user_id: str, *, profile_exists: bool | None = None) -> dict:
+    session = _douyin_auth_sessions.get(user_id, {})
+    qr_path = str(session.get("qr_path") or "")
+    if profile_exists is None:
+        status = onboarding.get_onboarding_status(user_id)
+        profile_exists = bool(status.get("profile_path_exists") or status.get("has_profile"))
+    return {
+        "auth_status": session.get("status", "idle"),
+        "auth_message": session.get("message", ""),
+        "qr_ready": session.get("status") == "qr_ready",
+        "qr_version": hashlib.sha256(qr_path.encode("utf-8")).hexdigest()[:16] if qr_path else "",
+        "profile_exists": profile_exists,
+    }
+
+
+@app.post("/setup/auth-start", response_class=HTMLResponse)
+async def setup_auth_start(request: Request):
+    user_id = _current_user_id(request)
+    _ensure_douyin_auth_started(user_id, force=True)
+    return templates.TemplateResponse(
+        request,
+        "_setup_auth_status.html",
+        _setup_auth_context(user_id),
+    )
+
+
+@app.get("/setup/auth-status", response_class=HTMLResponse)
+async def setup_auth_status_fragment(request: Request):
+    user_id = _current_user_id(request)
+    return templates.TemplateResponse(
+        request,
+        "_setup_auth_status.html",
+        _setup_auth_context(user_id),
+    )
+
+
+@app.get("/setup/scan-state", response_class=HTMLResponse)
+async def setup_scan_state_fragment(request: Request, qr: str = "", state: str = ""):
+    user_id = _current_user_id(request)
+    context = _setup_auth_context(user_id)
+    if context["auth_status"] == "qr_ready" and qr == context.get("qr_version", ""):
+        return Response(status_code=204)
+    if context["auth_status"] == "confirmed" and state == "confirmed":
+        return Response(status_code=204)
+    return templates.TemplateResponse(
+        request,
+        "_setup_auth_status.html",
+        context,
     )
 
 
@@ -663,6 +1096,8 @@ async def enqueue_sync_job(
             "max_pages": max(1, int(max_pages or 500)),
         },
     )
+    if request.headers.get("HX-Request"):
+        return await _empty_status_for_kind(request, content.key)
     return JSONResponse({"ok": True, "job_id": job_id})
 
 
@@ -1380,6 +1815,9 @@ async def _index_for_kind(request: Request, content_kind: str,
                           page_size: int = HOME_PAGE_SIZE):
     kind = get_content_kind(content_kind)
     user_id = _current_user_id(request)
+    onboarding_status = onboarding.get_onboarding_status(user_id)
+    if _should_show_setup_before_home(onboarding_status):
+        return RedirectResponse("/setup", status_code=303)
     cat_label = _category_label(category, kind.key, user_id=user_id)
     page_data = _favorite_page(
         kind.key,
@@ -1395,21 +1833,62 @@ async def _index_for_kind(request: Request, content_kind: str,
     elif cat_label and not items:
         empty_msg = f"分类「{cat_label}」下没有条目"
     elif not items:
-        empty_msg = f"{kind.label}库还是空的，先跑 `recall {'crawl' if kind.key == 'favorites' else 'crawl-likes'}`"
+        empty_msg = ""
     else:
         empty_msg = ""
+    stats = _stats(kind.key, user_id=user_id)
     ctx = {
-        **_stats(kind.key, user_id=user_id),
+        **stats,
         "page": "home",
         **page_data,
         "empty_msg": empty_msg,
+        "empty_state": (
+            None
+            if author or cat_label or items
+            else _empty_state_context(kind.key, user_id=user_id)
+        ),
+        "work_state": None if not items else _content_work_state(kind.key, user_id=user_id, stats=stats),
         "current_category": category,
         "current_category_label": cat_label,
         "current_author": author,
         "current_author_label": f"@{author}" if author else None,
-        "onboarding_status": onboarding.get_onboarding_status(user_id),
+        "onboarding_status": onboarding_status,
     }
     return templates.TemplateResponse(request, "index.html", ctx)
+
+
+async def _empty_status_for_kind(request: Request, content_kind: str):
+    kind = get_content_kind(content_kind)
+    user_id = _current_user_id(request)
+    page_data = _favorite_page(kind.key, user_id=user_id)
+    stats = _stats(kind.key, user_id=user_id)
+    ctx = {
+        **stats,
+        "page": "home",
+        **page_data,
+        "empty_msg": "",
+        "empty_state": None if page_data["items"] else _empty_state_context(kind.key, user_id=user_id),
+        "work_state": (
+            _content_work_state(kind.key, user_id=user_id, stats=stats)
+            if page_data["items"] else None
+        ),
+        "current_category": None,
+        "current_category_label": None,
+        "current_author": None,
+        "current_author_label": None,
+        "onboarding_status": onboarding.get_onboarding_status(user_id),
+    }
+    return templates.TemplateResponse(request, "_grid.html", ctx)
+
+
+@app.get("/empty-status", response_class=HTMLResponse)
+async def favorites_empty_status(request: Request):
+    return await _empty_status_for_kind(request, "favorites")
+
+
+@app.get("/likes/empty-status", response_class=HTMLResponse)
+async def likes_empty_status(request: Request):
+    return await _empty_status_for_kind(request, "likes")
 
 
 @app.get("/page", response_class=HTMLResponse)

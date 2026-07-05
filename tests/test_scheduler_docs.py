@@ -16,12 +16,12 @@ def test_weekly_maintenance_script_runs_full_pipeline() -> None:
     script = ROOT / "scripts" / "run-weekly-maintenance.ps1"
     text = script.read_text(encoding="utf-8")
 
-    assert "uv run recall crawl" in text
-    assert "uv run recall crawl-likes" in text
-    assert "uv run recall index --kind favorites" in text
-    assert "uv run recall index --kind likes" in text
-    assert "uv run recall digest --kind favorites" in text
-    assert "uv run recall export --format sqlite" in text
+    assert "uv run python -m src.cli crawl" in text
+    assert "uv run python -m src.cli crawl-likes" in text
+    assert "uv run python -m src.cli index --kind favorites" in text
+    assert "uv run python -m src.cli index --kind likes" in text
+    assert "uv run python -m src.cli digest --kind favorites" in text
+    assert "uv run python -m src.cli export --format sqlite" in text
 
 
 def test_task_installer_registers_weekly_windows_task() -> None:
@@ -41,7 +41,7 @@ def test_scheduler_doc_references_scripts_and_manual_test_command() -> None:
     assert "scripts\\install-weekly-task.ps1" in text
     assert "scripts\\run-weekly-maintenance.ps1" in text
     assert "Get-ScheduledTask" in text
-    assert "uv run recall export --format sqlite" in text
+    assert "uv run python -m src.cli export --format sqlite" in text
 
 
 if __name__ == "__main__":

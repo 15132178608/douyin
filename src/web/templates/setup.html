@@ -1,135 +1,15 @@
 {% extends "base.html" %}
 
-{% block title %}首次设置 · 抖音回忆{% endblock %}
+{% block title %}扫码登录抖音 · 抖音回忆{% endblock %}
 
 {% block content %}
-<header>
-  <h1>首次设置</h1>
-  <span class="stat">按顺序完成绑定、同步和索引</span>
-</header>
-
-<div class="setup-hero">
-  <div>
-    <h2>把抖音收藏和喜欢整理到本机</h2>
-    <p>这个向导只操作你的本地电脑。数据、登录资料和数据库默认都留在本机，不会上传到服务器。</p>
-  </div>
-  <a class="btn-secondary setup-hero-link" href="/">返回首页</a>
-</div>
-
-<section class="setup-panel">
-  <div class="setup-panel-head">
-    <span class="setup-step">1</span>
-    <div>
-      <h2>本地环境</h2>
-      <p>安装脚本会准备依赖、浏览器运行时和数据库。这里显示当前状态。</p>
+<section class="setup-scan-shell">
+  <div class="setup-card setup-qr-panel">
+    <h1>扫码登录抖音</h1>
+    <p class="setup-hint">打开抖音 App 扫一扫，确认后会自动同步收藏和喜欢。</p>
+    <div class="setup-scan-card" id="setup-auth-status-area">
+      {% include "_setup_auth_status.html" %}
     </div>
-  </div>
-  <div id="setup-status"
-       hx-get="/setup/status"
-       hx-trigger="load, every 5s"
-       hx-swap="innerHTML">
-    {% include "_setup_status.html" %}
-  </div>
-  <div class="setup-checks">
-    <span class="setup-check {% if status.database_path_exists %}ok{% endif %}">
-      数据库 {% if status.database_path_exists %}已准备好{% else %}等待初始化{% endif %}
-    </span>
-    <span class="setup-check {% if status.profile_path_exists %}ok{% endif %}">
-      本地登录资料 {% if status.profile_path_exists %}已存在{% else %}尚未创建{% endif %}
-    </span>
   </div>
 </section>
-
-<div class="setup-grid">
-  <section class="setup-panel">
-    <div class="setup-panel-head">
-      <span class="setup-step">2</span>
-      <div>
-        <h2>绑定抖音账号</h2>
-        <p>点击按钮后等待二维码出现，用抖音 App 扫码确认登录。</p>
-      </div>
-    </div>
-    <div id="auth-status-area">
-      {% include "_auth_status.html" %}
-    </div>
-  </section>
-
-  <section class="setup-panel">
-    <div class="setup-panel-head">
-      <span class="setup-step">3</span>
-      <div>
-        <h2>同步数据</h2>
-        <p>把收藏和喜欢加入后台队列。首次同步可能需要几分钟。</p>
-      </div>
-    </div>
-    <div class="setup-actions">
-      <form hx-post="/jobs/sync" hx-swap="none" data-setup-action>
-        <input type="hidden" name="kind" value="favorites">
-        <button class="btn-primary" type="submit">同步收藏</button>
-      </form>
-      <form hx-post="/jobs/sync" hx-swap="none" data-setup-action>
-        <input type="hidden" name="kind" value="likes">
-        <button class="btn-secondary" type="submit">同步喜欢</button>
-      </form>
-    </div>
-    <p class="setup-hint" id="setup-sync-feedback">任务加入队列后可以留在本页看进度，也可以先去别的页面。</p>
-  </section>
-</div>
-
-<div class="setup-grid">
-  <section class="setup-panel">
-    <div class="setup-panel-head">
-      <span class="setup-step">4</span>
-      <div>
-        <h2>生成搜索索引</h2>
-        <p>同步后再生成索引，搜索和自动整理会更完整。首次索引会下载本地模型，耗时较长。</p>
-      </div>
-    </div>
-    <div class="setup-actions">
-      <form hx-post="/jobs/index" hx-swap="none" data-setup-action>
-        <input type="hidden" name="kind" value="favorites">
-        <button class="btn-primary" type="submit" {% if status.favorites.total == 0 %}disabled{% endif %}>索引收藏</button>
-      </form>
-      <form hx-post="/jobs/index" hx-swap="none" data-setup-action>
-        <input type="hidden" name="kind" value="likes">
-        <button class="btn-secondary" type="submit" {% if status.likes.total == 0 %}disabled{% endif %}>索引喜欢</button>
-      </form>
-    </div>
-    <p class="setup-hint">还没有同步到数据时，索引按钮会先保持不可用。</p>
-  </section>
-
-  <section class="setup-panel">
-    <div class="setup-panel-head">
-      <span class="setup-step">5</span>
-      <div>
-        <h2>完成</h2>
-        <p>有数据后就可以进入首页浏览；索引完成后可以语义搜索。</p>
-      </div>
-    </div>
-    {% if status.has_any_items %}
-      <a class="btn-primary setup-finish" href="/">进入首页</a>
-      <a class="btn-secondary setup-finish" href="/jobs">查看后台队列</a>
-    {% else %}
-      <button class="btn-secondary setup-finish" disabled>等待同步完成</button>
-      <a class="btn-secondary setup-finish" href="/jobs">查看后台队列</a>
-    {% endif %}
-  </section>
-</div>
-
-<script>
-  document.body.addEventListener("htmx:beforeRequest", function (event) {
-    var form = event.detail && event.detail.elt;
-    if (!form || !form.matches || !form.matches("[data-setup-action]")) return;
-    var feedback = document.getElementById("setup-sync-feedback");
-    if (feedback) feedback.textContent = "正在加入后台队列...";
-  });
-  document.body.addEventListener("htmx:afterRequest", function (event) {
-    var form = event.detail && event.detail.elt;
-    if (!form || !form.matches || !form.matches("[data-setup-action]")) return;
-    var feedback = document.getElementById("setup-sync-feedback");
-    if (!feedback) return;
-    var ok = event.detail && event.detail.xhr && event.detail.xhr.status < 400;
-    feedback.textContent = ok ? "已加入后台队列。状态会自动刷新。" : "加入队列失败，请稍后重试。";
-  });
-</script>
 {% endblock %}

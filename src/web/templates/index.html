@@ -19,14 +19,6 @@
 </div>
 
 <div id="results">
-  {% if not items and onboarding_status.needs_setup and not current_category and not current_author %}
-  <div class="empty setup-empty">
-    <h2>还没有同步{{ content_label }}</h2>
-    <p>先完成首次设置，绑定抖音账号后再同步收藏和喜欢。</p>
-    <a class="btn-primary setup-empty-action" href="/setup">开始设置</a>
-  </div>
-  {% else %}
-    {% include "_grid.html" %}
-  {% endif %}
+  {% include "_grid.html" %}
 </div>
 {% endblock %}

@@ -1,0 +1,13 @@
+{% if auth_status in ('confirmed', 'success') %}
+{% include "_setup_success_motion.html" %}
+{% elif auth_status == 'failed' %}
+<div class="status-row setup-status-row">
+  <span class="status-dot dot-failed"></span>
+  <span class="status-msg">{{ auth_message or "二维码已失效，请重新生成。" }}</span>
+</div>
+{% else %}
+<div class="status-row setup-status-row">
+  <span class="status-dot dot-qr"></span>
+  <span class="status-msg">等待手机扫码确认...</span>
+</div>
+{% endif %}

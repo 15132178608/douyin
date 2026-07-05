@@ -1,0 +1,21 @@
+<span data-auth-success="true" hidden></span>
+<div class="setup-success-motion" role="status" aria-live="polite">
+  <div class="setup-success-ring" aria-hidden="true">
+    <span class="setup-success-check">✓</span>
+  </div>
+  <div class="setup-success-copy">
+    <strong>扫码成功</strong>
+    <span>
+      {% if auth_status == 'confirmed' %}
+      正在登录并准备同步...
+      {% else %}
+      正在自动同步...
+      {% endif %}
+    </span>
+  </div>
+  <div class="setup-sync-dots" aria-hidden="true">
+    <span></span>
+    <span></span>
+    <span></span>
+  </div>
+</div>

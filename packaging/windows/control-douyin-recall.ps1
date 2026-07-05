@@ -6,6 +6,16 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+}
+catch {
+    # Console encoding setup is best effort; control actions should continue.
+}
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
 $DataRoot = Join-Path $AppRoot "data"
@@ -89,9 +99,9 @@ function Invoke-RecallCommand {
 
     Initialize-RuntimeEnvironment
     $uv = Find-Uv
-    & $uv "run" "recall" @RecallArgs
+    & $uv "run" "python" "-m" "src.cli" @RecallArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "uv run recall $($RecallArgs -join ' ') failed with exit code $LASTEXITCODE"
+        throw "uv run python -m src.cli $($RecallArgs -join ' ') failed with exit code $LASTEXITCODE"
     }
 }
 
@@ -138,7 +148,7 @@ function Write-PrepareFailureHint {
 
     $combined = "$step $ErrorMessage"
     $likely = "Runtime preparation failed during the recorded step."
-    $recommended = "Retry entry: Douyin Recall Prepare Runtime. If it fails again, run uv run recall diagnose and check the logs."
+    $recommended = "Retry entry: Douyin Recall Prepare Runtime. If it fails again, run uv run python -m src.cli diagnose and check the logs."
 
     if ($combined -like "*uv sync*") {
         $likely = "Python dependency download or virtual environment setup failed."
@@ -148,7 +158,7 @@ function Write-PrepareFailureHint {
         $likely = "Playwright Chromium download or browser setup failed."
         $recommended = "Retry entry: Douyin Recall Prepare Runtime after checking network access to Playwright downloads."
     }
-    elseif ($combined -like "*recall init-db*") {
+    elseif ($combined -like "*python -m src.cli init-db*" -or $combined -like "*recall init-db*") {
         $likely = "Database initialization failed; the install or data directory may not be writable."
         $recommended = "Retry entry: Douyin Recall Prepare Runtime after checking install directory write access."
     }
@@ -156,9 +166,9 @@ function Write-PrepareFailureHint {
         $likely = "uv install or discovery failed; network, proxy, PATH, or user install permissions may be blocking it."
         $recommended = "Retry entry: Douyin Recall Prepare Runtime after checking network/proxy settings, then reopen Windows if PATH was just updated."
     }
-    elseif ($combined -like "*recall status*") {
+    elseif ($combined -like "*python -m src.cli status*" -or $combined -like "*recall status*") {
         $likely = "Runtime preparation finished, but the final status check failed."
-        $recommended = "Run uv run recall diagnose, then use Douyin Recall Health Check for local state details."
+        $recommended = "Run uv run python -m src.cli diagnose, then use Douyin Recall Health Check for local state details."
     }
 
     Write-Host ""
@@ -167,7 +177,7 @@ function Write-PrepareFailureHint {
     Write-Host "Recommended next step: $recommended"
     Write-Host "Runtime cache: $DownloadRoot"
     Write-Host "Logs: $LogsDir"
-    Write-Host "Diagnostics: uv run recall diagnose"
+    Write-Host "Diagnostics: uv run python -m src.cli diagnose"
 }
 
 function Write-PrepareCompletionSummary {
@@ -396,7 +406,7 @@ function Get-ServiceAudit {
                 RecordedPid = $recordedPid
                 PortOwnerPid = $null
                 Message = "Recorded PID $recordedPid is stale and port $port has no listener."
-                NextStep = "Run Douyin Recall Repair State or uv run recall stop to clean stale state."
+                NextStep = "Run Douyin Recall Repair State or uv run python -m src.cli stop to clean stale state."
             }
         }
         return [pscustomobject]@{
@@ -406,7 +416,7 @@ function Get-ServiceAudit {
             RecordedPid = $recordedPid
             PortOwnerPid = $portOwner
             Message = "Recorded PID $recordedPid is stale, while port $port is owned by pid=$portOwner."
-            NextStep = "Run Douyin Recall Repair State or uv run recall stop to clean project state. Do not stop pid=$portOwner unless you recognize it."
+            NextStep = "Run Douyin Recall Repair State or uv run python -m src.cli stop to clean project state. Do not stop pid=$portOwner unless you recognize it."
         }
     }
 
@@ -418,7 +428,7 @@ function Get-ServiceAudit {
             RecordedPid = $recordedPid
             PortOwnerPid = $null
             Message = "Recorded PID $recordedPid still exists, but port $port has no listener."
-            NextStep = "Run Douyin Recall Repair State or uv run recall stop, then check status again."
+            NextStep = "Run Douyin Recall Repair State or uv run python -m src.cli stop, then check status again."
         }
     }
 
@@ -430,7 +440,7 @@ function Get-ServiceAudit {
             RecordedPid = $recordedPid
             PortOwnerPid = $portOwner
             Message = "Douyin Recall recorded PID $recordedPid owns port $port."
-            NextStep = "Run Douyin Recall Stop Service or uv run recall stop when you are done."
+            NextStep = "Run Douyin Recall Stop Service or uv run python -m src.cli stop when you are done."
         }
     }
 
@@ -441,7 +451,7 @@ function Get-ServiceAudit {
         RecordedPid = $recordedPid
         PortOwnerPid = $portOwner
         Message = "Recorded PID $recordedPid does not match port $port owner pid=$portOwner."
-        NextStep = "Run Douyin Recall Repair State or uv run recall stop to clean project state. Do not stop pid=$portOwner unless you recognize it."
+        NextStep = "Run Douyin Recall Repair State or uv run python -m src.cli stop to clean project state. Do not stop pid=$portOwner unless you recognize it."
     }
 }
 
@@ -548,11 +558,11 @@ function Prepare-Runtime {
         Invoke-PrepareStep -Name "Browser runtime" -CommandText "playwright install chromium" -LongRunning -Command {
             & $uv "run" "playwright" "install" "chromium"
         }
-        Invoke-PrepareStep -Name "Local database" -CommandText "recall init-db" -Command {
-            & $uv "run" "recall" "init-db"
+        Invoke-PrepareStep -Name "Local database" -CommandText "python -m src.cli init-db" -Command {
+            & $uv "run" "python" "-m" "src.cli" "init-db"
         }
-        Invoke-PrepareStep -Name "Service status" -CommandText "recall status" -Command {
-            & $uv "run" "recall" "status"
+        Invoke-PrepareStep -Name "Service status" -CommandText "python -m src.cli status" -Command {
+            & $uv "run" "python" "-m" "src.cli" "status"
         }
 
         Write-PrepareCompletionSummary
