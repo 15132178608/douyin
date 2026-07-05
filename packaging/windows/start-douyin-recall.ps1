@@ -8,8 +8,10 @@ Set-StrictMode -Version Latest
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
 $DataRoot = Join-Path $AppRoot "data"
+$RuntimeDir = Join-Path $DataRoot "runtime"
 $LogsDir = Join-Path $DataRoot "logs"
 $StartLog = Join-Path $LogsDir "start-douyin-recall.log"
+$StartupStatusPath = Join-Path $RuntimeDir "startup-status.html"
 $EnvPath = Join-Path $AppRoot ".env"
 $EnvExamplePath = Join-Path $AppRoot ".env.example"
 $DownloadRoot = "D:\codexDownload\douyinclaude-runtime"
@@ -18,8 +20,19 @@ $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
 $PlaywrightBrowsersDir = Join-Path $DownloadRoot "ms-playwright"
 $UvInstallScriptUrl = "https://astral.sh/uv/install.ps1"
 $script:CurrentStartupStep = ""
+$script:CurrentStartupStepKey = ""
 $script:StartupStepTotal = 7
 $script:StartupStepIndex = 0
+$script:StartupStatusOpened = $false
+$script:StartupStatusSteps = @(
+    [pscustomobject]@{ Key = "environment"; Label = "检查本地环境"; Detail = "准备本地运行目录，确认安装目录、日志目录和运行时缓存可写。"; Status = "waiting" },
+    [pscustomobject]@{ Key = "config"; Label = "检查本地配置"; Detail = "首次运行会从 .env.example 创建本地配置。"; Status = "waiting" },
+    [pscustomobject]@{ Key = "uv"; Label = "定位 uv 运行时"; Detail = "如果本机没有 uv，会为当前 Windows 用户安装。"; Status = "waiting" },
+    [pscustomobject]@{ Key = "python"; Label = "准备 Python 运行环境"; Detail = "准备 Python 依赖，执行 uv sync，首次运行可能需要下载依赖。"; Status = "waiting" },
+    [pscustomobject]@{ Key = "browser"; Label = "下载/安装 Playwright Chromium"; Detail = "准备 Playwright Chromium，浏览器运行时会缓存到 D:\codexDownload\douyinclaude-runtime。"; Status = "waiting" },
+    [pscustomobject]@{ Key = "database"; Label = "初始化本地数据库"; Detail = "准备本地 SQLite 数据库。"; Status = "waiting" },
+    [pscustomobject]@{ Key = "service"; Label = "启动本地 Web 服务"; Detail = "确认服务状态，只在需要时启动本地 Web。"; Status = "waiting" }
+)
 
 function Write-StartLog {
     param([string]$Message)
@@ -42,20 +55,154 @@ function Write-Step {
     Write-StartLog $Message
 }
 
+function ConvertTo-HtmlText {
+    param([string]$Value)
+
+    if ($null -eq $Value) {
+        return ""
+    }
+    return [System.Net.WebUtility]::HtmlEncode($Value)
+}
+
+function Set-StartupStatusStep {
+    param(
+        [string]$Key,
+        [string]$Status
+    )
+
+    foreach ($step in $script:StartupStatusSteps) {
+        if ($step.Key -eq $Key) {
+            $step.Status = $Status
+        }
+    }
+}
+
+function Write-StartupStatusPage {
+    param(
+        [string]$Summary,
+        [string]$Detail = "",
+        [string]$Tone = "running",
+        [switch]$Final
+    )
+
+    New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
+    $refresh = if ($Final) { "" } else { '<meta http-equiv="refresh" content="2">' }
+    $stepHtml = foreach ($step in $script:StartupStatusSteps) {
+        $status = ConvertTo-HtmlText $step.Status
+        $label = ConvertTo-HtmlText $step.Label
+        $stepDetail = ConvertTo-HtmlText $step.Detail
+        "<li class='step $status'><span class='dot'></span><div><strong>$label</strong><small>$status</small><p>$stepDetail</p></div></li>"
+    }
+    $summaryText = ConvertTo-HtmlText $Summary
+    $detailText = ConvertTo-HtmlText $Detail
+    $cacheText = ConvertTo-HtmlText $DownloadRoot
+    $logText = ConvertTo-HtmlText $StartLog
+    $logsText = ConvertTo-HtmlText $LogsDir
+    $html = @"
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  $refresh
+  <title>正在准备 Douyin Recall</title>
+  <style>
+    :root { color-scheme: light; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+    body { margin: 0; background: #f5f7fb; color: #1d2433; }
+    main { max-width: 860px; margin: 40px auto; padding: 0 24px; }
+    h1 { margin: 0 0 8px; font-size: 30px; }
+    .summary { padding: 18px 20px; border-radius: 8px; background: #fff; border: 1px solid #d9e0ea; }
+    .summary.running { border-left: 6px solid #2563eb; }
+    .summary.done { border-left: 6px solid #16803c; }
+    .summary.failed { border-left: 6px solid #c2410c; }
+    .summary p { margin: 8px 0 0; color: #556070; line-height: 1.5; }
+    .steps { list-style: none; margin: 20px 0; padding: 0; display: grid; gap: 10px; }
+    .step { display: grid; grid-template-columns: 18px 1fr; gap: 12px; padding: 14px 16px; background: #fff; border: 1px solid #d9e0ea; border-radius: 8px; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; background: #a8b1bf; margin-top: 4px; }
+    .step.running .dot { background: #2563eb; }
+    .step.done .dot { background: #16803c; }
+    .step.failed .dot { background: #c2410c; }
+    .step strong { display: block; font-size: 16px; }
+    .step small { display: inline-block; margin-top: 4px; color: #667085; }
+    .step p { margin: 8px 0 0; color: #556070; line-height: 1.45; }
+    .meta { margin-top: 20px; padding: 16px; background: #eef2f7; border-radius: 8px; color: #3a4658; line-height: 1.7; }
+    code { font-family: Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>正在准备 Douyin Recall</h1>
+    <section class="summary $Tone">
+      <strong>$summaryText</strong>
+      <p>$detailText</p>
+    </section>
+    <ol class="steps">
+      $($stepHtml -join "`n      ")
+    </ol>
+    <section class="meta">
+      <div>运行时缓存：<code>$cacheText</code></div>
+      <div>启动日志：<code>$logText</code></div>
+      <div>服务日志：<code>$logsText</code></div>
+      <div>诊断命令：<code>uv run recall diagnose</code></div>
+      <div>重试入口：<code>Douyin Recall Prepare Runtime</code></div>
+    </section>
+  </main>
+</body>
+</html>
+"@
+    Set-Content -Path $StartupStatusPath -Value $html -Encoding UTF8
+}
+
+function Show-StartupStatusPage {
+    if (-not $script:StartupStatusOpened -and (Test-Path $StartupStatusPath)) {
+        Start-Process $StartupStatusPath
+        $script:StartupStatusOpened = $true
+    }
+}
+
+function Update-StartupStatus {
+    param(
+        [string]$Key,
+        [string]$Status,
+        [string]$Summary,
+        [string]$Detail = "",
+        [string]$Tone = "running",
+        [switch]$OpenPage,
+        [switch]$Final
+    )
+
+    if ($Key) {
+        $script:CurrentStartupStepKey = $Key
+        Set-StartupStatusStep -Key $Key -Status $Status
+    }
+    Write-StartupStatusPage -Summary $Summary -Detail $Detail -Tone $Tone -Final:$Final
+    if ($OpenPage) {
+        Show-StartupStatusPage
+    }
+}
+
 function Write-StartupProgress {
     param(
         [string]$Message,
+        [string]$Key = "",
         [switch]$LongRunning
     )
 
     $script:StartupStepIndex += 1
     $script:CurrentStartupStep = $Message
+    if ($Key) {
+        $script:CurrentStartupStepKey = $Key
+        Set-StartupStatusStep -Key $Key -Status "running"
+    }
     Write-Host ""
     Write-Host "进度：[$script:StartupStepIndex/$script:StartupStepTotal] $Message"
     if ($LongRunning) {
         Write-Host "提示：首次运行可能需要几分钟，取决于网络和缓存状态。"
     }
     Write-StartLog "Progress [$script:StartupStepIndex/$script:StartupStepTotal] $Message"
+    if ($Key) {
+        $detail = if ($LongRunning) { "首次运行可能需要几分钟，取决于网络和缓存状态。" } else { "" }
+        Update-StartupStatus -Key $Key -Status "running" -Summary $Message -Detail $detail
+    }
 }
 
 function Test-DirectoryWritable {
@@ -243,9 +390,12 @@ function Write-StartupFailureHint {
 
 try {
     Set-Location $AppRoot
+    Write-StartupProgress -Message "检查本地环境" -Key "environment"
+    Update-StartupStatus -Key "environment" -Status "running" -Summary "检查本地环境" -Detail "正在确认安装目录、日志目录和运行时缓存目录。" -OpenPage
     Assert-StartupPreflight
-    Write-StartupProgress -Message "准备本地运行目录"
+    Update-StartupStatus -Key "environment" -Status "done" -Summary "本地环境检查完成" -Detail "安装目录、日志目录和运行时缓存目录可用。"
     New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
     New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
     New-Item -ItemType Directory -Path $DownloadRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $UvCacheDir -Force | Out-Null
@@ -260,7 +410,7 @@ try {
     Write-Host "提示：首次启动会下载 Python 依赖和 Playwright 浏览器，缓存目录：$DownloadRoot"
     Write-Host "提示：首次生成搜索索引时还会下载本地模型，耗时取决于网络。"
 
-    Write-StartupProgress -Message "检查本地配置文件"
+    Write-StartupProgress -Message "检查本地配置文件" -Key "config"
     if (-not (Test-Path $EnvPath)) {
         if (-not (Test-Path $EnvExamplePath)) {
             throw "Missing .env.example in $AppRoot"
@@ -268,32 +418,37 @@ try {
         Write-Step "Creating .env from .env.example"
         Copy-Item -Path $EnvExamplePath -Destination $EnvPath
     }
+    Update-StartupStatus -Key "config" -Status "done" -Summary "本地配置检查完成"
 
-    Write-StartupProgress -Message "定位 uv 运行时"
+    Write-StartupProgress -Message "定位 uv 运行时" -Key "uv"
     $uv = Find-Uv
+    Update-StartupStatus -Key "uv" -Status "done" -Summary "uv 运行时已就绪"
 
-    Write-StartupProgress -Message "准备 Python 依赖：uv sync" -LongRunning
+    Write-StartupProgress -Message "准备 Python 运行环境：uv sync" -Key "python" -LongRunning
     & $uv "sync"
     if ($LASTEXITCODE -ne 0) {
         throw "uv sync failed with exit code $LASTEXITCODE"
     }
+    Update-StartupStatus -Key "python" -Status "done" -Summary "Python 运行环境已就绪"
 
-    Write-StartupProgress -Message "准备 Playwright Chromium：uv run playwright install chromium" -LongRunning
+    Write-StartupProgress -Message "下载/安装 Playwright Chromium：uv run playwright install chromium" -Key "browser" -LongRunning
     & $uv "run" "playwright" "install" "chromium"
     if ($LASTEXITCODE -ne 0) {
         throw "playwright install chromium failed with exit code $LASTEXITCODE"
     }
+    Update-StartupStatus -Key "browser" -Status "done" -Summary "Playwright Chromium 已就绪"
 
-    Write-StartupProgress -Message "初始化本地数据库：uv run recall init-db"
+    Write-StartupProgress -Message "初始化本地数据库：uv run recall init-db" -Key "database"
     & $uv "run" "recall" "init-db"
     if ($LASTEXITCODE -ne 0) {
         throw "recall init-db failed with exit code $LASTEXITCODE"
     }
+    Update-StartupStatus -Key "database" -Status "done" -Summary "本地数据库已就绪"
 
     $port = Get-WebPort
     $url = "http://127.0.0.1:$port"
 
-    Write-StartupProgress -Message "检查本地 Web 服务：uv run recall status"
+    Write-StartupProgress -Message "启动本地 Web 服务：uv run recall status" -Key "service"
     & $uv "run" "recall" "status"
 
     try {
@@ -307,6 +462,7 @@ try {
         Start-Process -FilePath $uv -ArgumentList @("run", "recall", "serve") -WorkingDirectory $AppRoot -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
         Start-Sleep -Seconds 3
     }
+    Update-StartupStatus -Key "service" -Status "done" -Summary "准备完成" -Detail "Douyin Recall 本地 Web 界面即将打开。" -Tone "done" -Final
 
     if (-not $OpenPath.StartsWith("/")) {
         $OpenPath = "/$OpenPath"
@@ -334,6 +490,11 @@ catch {
     Write-Host "Douyin Recall failed to start:" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
     Write-Host ""
+    $failedKey = $script:CurrentStartupStepKey
+    if ([string]::IsNullOrWhiteSpace($failedKey)) {
+        $failedKey = "environment"
+    }
+    Update-StartupStatus -Key $failedKey -Status "failed" -Summary "准备失败" -Detail "失败阶段：$script:CurrentStartupStep。建议运行 Douyin Recall Prepare Runtime，或执行 uv run recall diagnose 导出诊断。" -Tone "failed" -Final
     Write-StartupFailureHint -ErrorMessage $_.Exception.Message -Port $port
     Write-Host ""
     Write-Troubleshooting -Port $port

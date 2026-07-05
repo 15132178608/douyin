@@ -79,6 +79,27 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("准备 Playwright Chromium", launcher)
         self.assertIn("初始化本地数据库", launcher)
 
+    def test_launcher_writes_runtime_preparation_status_page(self) -> None:
+        launcher = read("start-douyin-recall.ps1")
+
+        self.assertIn("$StartupStatusPath", launcher)
+        self.assertIn("function Write-StartupStatusPage", launcher)
+        self.assertIn("function Update-StartupStatus", launcher)
+        self.assertIn("function Show-StartupStatusPage", launcher)
+        self.assertIn("Start-Process $StartupStatusPath", launcher)
+        self.assertIn("正在准备 Douyin Recall", launcher)
+        self.assertIn("检查本地环境", launcher)
+        self.assertIn("准备 Python 运行环境", launcher)
+        self.assertIn("下载/安装 Playwright Chromium", launcher)
+        self.assertIn("初始化本地数据库", launcher)
+        self.assertIn("启动本地 Web 服务", launcher)
+        self.assertIn("准备完成", launcher)
+        self.assertIn("准备失败", launcher)
+        self.assertIn('meta http-equiv="refresh" content="2"', launcher)
+        self.assertIn("D:\\codexDownload\\douyinclaude-runtime", launcher)
+        self.assertIn("uv run recall diagnose", launcher)
+        self.assertIn("Douyin Recall Prepare Runtime", launcher)
+
     def test_launcher_prints_recovery_steps_when_startup_fails(self) -> None:
         launcher = read("start-douyin-recall.ps1")
 
