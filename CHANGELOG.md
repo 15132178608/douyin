@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Windows startup and `Douyin Recall Prepare Runtime` now print coarse step progress, so first-run dependency setup shows which step is running and which steps may take several minutes.
+- `Douyin Recall Prepare Runtime` now ends with a runtime preparation summary listing completed steps, install path, runtime cache, browser cache, logs, and next start/stop entries.
 
 ## v0.1.18
 

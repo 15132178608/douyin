@@ -189,6 +189,20 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Browser runtime", control)
         self.assertIn("Local database", control)
 
+    def test_prepare_runtime_prints_completion_summary(self) -> None:
+        control = read("control-douyin-recall.ps1")
+
+        self.assertIn("function Write-PrepareCompletionSummary", control)
+        self.assertIn("Runtime preparation summary", control)
+        self.assertIn("Prepared steps: $script:PrepareStepIndex/$script:PrepareStepTotal", control)
+        self.assertIn("Install directory:", control)
+        self.assertIn("Runtime cache:", control)
+        self.assertIn("Browser cache:", control)
+        self.assertIn("Logs:", control)
+        self.assertIn("Local web service: not started by this prepare action", control)
+        self.assertIn("Next step: Use Douyin Recall to start the web UI when needed.", control)
+        self.assertIn("Stop entry: Douyin Recall Stop Service", control)
+
     def test_control_script_is_ascii_for_windows_powershell_5(self) -> None:
         control = read("control-douyin-recall.ps1")
 

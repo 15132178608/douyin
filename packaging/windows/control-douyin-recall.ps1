@@ -170,6 +170,19 @@ function Write-PrepareFailureHint {
     Write-Host "Diagnostics: uv run recall diagnose"
 }
 
+function Write-PrepareCompletionSummary {
+    Write-Host ""
+    Write-Host "Runtime preparation summary"
+    Write-Host "Prepared steps: $script:PrepareStepIndex/$script:PrepareStepTotal"
+    Write-Host "Install directory: $AppRoot"
+    Write-Host "Runtime cache: $DownloadRoot"
+    Write-Host "Browser cache: $PlaywrightBrowsersDir"
+    Write-Host "Logs: $LogsDir"
+    Write-Host "Local web service: not started by this prepare action"
+    Write-Host "Next step: Use Douyin Recall to start the web UI when needed."
+    Write-Host "Stop entry: Douyin Recall Stop Service"
+}
+
 function Get-WebPort {
     if (-not (Test-Path $EnvPath)) {
         return 8000
@@ -542,8 +555,7 @@ function Prepare-Runtime {
             & $uv "run" "recall" "status"
         }
 
-        Write-Host ""
-        Write-Host "Runtime preparation finished. Use Douyin Recall to start the web UI when needed."
+        Write-PrepareCompletionSummary
     }
     catch {
         Write-PrepareFailureHint -ErrorMessage $_.Exception.Message
