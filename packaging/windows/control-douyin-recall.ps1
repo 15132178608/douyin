@@ -21,6 +21,7 @@ $UvDownloadDir = Join-Path $DownloadRoot "uv"
 $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
 $PlaywrightBrowsersDir = Join-Path $DownloadRoot "ms-playwright"
 $UvInstallScriptUrl = "https://astral.sh/uv/install.ps1"
+$script:CurrentPrepareStep = ""
 
 function Write-Header {
     param([string]$Title)
@@ -99,6 +100,7 @@ function Invoke-PrepareStep {
         [scriptblock]$Command
     )
 
+    $script:CurrentPrepareStep = "$Name ($CommandText)"
     Write-Host ""
     Write-Host "Prepare step: $Name"
     Write-Host "Command: $CommandText"
@@ -106,6 +108,48 @@ function Invoke-PrepareStep {
     if ($LASTEXITCODE -ne 0) {
         throw "$CommandText failed with exit code $LASTEXITCODE"
     }
+}
+
+function Write-PrepareFailureHint {
+    param([string]$ErrorMessage)
+
+    $step = $script:CurrentPrepareStep
+    if ([string]::IsNullOrWhiteSpace($step)) {
+        $step = "Runtime environment"
+    }
+
+    $combined = "$step $ErrorMessage"
+    $likely = "Runtime preparation failed during the recorded step."
+    $recommended = "Retry entry: Douyin Recall Prepare Runtime. If it fails again, run uv run recall diagnose and check the logs."
+
+    if ($combined -like "*uv sync*") {
+        $likely = "Python dependency download or virtual environment setup failed."
+        $recommended = "Retry entry: Douyin Recall Prepare Runtime after checking network, proxy, and write access to the runtime cache."
+    }
+    elseif ($combined -like "*playwright install chromium*" -or $combined -like "*playwright*chromium*") {
+        $likely = "Playwright Chromium download or browser setup failed."
+        $recommended = "Retry entry: Douyin Recall Prepare Runtime after checking network access to Playwright downloads."
+    }
+    elseif ($combined -like "*recall init-db*") {
+        $likely = "Database initialization failed; the install or data directory may not be writable."
+        $recommended = "Retry entry: Douyin Recall Prepare Runtime after checking install directory write access."
+    }
+    elseif ($combined -like "*uv.exe*" -or $combined -like "*uv installer*" -or $combined -like "*install-uv*") {
+        $likely = "uv install or discovery failed; network, proxy, PATH, or user install permissions may be blocking it."
+        $recommended = "Retry entry: Douyin Recall Prepare Runtime after checking network/proxy settings, then reopen Windows if PATH was just updated."
+    }
+    elseif ($combined -like "*recall status*") {
+        $likely = "Runtime preparation finished, but the final status check failed."
+        $recommended = "Run uv run recall diagnose, then use Douyin Recall Health Check for local state details."
+    }
+
+    Write-Host ""
+    Write-Host "Prepare failed at step: $step" -ForegroundColor Yellow
+    Write-Host "Likely cause: $likely"
+    Write-Host "Recommended next step: $recommended"
+    Write-Host "Runtime cache: $DownloadRoot"
+    Write-Host "Logs: $LogsDir"
+    Write-Host "Diagnostics: uv run recall diagnose"
 }
 
 function Get-WebPort {
@@ -452,31 +496,39 @@ function Start-DouyinRecall {
 }
 
 function Prepare-Runtime {
-    Initialize-RuntimeEnvironment
-    Write-Header "Prepare runtime"
-    Write-Host "Start Menu entry: Douyin Recall Prepare Runtime"
-    Write-Host "This action prepares dependencies only and does not start the local web service."
-    Write-Host "Runtime cache: $DownloadRoot"
-    Write-Host "Logs: $LogsDir"
-    Write-Host "You can rerun this action after network or dependency download failures."
+    try {
+        $script:CurrentPrepareStep = "Runtime environment"
+        Initialize-RuntimeEnvironment
+        Write-Header "Prepare runtime"
+        Write-Host "Start Menu entry: Douyin Recall Prepare Runtime"
+        Write-Host "This action prepares dependencies only and does not start the local web service."
+        Write-Host "Runtime cache: $DownloadRoot"
+        Write-Host "Logs: $LogsDir"
+        Write-Host "You can rerun this action after network or dependency download failures."
 
-    $uv = Find-OrInstall-Uv
+        $script:CurrentPrepareStep = "uv discovery and install"
+        $uv = Find-OrInstall-Uv
 
-    Invoke-PrepareStep -Name "Python dependencies" -CommandText "uv sync" -Command {
-        & $uv "sync"
-    }
-    Invoke-PrepareStep -Name "Browser runtime" -CommandText "playwright install chromium" -Command {
-        & $uv "run" "playwright" "install" "chromium"
-    }
-    Invoke-PrepareStep -Name "Local database" -CommandText "recall init-db" -Command {
-        & $uv "run" "recall" "init-db"
-    }
-    Invoke-PrepareStep -Name "Service status" -CommandText "recall status" -Command {
-        & $uv "run" "recall" "status"
-    }
+        Invoke-PrepareStep -Name "Python dependencies" -CommandText "uv sync" -Command {
+            & $uv "sync"
+        }
+        Invoke-PrepareStep -Name "Browser runtime" -CommandText "playwright install chromium" -Command {
+            & $uv "run" "playwright" "install" "chromium"
+        }
+        Invoke-PrepareStep -Name "Local database" -CommandText "recall init-db" -Command {
+            & $uv "run" "recall" "init-db"
+        }
+        Invoke-PrepareStep -Name "Service status" -CommandText "recall status" -Command {
+            & $uv "run" "recall" "status"
+        }
 
-    Write-Host ""
-    Write-Host "Runtime preparation finished. Use Douyin Recall to start the web UI when needed."
+        Write-Host ""
+        Write-Host "Runtime preparation finished. Use Douyin Recall to start the web UI when needed."
+    }
+    catch {
+        Write-PrepareFailureHint -ErrorMessage $_.Exception.Message
+        throw
+    }
 }
 
 function Open-MaintenanceCenter {

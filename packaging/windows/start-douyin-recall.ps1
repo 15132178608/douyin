@@ -17,6 +17,7 @@ $UvDownloadDir = Join-Path $DownloadRoot "uv"
 $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
 $PlaywrightBrowsersDir = Join-Path $DownloadRoot "ms-playwright"
 $UvInstallScriptUrl = "https://astral.sh/uv/install.ps1"
+$script:CurrentStartupStep = ""
 
 function Write-StartLog {
     param([string]$Message)
@@ -33,6 +34,7 @@ function Write-StartLog {
 
 function Write-Step {
     param([string]$Message)
+    $script:CurrentStartupStep = $Message
     Write-Host ""
     Write-Host "==> $Message"
     Write-StartLog $Message
@@ -175,6 +177,52 @@ function Write-Troubleshooting {
     Write-Host "运行时下载/缓存： $DownloadRoot"
 }
 
+function Write-StartupFailureHint {
+    param(
+        [string]$ErrorMessage,
+        [int]$Port = 8000
+    )
+
+    $step = $script:CurrentStartupStep
+    if ([string]::IsNullOrWhiteSpace($step)) {
+        $step = "尚未记录启动阶段"
+    }
+
+    $combined = "$step $ErrorMessage"
+    $cause = "启动流程在当前阶段失败，需要结合日志确认原始错误。"
+    $next = "先运行开始菜单里的 Douyin Recall Prepare Runtime；如果仍失败，再运行 uv run recall diagnose 导出诊断。"
+
+    if ($combined -like "*uv sync*") {
+        $cause = "Python 依赖下载或本地虚拟环境准备失败，常见原因是网络、代理、缓存或安装目录写入权限。"
+        $next = "确认网络和 D:\codexDownload\douyinclaude-runtime 可写后，运行 Douyin Recall Prepare Runtime 重试。"
+    }
+    elseif ($combined -like "*playwright install chromium*" -or $combined -like "*playwright*chromium*") {
+        $cause = "Playwright Chromium 浏览器运行时下载或安装失败，常见原因是网络、代理或运行时缓存目录不可写。"
+        $next = "确认网络可访问 Playwright 下载源后，运行 Douyin Recall Prepare Runtime 重试。"
+    }
+    elseif ($combined -like "*uv not found*" -or $combined -like "*uv.exe*" -or $combined -like "*install-uv*") {
+        $cause = "uv 安装或发现失败，常见原因是网络、代理、PATH 未刷新或当前用户安装目录不可写。"
+        $next = "检查网络/代理后重新打开 Douyin Recall Prepare Runtime，必要时重启 Windows 让 PATH 生效。"
+    }
+    elseif ($combined -like "*recall init-db*") {
+        $cause = "本地数据库初始化失败，常见原因是安装目录或 data 目录无写入权限。"
+        $next = "确认安装目录可写后运行 Douyin Recall Prepare Runtime；仍失败时运行 uv run recall diagnose。"
+    }
+    elseif ($combined -like "*recall serve*") {
+        $cause = "本地 Web 服务启动失败，常见原因是端口占用、旧状态文件残留或服务日志里有应用错误。"
+        $next = "先运行 Douyin Recall Health Check 或 Douyin Recall Repair State，再查看 $LogsDir 中的 serve.err.log。"
+    }
+
+    Write-Host "失败阶段：$step" -ForegroundColor Yellow
+    Write-Host "可能原因：$cause"
+    Write-Host "建议下一步：$next"
+    Write-Host "维护中心：http://127.0.0.1:$Port/maintenance"
+    Write-Host "诊断命令：uv run recall diagnose"
+    Write-Host "运行时下载/缓存：$DownloadRoot"
+    Write-Host "启动日志：$StartLog"
+    Write-Host "服务日志：$LogsDir"
+}
+
 try {
     Set-Location $AppRoot
     Assert-StartupPreflight
@@ -264,6 +312,8 @@ catch {
     Write-Host ""
     Write-Host "Douyin Recall failed to start:" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host ""
+    Write-StartupFailureHint -ErrorMessage $_.Exception.Message -Port $port
     Write-Host ""
     Write-Troubleshooting -Port $port
     Read-Host "Press Enter to close"

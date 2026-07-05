@@ -22,6 +22,8 @@ D:\codexDownload\douyinclaude-runtime
 
 如果首次启动卡在 uv、Python 依赖、Playwright Chromium 或数据库初始化，可以点击开始菜单里的 `Douyin Recall Prepare Runtime`。这个入口只准备运行时：安装或定位 uv、执行 `uv sync`、`playwright install chromium`、`recall init-db` 和 `recall status`；它不会启动本地 Web 服务，也不会打开浏览器。网络恢复后可以反复运行它。
 
+从 v0.1.18 开始，启动失败窗口会直接显示 `失败阶段`、`可能原因` 和 `建议下一步`。如果失败发生在 `uv sync`、`playwright install chromium`、`recall init-db` 或 `recall serve`，提示会指向对应的重试入口、日志或健康检查。`Douyin Recall Prepare Runtime` 失败时也会显示 `Prepare failed at step:`、`Likely cause:` 和 `Recommended next step:`，用于确认是依赖、浏览器、数据库还是最终状态检查卡住。
+
 ## 启动失败先看哪里
 
 启动脚本会把自己的关键步骤写到：

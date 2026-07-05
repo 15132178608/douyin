@@ -1,5 +1,5 @@
 #define MyAppName "Douyin Recall"
-#define MyAppVersion "0.1.17"
+#define MyAppVersion "0.1.18"
 #define MyAppPublisher "xiaojiang"
 
 #ifndef SourceRoot

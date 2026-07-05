@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.18
+
+- Startup failures now print the failed stage, likely cause, and recommended next step in the Windows launcher.
+- `Douyin Recall Prepare Runtime` now reports the failed preparation step before returning an error, making `uv sync`, Playwright, database, and status-check failures easier to retry.
+- Failure output points users to logs, `uv run recall diagnose`, runtime cache location, Health Check, Repair State, and the safe Prepare Runtime retry entry.
+
+See [docs/releases/v0.1.18.md](docs/releases/v0.1.18.md).
+
 ## v0.1.17
 
 - Added `Douyin Recall Prepare Runtime` for installed Windows builds so first-launch dependency setup can be retried without starting the Web service.
