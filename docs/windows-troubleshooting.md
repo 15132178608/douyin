@@ -22,7 +22,7 @@ D:\codexDownload\douyinclaude-runtime
 
 如果首次启动卡在 uv、Python 依赖、Playwright Chromium 或数据库初始化，可以点击开始菜单里的 `Douyin Recall Prepare Runtime`。这个入口只准备运行时：安装或定位 uv、执行 `uv sync`、`playwright install chromium`、`recall init-db` 和 `recall status`；它不会启动本地 Web 服务，也不会打开浏览器。网络恢复后可以反复运行它。启动脚本和 Prepare Runtime 都会显示步骤级进度；看到“首次运行可能需要几分钟”时，通常是在下载或准备依赖。Prepare Runtime 成功结束后会打印准备摘要，包括已完成步骤、安装目录、运行时缓存、浏览器缓存、日志目录和下一步启动入口。
 
-从新版开始，点击 `Douyin Recall` 首次启动时还会打开一个本地状态页，文件位于：
+从 v0.1.19 开始，点击 `Douyin Recall` 首次启动时还会打开一个本地状态页，文件位于：
 
 ```text
 data\runtime\startup-status.html
