@@ -18,6 +18,8 @@ $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
 $PlaywrightBrowsersDir = Join-Path $DownloadRoot "ms-playwright"
 $UvInstallScriptUrl = "https://astral.sh/uv/install.ps1"
 $script:CurrentStartupStep = ""
+$script:StartupStepTotal = 7
+$script:StartupStepIndex = 0
 
 function Write-StartLog {
     param([string]$Message)
@@ -38,6 +40,22 @@ function Write-Step {
     Write-Host ""
     Write-Host "==> $Message"
     Write-StartLog $Message
+}
+
+function Write-StartupProgress {
+    param(
+        [string]$Message,
+        [switch]$LongRunning
+    )
+
+    $script:StartupStepIndex += 1
+    $script:CurrentStartupStep = $Message
+    Write-Host ""
+    Write-Host "进度：[$script:StartupStepIndex/$script:StartupStepTotal] $Message"
+    if ($LongRunning) {
+        Write-Host "提示：首次运行可能需要几分钟，取决于网络和缓存状态。"
+    }
+    Write-StartLog "Progress [$script:StartupStepIndex/$script:StartupStepTotal] $Message"
 }
 
 function Test-DirectoryWritable {
@@ -226,6 +244,7 @@ function Write-StartupFailureHint {
 try {
     Set-Location $AppRoot
     Assert-StartupPreflight
+    Write-StartupProgress -Message "准备本地运行目录"
     New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
     New-Item -ItemType Directory -Path $DownloadRoot -Force | Out-Null
@@ -241,6 +260,7 @@ try {
     Write-Host "提示：首次启动会下载 Python 依赖和 Playwright 浏览器，缓存目录：$DownloadRoot"
     Write-Host "提示：首次生成搜索索引时还会下载本地模型，耗时取决于网络。"
 
+    Write-StartupProgress -Message "检查本地配置文件"
     if (-not (Test-Path $EnvPath)) {
         if (-not (Test-Path $EnvExamplePath)) {
             throw "Missing .env.example in $AppRoot"
@@ -249,21 +269,22 @@ try {
         Copy-Item -Path $EnvExamplePath -Destination $EnvPath
     }
 
+    Write-StartupProgress -Message "定位 uv 运行时"
     $uv = Find-Uv
 
-    Write-Step "Installing Python dependencies with: uv sync"
+    Write-StartupProgress -Message "准备 Python 依赖：uv sync" -LongRunning
     & $uv "sync"
     if ($LASTEXITCODE -ne 0) {
         throw "uv sync failed with exit code $LASTEXITCODE"
     }
 
-    Write-Step "Installing browser runtime with: uv run playwright install chromium"
+    Write-StartupProgress -Message "准备 Playwright Chromium：uv run playwright install chromium" -LongRunning
     & $uv "run" "playwright" "install" "chromium"
     if ($LASTEXITCODE -ne 0) {
         throw "playwright install chromium failed with exit code $LASTEXITCODE"
     }
 
-    Write-Step "Initializing local database"
+    Write-StartupProgress -Message "初始化本地数据库：uv run recall init-db"
     & $uv "run" "recall" "init-db"
     if ($LASTEXITCODE -ne 0) {
         throw "recall init-db failed with exit code $LASTEXITCODE"
@@ -272,7 +293,7 @@ try {
     $port = Get-WebPort
     $url = "http://127.0.0.1:$port"
 
-    Write-Step "Checking local web server status with: uv run recall status"
+    Write-StartupProgress -Message "检查本地 Web 服务：uv run recall status"
     & $uv "run" "recall" "status"
 
     try {

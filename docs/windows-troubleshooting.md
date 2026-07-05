@@ -20,7 +20,7 @@ D:\codexDownload\douyinclaude-runtime
 
 安装包启动脚本会设置 `UV_LINK_MODE=copy`。这是为了避免缓存目录在 D 盘、安装目录在 C 盘时，`uv` 因跨盘 hardlink 不可用而打印 warning；它不会改变下载目录，也不会影响数据目录。
 
-如果首次启动卡在 uv、Python 依赖、Playwright Chromium 或数据库初始化，可以点击开始菜单里的 `Douyin Recall Prepare Runtime`。这个入口只准备运行时：安装或定位 uv、执行 `uv sync`、`playwright install chromium`、`recall init-db` 和 `recall status`；它不会启动本地 Web 服务，也不会打开浏览器。网络恢复后可以反复运行它。
+如果首次启动卡在 uv、Python 依赖、Playwright Chromium 或数据库初始化，可以点击开始菜单里的 `Douyin Recall Prepare Runtime`。这个入口只准备运行时：安装或定位 uv、执行 `uv sync`、`playwright install chromium`、`recall init-db` 和 `recall status`；它不会启动本地 Web 服务，也不会打开浏览器。网络恢复后可以反复运行它。启动脚本和 Prepare Runtime 都会显示步骤级进度；看到“首次运行可能需要几分钟”时，通常是在下载或准备依赖。
 
 从 v0.1.18 开始，启动失败窗口会直接显示 `失败阶段`、`可能原因` 和 `建议下一步`。如果失败发生在 `uv sync`、`playwright install chromium`、`recall init-db` 或 `recall serve`，提示会指向对应的重试入口、日志或健康检查。`Douyin Recall Prepare Runtime` 失败时也会显示 `Prepare failed at step:`、`Likely cause:` 和 `Recommended next step:`，用于确认是依赖、浏览器、数据库还是最终状态检查卡住。
 

@@ -22,6 +22,8 @@ $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
 $PlaywrightBrowsersDir = Join-Path $DownloadRoot "ms-playwright"
 $UvInstallScriptUrl = "https://astral.sh/uv/install.ps1"
 $script:CurrentPrepareStep = ""
+$script:PrepareStepTotal = 5
+$script:PrepareStepIndex = 0
 
 function Write-Header {
     param([string]$Title)
@@ -97,16 +99,32 @@ function Invoke-PrepareStep {
     param(
         [string]$Name,
         [string]$CommandText,
-        [scriptblock]$Command
+        [scriptblock]$Command,
+        [switch]$LongRunning
     )
 
     $script:CurrentPrepareStep = "$Name ($CommandText)"
-    Write-Host ""
-    Write-Host "Prepare step: $Name"
-    Write-Host "Command: $CommandText"
+    Write-PrepareProgress -Name $Name -CommandText $CommandText -LongRunning:$LongRunning
     & $Command
     if ($LASTEXITCODE -ne 0) {
         throw "$CommandText failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Write-PrepareProgress {
+    param(
+        [string]$Name,
+        [string]$CommandText,
+        [switch]$LongRunning
+    )
+
+    $script:PrepareStepIndex += 1
+    Write-Host ""
+    Write-Host "Step $script:PrepareStepIndex/$script:PrepareStepTotal - $Name"
+    Write-Host "Prepare step: $Name"
+    Write-Host "Command: $CommandText"
+    if ($LongRunning) {
+        Write-Host "This step can take several minutes on first run."
     }
 }
 
@@ -497,6 +515,7 @@ function Start-DouyinRecall {
 
 function Prepare-Runtime {
     try {
+        $script:PrepareStepIndex = 0
         $script:CurrentPrepareStep = "Runtime environment"
         Initialize-RuntimeEnvironment
         Write-Header "Prepare runtime"
@@ -507,12 +526,13 @@ function Prepare-Runtime {
         Write-Host "You can rerun this action after network or dependency download failures."
 
         $script:CurrentPrepareStep = "uv discovery and install"
+        Write-PrepareProgress -Name "uv discovery and install" -CommandText "Find or install uv" -LongRunning
         $uv = Find-OrInstall-Uv
 
-        Invoke-PrepareStep -Name "Python dependencies" -CommandText "uv sync" -Command {
+        Invoke-PrepareStep -Name "Python dependencies" -CommandText "uv sync" -LongRunning -Command {
             & $uv "sync"
         }
-        Invoke-PrepareStep -Name "Browser runtime" -CommandText "playwright install chromium" -Command {
+        Invoke-PrepareStep -Name "Browser runtime" -CommandText "playwright install chromium" -LongRunning -Command {
             & $uv "run" "playwright" "install" "chromium"
         }
         Invoke-PrepareStep -Name "Local database" -CommandText "recall init-db" -Command {

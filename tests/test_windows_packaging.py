@@ -66,6 +66,19 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("uv run recall serve", launcher)
         self.assertIn("http://127.0.0.1:", launcher)
 
+    def test_launcher_prints_coarse_startup_progress(self) -> None:
+        launcher = read("start-douyin-recall.ps1")
+
+        self.assertIn("$script:StartupStepTotal", launcher)
+        self.assertIn("$script:StartupStepIndex", launcher)
+        self.assertIn("function Write-StartupProgress", launcher)
+        self.assertIn("进度：[$script:StartupStepIndex/$script:StartupStepTotal]", launcher)
+        self.assertIn("首次运行可能需要几分钟", launcher)
+        self.assertIn("准备本地运行目录", launcher)
+        self.assertIn("准备 Python 依赖", launcher)
+        self.assertIn("准备 Playwright Chromium", launcher)
+        self.assertIn("初始化本地数据库", launcher)
+
     def test_launcher_prints_recovery_steps_when_startup_fails(self) -> None:
         launcher = read("start-douyin-recall.ps1")
 
@@ -161,6 +174,20 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn('-Action ""prepare""', script)
         self.assertNotIn("Remove-Item -Recurse", control)
         self.assertNotIn("rm -rf", control)
+
+    def test_prepare_runtime_prints_coarse_progress(self) -> None:
+        control = read("control-douyin-recall.ps1")
+
+        self.assertIn("$script:PrepareStepTotal", control)
+        self.assertIn("$script:PrepareStepIndex", control)
+        self.assertIn("function Write-PrepareProgress", control)
+        self.assertIn("Step $script:PrepareStepIndex/$script:PrepareStepTotal", control)
+        self.assertIn("This step can take several minutes on first run.", control)
+        self.assertIn("Prepare step: $Name", control)
+        self.assertIn("uv discovery and install", control)
+        self.assertIn("Python dependencies", control)
+        self.assertIn("Browser runtime", control)
+        self.assertIn("Local database", control)
 
     def test_control_script_is_ascii_for_windows_powershell_5(self) -> None:
         control = read("control-douyin-recall.ps1")

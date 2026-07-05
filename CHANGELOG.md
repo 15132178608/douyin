@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Windows startup and `Douyin Recall Prepare Runtime` now print coarse step progress, so first-run dependency setup shows which step is running and which steps may take several minutes.
+
 ## v0.1.18
 
 - Startup failures now print the failed stage, likely cause, and recommended next step in the Windows launcher.
