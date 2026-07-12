@@ -71,6 +71,7 @@ C:\Users\<你的用户名>\AppData\Local\Programs\DouyinRecall\data\logs
 - `Douyin Recall Backups`：打开 `data\exports` 备份目录。
 - `Douyin Recall Restore Center`：打开 `/maintenance` 的恢复中心；恢复前仍会校验备份并要求输入确认文字。
 - `Douyin Recall Verify Backup`：只读校验 `data\exports` 里最新的手动备份或安装前备份，不会替换当前数据库。
+- `Douyin Recall Rollback Check`：只读校验最近一次 `delivery-manifest-*.json` 记录的发布前回滚点，不会替换当前数据库。
 
 维护中心 `/maintenance` 会检查最近失败的同步任务和抓取记录。如果看到 `登录态可能过期`，先点击 `Douyin Recall Account Recovery`，或打开 `/auth` 重新扫码，再重新同步收藏和喜欢。
 
@@ -91,6 +92,7 @@ uv run python -m src.cli status
 uv run python -m src.cli diagnose
 uv run python -m src.cli update
 uv run python -m src.cli verify-backup
+uv run python -m src.cli rollback-from-manifest --manifest data\release-checks\delivery-manifest-YYYYMMDD-HHMMSS.json
 ```
 
 - `uv run python -m src.cli status`：查看本地 Web 服务是否还在运行、PID、端口 owner 和安全下一步。
@@ -98,6 +100,7 @@ uv run python -m src.cli verify-backup
 - `uv run python -m src.cli diagnose`：导出脱敏诊断包，排查失败任务、服务状态和日志摘要。
 - `uv run python -m src.cli update`：检查 GitHub Release 上是否有新版安装包；只读检查，不会自动下载或安装。
 - `uv run python -m src.cli verify-backup`：只读校验最新的 `recall-backup-*.db` 或 `pre-install-recall-*.db` 是否可读取、完整性通过且必要表存在。
+- `uv run python -m src.cli rollback-from-manifest --manifest ...`：只读校验发布证据里的 `pre-release-recall-*.db`，确认 SHA256 和关键表数量一致；不加 `--apply` 不会恢复数据库。
 
 如果网页能打开，维护中心在：
 
@@ -162,4 +165,4 @@ uv run python -m src.cli update
 uv run python -m src.cli stop
 ```
 
-也可以先点击 `Douyin Recall Backup Now` 手动生成一份备份；安装器本身还会尽量生成 `pre-install-recall-*.db` 安全备份。备份生成后可以点击 `Douyin Recall Verify Backup`，或运行 `uv run python -m src.cli verify-backup` 做一次只读恢复演练。
+也可以先点击 `Douyin Recall Backup Now` 手动生成一份备份；安装器本身还会尽量生成 `pre-install-recall-*.db` 安全备份。备份生成后可以点击 `Douyin Recall Verify Backup`，或运行 `uv run python -m src.cli verify-backup` 做一次只读恢复演练。发布证据存在时，也可以点击 `Douyin Recall Rollback Check`，或运行 `uv run python -m src.cli rollback-from-manifest --manifest data\release-checks\delivery-manifest-YYYYMMDD-HHMMSS.json` 做只读回滚校验。

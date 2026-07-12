@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -106,21 +107,29 @@ def clear_server_state(runtime_dir: Path | None = None) -> None:
             path.unlink()
 
 
+def _is_process_running_windows(pid: int) -> bool:
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    ERROR_ACCESS_DENIED = 5
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+    try:
+        exit_code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return True
+        return int(exit_code.value) == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def is_process_running(pid: int) -> bool:
     if pid <= 0:
         return False
     if sys.platform.startswith("win"):
-        result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"],
-            capture_output=True,
-            check=False,
-        )
-        stdout = result.stdout or b""
-        if isinstance(stdout, bytes):
-            text = stdout.decode("utf-8", errors="ignore")
-        else:
-            text = str(stdout)
-        return str(pid) in text
+        return _is_process_running_windows(int(pid))
     try:
         os.kill(pid, 0)
         return True

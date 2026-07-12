@@ -15,8 +15,10 @@ catch {
 }
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
+$env:UV_NO_DEV = "1"
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$LauncherPath = $MyInvocation.MyCommand.Path
+$ScriptDir = Split-Path -Parent $LauncherPath
 $AppRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
 $DataRoot = Join-Path $AppRoot "data"
 $RuntimeDir = Join-Path $DataRoot "runtime"
@@ -270,6 +272,141 @@ function Test-WebReady {
         return $true
     }
     catch {
+        return $false
+    }
+}
+
+function Get-PortOwnerProcess {
+    param([int]$Port)
+
+    try {
+        $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop |
+            Select-Object -First 1
+    }
+    catch {
+        Write-StartLog "Could not inspect port $Port owner: $($_.Exception.Message)"
+        return $null
+    }
+    if ($null -eq $connection -or -not $connection.OwningProcess) {
+        return $null
+    }
+    try {
+        return Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)"
+    }
+    catch {
+        Write-StartLog "Could not inspect process $($connection.OwningProcess): $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Test-DouyinRecallServiceProcess {
+    param([object]$ProcessInfo)
+
+    if ($null -eq $ProcessInfo) {
+        return $false
+    }
+    $commandLine = [string]$ProcessInfo.CommandLine
+    if ([string]::IsNullOrWhiteSpace($commandLine)) {
+        return $false
+    }
+    return ($commandLine -like "*src.cli*" -and $commandLine -like "*serve*")
+}
+
+function Test-RecordedCurrentService {
+    param(
+        [object]$ProcessInfo,
+        [int]$Port
+    )
+
+    if ($null -eq $ProcessInfo) {
+        return $false
+    }
+    $serverStatePath = Join-Path $RuntimeDir "server.json"
+    if (-not (Test-Path $serverStatePath)) {
+        return $false
+    }
+    try {
+        $state = Get-Content -Path $serverStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $statePid = [int]$state.pid
+        $statePort = [int]$state.port
+        if ($statePid -ne [int]$ProcessInfo.ProcessId -or $statePort -ne $Port) {
+            return $false
+        }
+        if ($state.PSObject.Properties["started_at"] -and (Test-Path $LauncherPath)) {
+            $startedAt = ([datetime]::Parse([string]$state.started_at)).ToUniversalTime()
+            $launcherUpdatedAt = (Get-Item -LiteralPath $LauncherPath).LastWriteTimeUtc
+            if ($startedAt -lt $launcherUpdatedAt.AddSeconds(-2)) {
+                Write-StartLog "Recorded Douyin Recall service predates this launcher; treating pid=$($ProcessInfo.ProcessId) as stale."
+                return $false
+            }
+        }
+        return $true
+    }
+    catch {
+        Write-StartLog "Could not read current service state: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Test-RecordedServiceStateCurrent {
+    param([int]$Port)
+
+    $serverStatePath = Join-Path $RuntimeDir "server.json"
+    if (-not (Test-Path $serverStatePath)) {
+        return $false
+    }
+    try {
+        $state = Get-Content -Path $serverStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ([int]$state.port -ne $Port) {
+            return $false
+        }
+        if ($state.PSObject.Properties["pid"]) {
+            try {
+                Get-Process -Id ([int]$state.pid) -ErrorAction Stop | Out-Null
+            }
+            catch {
+                return $false
+            }
+        }
+        if ($state.PSObject.Properties["started_at"] -and (Test-Path $LauncherPath)) {
+            $startedAt = ([datetime]::Parse([string]$state.started_at)).ToUniversalTime()
+            $launcherUpdatedAt = (Get-Item -LiteralPath $LauncherPath).LastWriteTimeUtc
+            if ($startedAt -lt $launcherUpdatedAt.AddSeconds(-2)) {
+                Write-StartLog "Recorded Douyin Recall service predates this launcher; inspecting port owner before reuse."
+                return $false
+            }
+        }
+        return $true
+    }
+    catch {
+        Write-StartLog "Could not read lightweight service state: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Stop-StaleDouyinRecallServiceOnPort {
+    param([int]$Port)
+
+    $owner = Get-PortOwnerProcess -Port $Port
+    if ($null -eq $owner) {
+        return $false
+    }
+    if (Test-RecordedCurrentService -ProcessInfo $owner -Port $Port) {
+        Write-StartLog "Port $Port is owned by the recorded current Douyin Recall service pid=$($owner.ProcessId)."
+        return $false
+    }
+    if (-not (Test-DouyinRecallServiceProcess -ProcessInfo $owner)) {
+        Write-StartLog "Port $Port is owned by a non-Douyin Recall process pid=$($owner.ProcessId)."
+        return $false
+    }
+    Write-Step "Stopping stale Douyin Recall service on port $Port (pid=$($owner.ProcessId))"
+    try {
+        Stop-Process -Id $owner.ProcessId -Force
+        Start-Sleep -Milliseconds 800
+        return $true
+    }
+    catch {
+        Write-StartLog "Could not stop stale Douyin Recall service pid=$($owner.ProcessId): $($_.Exception.Message)"
         return $false
     }
 }
@@ -632,6 +769,15 @@ try {
     $port = Get-WebPort
     $url = "http://127.0.0.1:$port"
     if (Test-WebReady -Url $url -TimeoutSec 1) {
+        if (Test-RecordedServiceStateCurrent -Port $port) {
+            Write-Step "Douyin Recall is already running; opening browser without runtime preparation"
+            Open-DouyinRecall -BaseUrl $url -PathToOpen $OpenPath
+            exit 0
+        }
+        Write-StartLog "Local endpoint is reachable but service state is missing or stale; inspecting port owner before reuse."
+    }
+    Stop-StaleDouyinRecallServiceOnPort -Port $port | Out-Null
+    if (Test-WebReady -Url $url -TimeoutSec 1) {
         Write-Step "Douyin Recall is already running; opening browser without runtime preparation"
         Open-DouyinRecall -BaseUrl $url -PathToOpen $OpenPath
         exit 0
@@ -674,7 +820,7 @@ try {
     Update-StartupStatus -Key "uv" -Status "done" -Summary "uv 运行时已就绪"
 
     Write-StartupProgress -Message "准备 Python 运行环境：uv sync" -Key "python" -LongRunning
-    & $uv "sync"
+    & $uv "sync" "--no-dev"
     if ($LASTEXITCODE -ne 0) {
         throw "uv sync failed with exit code $LASTEXITCODE"
     }
