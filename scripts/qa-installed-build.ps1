@@ -1,6 +1,6 @@
 param(
-    [string]$InstallerPath = "D:\codexDownload\douyin-release-v0.1.20\DouyinRecallSetup-v0.1.20-fixed-local.exe",
-    [string]$QaRoot = "D:\codexDownload\douyin-release-v0.1.20\installed-qa",
+    [string]$InstallerPath = "D:\codexDownload\douyin-release-v0.1.21\DouyinRecallSetup.exe",
+    [string]$QaRoot = "D:\codexDownload\douyin-release-v0.1.21\installed-qa",
     [int]$Port = 18765
 )
 

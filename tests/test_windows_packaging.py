@@ -51,6 +51,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("PrivilegesRequired=lowest", script)
         self.assertIn("DefaultDirName={localappdata}\\Programs\\DouyinRecall", script)
         self.assertIn("data\\*", script)
+        self.assertIn("dist\\*", script)
         self.assertIn(".env", script)
         self.assertIn(".venv\\*", script)
         self.assertIn("AGENTS.md", script)

@@ -1,5 +1,5 @@
 #define MyAppName "Douyin Recall"
-#define MyAppVersion "0.1.20"
+#define MyAppVersion "0.1.21"
 #define MyAppPublisher "xiaojiang"
 
 #ifndef SourceRoot
@@ -32,7 +32,7 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加图标"; Flags: unchecked
 
 [Files]
-Source: "{#SourceRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs; Excludes: ".git\*,.venv\*,data\*,.env,.env.local,.claude\*,.pytest_cache\*,.ruff_cache\*,.mypy_cache\*,pytest-cache-files-*\*,*.pyc,AGENTS.md,packaging\windows\out\*"
+Source: "{#SourceRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs; Excludes: ".git\*,.venv\*,data\*,dist\*,.env,.env.local,.claude\*,.pytest_cache\*,.ruff_cache\*,.mypy_cache\*,pytest-cache-files-*\*,*.pyc,AGENTS.md,packaging\windows\out\*"
 Source: "{#SourceRoot}\packaging\windows\preinstall-backup-douyin-recall.ps1"; Flags: dontcopy
 
 [Icons]

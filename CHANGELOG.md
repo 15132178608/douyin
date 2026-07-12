@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.21
+
+- Legacy single-user search indexes now create durable per-user recovery work during schema migration, and the background worker force-rebuilds vec/FTS partitions before clearing the recovery marker.
+- Session lookup no longer blocks the async request loop; invite claiming is atomic, login attempts are rate-limited, public authenticated binds require secure cookies, and avatar caching is restricted by host, type, redirect, and size limits.
+- Web routes now own their domain implementations in `auth`, `setup`, `jobs`, `maintenance`, and `media`; the wildcard app compatibility shim has been removed.
+- Pytest is declared in the `dev` dependency group, while installed Windows runtime preparation explicitly excludes development dependencies.
+
+See [docs/releases/v0.1.21.md](docs/releases/v0.1.21.md).
+
 ## v0.1.20
 
 - First-run setup now opens directly to Douyin QR binding and automatically queues sync/index work after login.
