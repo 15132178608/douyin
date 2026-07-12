@@ -18,11 +18,25 @@ def test_schema_defines_independent_likes_module_tables() -> None:
     assert "FOREIGN KEY (user_id, like_id) REFERENCES likes(user_id, id)" in db.SCHEMA_SQL
     assert "CREATE VIRTUAL TABLE IF NOT EXISTS likes_vec" in db.VEC_SCHEMA_SQL
     assert "CREATE VIRTUAL TABLE IF NOT EXISTS likes_fts" in db.FTS_SCHEMA_SQL
+    assert "user_id TEXT partition key" in db.VEC_SCHEMA_SQL
+    assert "user_id UNINDEXED" in db.FTS_SCHEMA_SQL
+
+
+def test_migration_defines_web_query_performance_indexes() -> None:
+    source = db._migrate_schema.__code__.co_consts
+    joined = "\n".join(str(item) for item in source)
+    assert "idx_fav_active_order" in joined
+    assert "idx_like_active_order" in joined
+    assert "idx_fav_active_category_order" in joined
+    assert "idx_like_active_category_order" in joined
+    assert "idx_fav_active_author_order" in joined
+    assert "idx_like_active_author_order" in joined
 
 
 if __name__ == "__main__":
     tests = [
         test_schema_defines_independent_likes_module_tables,
+        test_migration_defines_web_query_performance_indexes,
     ]
     failed = 0
     for t in tests:

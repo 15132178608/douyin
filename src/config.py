@@ -35,12 +35,20 @@ class Settings(BaseSettings):
     )
     user_data_root: Path = Field(default=PROJECT_ROOT / "data" / "users")
     avatar_cache_dir: Path = Field(default=PROJECT_ROOT / "data" / "avatar_cache")
+    avatar_allowed_host_suffixes: str = (
+        "douyinpic.com,douyinstatic.com,byteimg.com,pstatp.com,snssdk.com"
+    )
+    avatar_max_bytes: int = 3 * 1024 * 1024
+    avatar_max_redirects: int = 3
 
     # ---- 私有云访问控制 ----
     # 本地自用默认不强制登录；对朋友开放时在 .env 里设 WEB_AUTH_REQUIRED=true。
     web_auth_required: bool = False
     session_cookie_name: str = "douyin_recall_session"
     session_days: int = 30
+    session_cookie_secure: bool = False
+    login_rate_limit_max_attempts: int = 5
+    login_rate_limit_window_seconds: int = 600
 
     # ---- Web 服务监听 ----
     # 对外开放时改成 0.0.0.0（或在 .env 里设 WEB_HOST=0.0.0.0）

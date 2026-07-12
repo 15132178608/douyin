@@ -91,18 +91,15 @@ def _vec_search(query: str, top_k: int = PER_ENGINE_TOP_K,
     rows = conn.execute(
         f"""
         SELECT id, distance FROM {kind.vector_table}
-        WHERE embedding MATCH ?
+        WHERE embedding MATCH ? AND user_id = ?
         ORDER BY distance
         LIMIT ?
         """,
-        (q_blob, top_k * 5),
+        (q_blob, user_id, top_k),
     ).fetchall()
     # 过滤掉距离过远的（明显不相关）
     filtered = []
     for r in rows:
-        row_user_id, _item_id = split_scoped_item_id(r["id"], fallback_user_id=DEFAULT_USER_ID)
-        if row_user_id != user_id:
-            continue
         if r["distance"] <= distance_threshold:
             filtered.append((r["id"], r["distance"]))
         if len(filtered) >= top_k:
@@ -157,17 +154,13 @@ def _fts_search(
             f"""
             SELECT id, bm25({kind.fts_table}) AS score
             FROM {kind.fts_table}
-            WHERE {kind.fts_table} MATCH ?
+            WHERE {kind.fts_table} MATCH ? AND user_id = ?
             ORDER BY score
             LIMIT ?
             """,
-            (fts_query, top_k * 5),
+            (fts_query, user_id, top_k),
         ).fetchall()
-        results = [
-            (r["id"], r["score"])
-            for r in rows
-            if split_scoped_item_id(r["id"], fallback_user_id=DEFAULT_USER_ID)[0] == user_id
-        ][:top_k]
+        results = [(r["id"], r["score"]) for r in rows]
         # AND 模式可能召不回；如果空，降级到 OR
         if not results and len(tokens) > 1:
             fts_query_or = " OR ".join(f'"{t}"' for t in tokens)
@@ -175,17 +168,13 @@ def _fts_search(
                 f"""
                 SELECT id, bm25({kind.fts_table}) AS score
                 FROM {kind.fts_table}
-                WHERE {kind.fts_table} MATCH ?
+                WHERE {kind.fts_table} MATCH ? AND user_id = ?
                 ORDER BY score
                 LIMIT ?
                 """,
-                (fts_query_or, top_k * 5),
+                (fts_query_or, user_id, top_k),
             ).fetchall()
-            results = [
-                (r["id"], r["score"])
-                for r in rows
-                if split_scoped_item_id(r["id"], fallback_user_id=DEFAULT_USER_ID)[0] == user_id
-            ][:top_k]
+            results = [(r["id"], r["score"]) for r in rows]
             logger.debug("FTS AND empty, fell back to OR with {} hits", len(results))
         return results
     except Exception as e:

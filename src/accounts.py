@@ -54,6 +54,45 @@ def create_user(display_name: str, user_id: str | None = None) -> dict:
     return dict(row)
 
 
+def create_local_douyin_account() -> dict:
+    """Create a local app user slot for another Douyin account."""
+    conn = get_connection()
+    count = conn.execute(
+        "SELECT COUNT(*) AS c FROM users WHERE disabled_at IS NULL"
+    ).fetchone()["c"]
+    return create_user(f"抖音账号 {int(count or 0) + 1}")
+
+
+def get_user(user_id: str) -> dict | None:
+    uid = normalize_user_id(user_id)
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM users WHERE id = ? AND disabled_at IS NULL",
+        (uid,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_douyin_accounts() -> list[dict]:
+    """Return enabled local user slots that have a saved Douyin profile."""
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM users
+        WHERE disabled_at IS NULL
+          AND (
+            NULLIF(douyin_nickname, '') IS NOT NULL
+            OR NULLIF(douyin_unique_id, '') IS NOT NULL
+            OR NULLIF(douyin_sec_uid, '') IS NOT NULL
+            OR NULLIF(douyin_avatar_url, '') IS NOT NULL
+          )
+        ORDER BY COALESCE(douyin_profile_updated_at, created_at) DESC, created_at DESC, id ASC
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def update_douyin_profile(user_id: str, profile: dict) -> dict:
     """Save display-only Douyin account fields for the current web user."""
     uid = normalize_user_id(user_id)
@@ -76,6 +115,26 @@ def update_douyin_profile(user_id: str, profile: dict) -> dict:
             _now(),
             uid,
         ),
+    )
+    row = conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+    return dict(row)
+
+
+def clear_douyin_profile(user_id: str) -> dict:
+    """Clear saved Douyin account display fields without deleting local content."""
+    uid = normalize_user_id(user_id)
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE users
+        SET douyin_nickname = NULL,
+            douyin_unique_id = NULL,
+            douyin_sec_uid = NULL,
+            douyin_avatar_url = NULL,
+            douyin_profile_updated_at = NULL
+        WHERE id = ?
+        """,
+        (uid,),
     )
     row = conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
     return dict(row)
@@ -116,35 +175,50 @@ def claim_invite(code: str, display_name: str | None = None) -> tuple[dict, str]
         raise InviteError("邀请码不能为空")
 
     conn = get_connection()
-    row = conn.execute(
-        """
-        SELECT *
-        FROM invite_codes
-        WHERE code_hash = ?
-        """,
-        (_hash_secret(invite_code),),
-    ).fetchone()
-    if row is None:
-        raise InviteError("邀请码不存在")
-    if row["disabled_at"] is not None:
-        raise InviteError("邀请码已停用")
-    if row["expires_at"] is not None and _parse_datetime(row["expires_at"]) <= _now():
-        raise InviteError("邀请码已过期")
-    if int(row["used_count"] or 0) >= int(row["max_uses"] or 1):
-        raise InviteError("邀请码已被使用")
+    code_hash = _hash_secret(invite_code)
+    now = _now()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM invite_codes
+            WHERE code_hash = ?
+            """,
+            (code_hash,),
+        ).fetchone()
+        if row is None:
+            raise InviteError("邀请码不存在")
+        if row["disabled_at"] is not None:
+            raise InviteError("邀请码已停用")
+        if row["expires_at"] is not None and _parse_datetime(row["expires_at"]) <= now:
+            raise InviteError("邀请码已过期")
+        if int(row["used_count"] or 0) >= int(row["max_uses"] or 1):
+            raise InviteError("邀请码已被使用")
 
-    user = create_user(display_name or "新用户")
-    conn.execute(
-        """
-        UPDATE invite_codes
-        SET used_count = used_count + 1,
-            claimed_by_user_id = ?
-        WHERE code_hash = ?
-        """,
-        (user["id"], row["code_hash"]),
-    )
-    token = create_session(user["id"])
-    return user, token
+        # User/session creation stays inside the same write transaction. If the
+        # conditional invite claim loses a race, the new rows are rolled back.
+        user = create_user(display_name or "新用户")
+        updated = conn.execute(
+            """
+            UPDATE invite_codes
+            SET used_count = used_count + 1,
+                claimed_by_user_id = ?
+            WHERE code_hash = ?
+              AND disabled_at IS NULL
+              AND used_count < max_uses
+              AND (expires_at IS NULL OR expires_at > ?)
+            """,
+            (user["id"], code_hash, now),
+        )
+        if updated.rowcount != 1:
+            raise InviteError("邀请码已被使用")
+        token = create_session(user["id"])
+        conn.execute("COMMIT")
+        return user, token
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def create_session(user_id: str, days: int | None = None) -> str:

@@ -57,6 +57,40 @@ def test_enqueue_and_claim_job_are_user_scoped() -> None:
         assert conn.execute("SELECT status FROM job_queue WHERE id = ?", (job_id,)).fetchone()["status"] == "running"
 
 
+def test_enqueue_job_suppresses_duplicate_open_work_with_same_payload() -> None:
+    with isolated_jobs_db() as conn:
+        first_id = jobs.enqueue_job(
+            "sync_favorites",
+            user_id="alice",
+            payload={"content_kind": "favorites", "max_pages": 5},
+        )
+        second_id = jobs.enqueue_job(
+            "sync_favorites",
+            user_id="alice",
+            payload={"max_pages": 5, "content_kind": "favorites"},
+        )
+
+        rows = conn.execute("SELECT id, payload_json FROM job_queue").fetchall()
+        assert second_id == first_id
+        assert len(rows) == 1
+        assert rows[0]["payload_json"] == '{"content_kind": "favorites", "max_pages": 5}'
+
+
+def test_enqueue_job_allows_new_work_after_terminal_state() -> None:
+    with isolated_jobs_db() as conn:
+        first_id = jobs.enqueue_job("index", user_id="alice", payload={"content_kind": "likes"})
+        jobs.finish_job(first_id)
+
+        second_id = jobs.enqueue_job("index", user_id="alice", payload={"content_kind": "likes"})
+
+        states = [
+            row["status"]
+            for row in conn.execute("SELECT status FROM job_queue ORDER BY id").fetchall()
+        ]
+        assert second_id != first_id
+        assert states == ["success", "pending"]
+
+
 def test_finish_and_fail_job_persist_terminal_state() -> None:
     with isolated_jobs_db() as conn:
         done_id = jobs.enqueue_job("index", user_id="alice")
@@ -231,6 +265,22 @@ def test_default_backup_sqlite_handler_writes_backup_to_payload_output_dir() -> 
         assert count == 1
 
 
+def test_default_categorize_handler_runs_kmeans_for_requested_content_kind() -> None:
+    from src.categorize import cluster as cluster_mod
+
+    calls: list[dict] = []
+    original_categorize_all = cluster_mod.categorize_all
+    cluster_mod.categorize_all = lambda **kwargs: calls.append(kwargs)
+    try:
+        jobs.DefaultJobHandlers().categorize("alice", {"content_kind": "likes", "algo": "kmeans"})
+    finally:
+        cluster_mod.categorize_all = original_categorize_all
+
+    assert calls == [
+        {"algo": "kmeans", "account_id": "alice", "content_kind": "likes"},
+    ]
+
+
 def test_run_next_job_marks_failure_when_handler_raises() -> None:
     class FailingHandlers:
         def sync_favorites(self, user_id: str, payload: dict) -> None:
@@ -249,6 +299,8 @@ def test_run_next_job_marks_failure_when_handler_raises() -> None:
 if __name__ == "__main__":
     tests = [
         test_enqueue_and_claim_job_are_user_scoped,
+        test_enqueue_job_suppresses_duplicate_open_work_with_same_payload,
+        test_enqueue_job_allows_new_work_after_terminal_state,
         test_finish_and_fail_job_persist_terminal_state,
         test_fail_job_requeues_until_max_attempts_with_backoff,
         test_claim_next_job_skips_pending_jobs_until_next_run_at,
@@ -256,6 +308,7 @@ if __name__ == "__main__":
         test_recover_stale_running_jobs_can_recover_immediately_on_startup,
         test_run_next_job_dispatches_known_jobs_and_marks_success,
         test_default_backup_sqlite_handler_writes_backup_to_payload_output_dir,
+        test_default_categorize_handler_runs_kmeans_for_requested_content_kind,
         test_run_next_job_marks_failure_when_handler_raises,
     ]
     failed = 0

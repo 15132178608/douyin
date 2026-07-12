@@ -10,6 +10,7 @@ SQLite 连接管理 + schema 初始化。
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,21 @@ from loguru import logger
 
 from src.config import settings
 from src.tenancy import DEFAULT_USER_ID
+
+
+def _adapt_datetime(value: datetime) -> str:
+    return value.isoformat()
+
+
+def _convert_timestamp(value: bytes) -> datetime:
+    text = value.decode("utf-8").strip()
+    if not text:
+        raise ValueError("empty TIMESTAMP value")
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+sqlite3.register_adapter(datetime, _adapt_datetime)
+sqlite3.register_converter("TIMESTAMP", _convert_timestamp)
 
 
 # ============================================================
@@ -228,6 +244,33 @@ CREATE TABLE IF NOT EXISTS job_queue (
 CREATE INDEX IF NOT EXISTS idx_job_queue_status ON job_queue(status, next_run_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_job_queue_user ON job_queue(user_id, created_at DESC);
 
+-- 搜索索引 schema 被重建后，需要持久化记录待恢复的用户分区。
+-- 标记只会在 vec/FTS 都重新完整写入后完成，避免升级中断造成永久空搜索。
+CREATE TABLE IF NOT EXISTS search_reindex_state (
+    user_id       TEXT NOT NULL,
+    content_kind  TEXT NOT NULL,
+    required_at   TIMESTAMP NOT NULL,
+    reason        TEXT NOT NULL,
+    completed_at  TIMESTAMP,
+    PRIMARY KEY (user_id, content_kind),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_search_reindex_pending
+    ON search_reindex_state(completed_at, required_at);
+
+-- 登录失败限速状态。持久化到 SQLite，避免通过重启服务绕过限制。
+CREATE TABLE IF NOT EXISTS login_rate_limits (
+    scope             TEXT NOT NULL,
+    subject_hash      TEXT NOT NULL,
+    window_started_at TIMESTAMP NOT NULL,
+    failed_count      INTEGER NOT NULL DEFAULT 0,
+    blocked_until     TIMESTAMP,
+    updated_at        TIMESTAMP NOT NULL,
+    PRIMARY KEY (scope, subject_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_login_rate_limits_updated
+    ON login_rate_limits(updated_at);
+
 -- M5 自动分类
 -- account_id 列已就位，目前都填 default。详见 docs/multi-tenant-roadmap.md
 CREATE TABLE IF NOT EXISTS categories (
@@ -265,11 +308,13 @@ CREATE INDEX IF NOT EXISTS idx_like_cat_account ON like_categories(account_id);
 VEC_SCHEMA_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS favorites_vec USING vec0(
     id TEXT PRIMARY KEY,
+    user_id TEXT partition key,
     embedding FLOAT[1024]
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS likes_vec USING vec0(
     id TEXT PRIMARY KEY,
+    user_id TEXT partition key,
     embedding FLOAT[1024]
 );
 """
@@ -277,6 +322,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS likes_vec USING vec0(
 FTS_SCHEMA_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS favorites_fts USING fts5(
     id UNINDEXED,
+    user_id UNINDEXED,
     title,
     description,
     author,
@@ -286,6 +332,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS favorites_fts USING fts5(
 
 CREATE VIRTUAL TABLE IF NOT EXISTS likes_fts USING fts5(
     id UNINDEXED,
+    user_id UNINDEXED,
     title,
     description,
     author,
@@ -305,7 +352,10 @@ def _make_connection(db_path: Path) -> sqlite3.Connection:
         str(db_path),
         detect_types=sqlite3.PARSE_DECLTYPES,
         isolation_level=None,
-        check_same_thread=False,   # FastAPI 用 thread pool 跑请求；单连接跨线程读 OK，写有 WAL 保护
+        # Normal request/job code uses one connection per thread. The cross-thread
+        # permission is retained so maintenance restore can close every registered
+        # connection from the restore request thread after stopping job workers.
+        check_same_thread=False,
     )
     conn.row_factory = sqlite3.Row
 
@@ -320,23 +370,54 @@ def _make_connection(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-_CACHED_CONN: sqlite3.Connection | None = None
+_THREAD_CONN = threading.local()
+_CONNECTION_LOCK = threading.Lock()
+_OPEN_CONNECTIONS: set[sqlite3.Connection] = set()
+_CONNECTION_GENERATION = 0
+
+
+def _is_connection_open(conn: sqlite3.Connection) -> bool:
+    try:
+        conn.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        return False
+    return True
 
 
 def get_connection() -> sqlite3.Connection:
-    global _CACHED_CONN
-    if _CACHED_CONN is None:
-        _CACHED_CONN = _make_connection(settings.db_path)
+    conn = getattr(_THREAD_CONN, "conn", None)
+    generation = getattr(_THREAD_CONN, "generation", None)
+    if (
+        conn is None
+        or generation != _CONNECTION_GENERATION
+        or not _is_connection_open(conn)
+    ):
+        with _CONNECTION_LOCK:
+            conn = _make_connection(settings.db_path)
+            _OPEN_CONNECTIONS.add(conn)
+            _THREAD_CONN.conn = conn
+            _THREAD_CONN.generation = _CONNECTION_GENERATION
         logger.debug("Opened sqlite connection at {}", settings.db_path)
-    return _CACHED_CONN
+    return conn
 
 
 def close_connection() -> None:
-    """Close the cached SQLite connection before replacing the database file."""
-    global _CACHED_CONN
-    if _CACHED_CONN is not None:
-        _CACHED_CONN.close()
-        _CACHED_CONN = None
+    """Close all known SQLite connections before replacing the database file."""
+    global _CONNECTION_GENERATION
+    with _CONNECTION_LOCK:
+        connections = list(_OPEN_CONNECTIONS)
+        _OPEN_CONNECTIONS.clear()
+        _CONNECTION_GENERATION += 1
+        if hasattr(_THREAD_CONN, "conn"):
+            delattr(_THREAD_CONN, "conn")
+        if hasattr(_THREAD_CONN, "generation"):
+            delattr(_THREAD_CONN, "generation")
+
+    for conn in connections:
+        try:
+            conn.close()
+        except sqlite3.Error as exc:
+            logger.debug("Ignoring sqlite close error during connection reset: {}", exc)
 
 
 @contextmanager
@@ -368,6 +449,171 @@ def _primary_key_columns(table: str) -> list[str]:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     keyed = sorted((row["pk"], row["name"]) for row in rows if row["pk"])
     return [name for _pk, name in keyed]
+
+
+def _table_columns(table: str) -> set[str]:
+    conn = get_connection()
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _create_vector_table(table: str) -> None:
+    conn = get_connection()
+    conn.execute(
+        f"""
+        CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING vec0(
+            id TEXT PRIMARY KEY,
+            user_id TEXT partition key,
+            embedding FLOAT[1024]
+        )
+        """
+    )
+
+
+def _create_fts_table(table: str) -> None:
+    conn = get_connection()
+    conn.execute(
+        f"""
+        CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING fts5(
+            id UNINDEXED,
+            user_id UNINDEXED,
+            title,
+            description,
+            author,
+            user_note,
+            tokenize = 'unicode61'
+        )
+        """
+    )
+
+
+def _ensure_search_index_schema() -> set[str]:
+    conn = get_connection()
+    table_specs = {
+        "favorites": {
+            "content_table": "favorites",
+            "vector_table": "favorites_vec",
+            "fts_table": "favorites_fts",
+        },
+        "likes": {
+            "content_table": "likes",
+            "vector_table": "likes_vec",
+            "fts_table": "likes_fts",
+        },
+    }
+    affected: set[str] = set()
+    rebuild_vectors: set[str] = set()
+    rebuild_fts: set[str] = set()
+    for content_kind, spec in table_specs.items():
+        if "user_id" not in _table_columns(spec["vector_table"]):
+            rebuild_vectors.add(content_kind)
+            affected.add(content_kind)
+        if "user_id" not in _table_columns(spec["fts_table"]):
+            rebuild_fts.add(content_kind)
+            affected.add(content_kind)
+
+    if not affected:
+        return set()
+
+    now = datetime.now(timezone.utc)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for content_kind in sorted(affected):
+            spec = table_specs[content_kind]
+            if content_kind in rebuild_vectors:
+                logger.info(
+                    "Migrating: rebuild {} with user_id partition key",
+                    spec["vector_table"],
+                )
+                conn.execute(f"DROP TABLE IF EXISTS {spec['vector_table']}")
+                _create_vector_table(spec["vector_table"])
+            if content_kind in rebuild_fts:
+                logger.info(
+                    "Migrating: rebuild {} with user_id column",
+                    spec["fts_table"],
+                )
+                conn.execute(f"DROP TABLE IF EXISTS {spec['fts_table']}")
+                _create_fts_table(spec["fts_table"])
+
+            conn.execute(
+                f"""
+                INSERT INTO search_reindex_state (
+                    user_id, content_kind, required_at, reason, completed_at
+                )
+                SELECT user_id, ?, ?, 'search_index_schema_rebuilt', NULL
+                FROM {spec['content_table']}
+                WHERE is_removed = 0
+                GROUP BY user_id
+                ON CONFLICT(user_id, content_kind) DO UPDATE SET
+                    required_at = excluded.required_at,
+                    reason = excluded.reason,
+                    completed_at = NULL
+                """,
+                (content_kind, now),
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return affected
+
+
+def list_pending_search_reindexes() -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT user_id, content_kind, required_at, reason
+        FROM search_reindex_state
+        WHERE completed_at IS NULL
+        ORDER BY required_at, user_id, content_kind
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def search_index_counts(user_id: str, content_kind: str) -> dict[str, int]:
+    from src.content.kinds import get_content_kind
+
+    kind = get_content_kind(content_kind)
+    uid = str(user_id or DEFAULT_USER_ID)
+    conn = get_connection()
+    active = int(
+        conn.execute(
+            f"SELECT COUNT(*) AS c FROM {kind.table} WHERE user_id = ? AND is_removed = 0",
+            (uid,),
+        ).fetchone()["c"]
+        or 0
+    )
+    vector = int(
+        conn.execute(
+            f"SELECT COUNT(*) AS c FROM {kind.vector_table} WHERE user_id = ?",
+            (uid,),
+        ).fetchone()["c"]
+        or 0
+    )
+    fts = int(
+        conn.execute(
+            f"SELECT COUNT(*) AS c FROM {kind.fts_table} WHERE user_id = ?",
+            (uid,),
+        ).fetchone()["c"]
+        or 0
+    )
+    return {"active": active, "vector": vector, "fts": fts}
+
+
+def complete_search_reindex(user_id: str, content_kind: str) -> bool:
+    counts = search_index_counts(user_id, content_kind)
+    if counts["active"] != counts["vector"] or counts["active"] != counts["fts"]:
+        return False
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE search_reindex_state
+        SET completed_at = ?
+        WHERE user_id = ? AND content_kind = ? AND completed_at IS NULL
+        """,
+        (datetime.now(timezone.utc), str(user_id or DEFAULT_USER_ID), content_kind),
+    )
+    return True
 
 
 def _content_table_create_sql(table: str, time_column: str) -> str:
@@ -480,6 +726,30 @@ def _migrate_schema() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_like_discovery ON likes(user_id, discovery_index)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_like_video_created ON likes(user_id, video_created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_like_category ON likes(user_id, category_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_fav_active_order "
+        "ON favorites(user_id, is_removed, COALESCE(favorited_at, first_seen_at) DESC, discovery_index DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_like_active_order "
+        "ON likes(user_id, is_removed, COALESCE(liked_at, first_seen_at) DESC, discovery_index DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_fav_active_category_order "
+        "ON favorites(user_id, is_removed, category_id, COALESCE(favorited_at, first_seen_at) DESC, discovery_index DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_like_active_category_order "
+        "ON likes(user_id, is_removed, category_id, COALESCE(liked_at, first_seen_at) DESC, discovery_index DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_fav_active_author_order "
+        "ON favorites(user_id, is_removed, author, COALESCE(favorited_at, first_seen_at) DESC, discovery_index DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_like_active_author_order "
+        "ON likes(user_id, is_removed, author, COALESCE(liked_at, first_seen_at) DESC, discovery_index DESC)"
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_job_queue_status ON job_queue(status, next_run_at, created_at)")
 
 
@@ -490,6 +760,7 @@ def init_schema() -> None:
     conn.executescript(VEC_SCHEMA_SQL)
     conn.executescript(FTS_SCHEMA_SQL)
     _migrate_schema()
+    _ensure_search_index_schema()
     logger.info("Schema ready.")
 
 

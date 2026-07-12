@@ -84,8 +84,7 @@ def find_unindexed_ids(
         f"""
         SELECT f.id FROM {kind.table} f
         LEFT JOIN {kind.vector_table} v
-          ON v.id = (? || ':' || f.id)
-          OR (? = 'default' AND v.id = f.id)
+          ON v.user_id = ? AND v.id = (? || ':' || f.id)
         WHERE f.user_id = ? AND f.is_removed = 0 AND v.id IS NULL
         ORDER BY f.discovery_index
         """,
@@ -125,15 +124,15 @@ def _write_batch(rows: list[dict], embeddings, content_kind: str = "favorites") 
             blob = sqlite_vec.serialize_float32(emb.tolist())
             # sqlite-vec vec0 虚拟表不支持 INSERT OR REPLACE
             # 必须先 DELETE 再 INSERT
-            tx.execute(f"DELETE FROM {kind.vector_table} WHERE id = ?", (index_id,))
+            tx.execute(f"DELETE FROM {kind.vector_table} WHERE user_id = ? AND id = ?", (row["user_id"], index_id))
             tx.execute(
-                f"INSERT INTO {kind.vector_table} (id, embedding) VALUES (?, ?)",
-                (index_id, blob),
+                f"INSERT INTO {kind.vector_table} (id, user_id, embedding) VALUES (?, ?, ?)",
+                (index_id, row["user_id"], blob),
             )
 
             # 2. FTS5 表（中文先 jieba 切词）
             # 先删后插，幂等
-            tx.execute(f"DELETE FROM {kind.fts_table} WHERE id = ?", (index_id,))
+            tx.execute(f"DELETE FROM {kind.fts_table} WHERE user_id = ? AND id = ?", (row["user_id"], index_id))
             # description 字段塞抖音平台分类标签（"个人管理"、"职场技能" 这种）
             tag_names = _extract_tag_names(row.get("video_tags"))
             desc_with_tags = (row.get("description") or "")
@@ -148,11 +147,12 @@ def _write_batch(rows: list[dict], embeddings, content_kind: str = "favorites") 
                     desc_with_tags = desc_with_tags + " " + " ".join(str(t) for t in llm_tag_names if t)
             tx.execute(
                 f"""
-                INSERT INTO {kind.fts_table} (id, title, description, author, user_note)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO {kind.fts_table} (id, user_id, title, description, author, user_note)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     index_id,
+                    row["user_id"],
                     _jieba_tokenize(row.get("title")),
                     _jieba_tokenize(desc_with_tags),
                     _jieba_tokenize(row.get("author")),
@@ -260,14 +260,9 @@ def _count_indexed(content_kind: str = "favorites", user_id: str = DEFAULT_USER_
     kind = get_content_kind(content_kind)
     user_id = normalize_user_id(user_id)
     conn = get_connection()
-    if user_id == DEFAULT_USER_ID:
-        return conn.execute(
-            f"SELECT COUNT(*) AS c FROM {kind.vector_table} WHERE id LIKE ? OR id NOT LIKE '%:%'",
-            (f"{user_id}:%",),
-        ).fetchone()["c"]
     return conn.execute(
-        f"SELECT COUNT(*) AS c FROM {kind.vector_table} WHERE id LIKE ?",
-        (f"{user_id}:%",),
+        f"SELECT COUNT(*) AS c FROM {kind.vector_table} WHERE user_id = ?",
+        (user_id,),
     ).fetchone()["c"]
 
 
