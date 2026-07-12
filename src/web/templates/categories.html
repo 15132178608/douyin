@@ -2,16 +2,25 @@
 
 {% block content %}
 <header>
-  <h1>自动分类</h1>
+  <h1>分类</h1>
   <span class="stat">
     {{ categories|length }} 个类别
     {% if uncategorized_count > 0 %} · {{ uncategorized_count }} 条未归类{% endif %}
   </span>
 </header>
 <p style="color: var(--text-secondary); font-size: 14px; line-height: 1.6; margin: 0 0 28px; max-width: 760px;">
-  按语义自动分组（默认 KMeans）。名字是机器猜的，点<span style="color: var(--brand-cyan);">"改"</span>可以改成你想要的。
-  "杂物簇"是难免的——把它改名成"杂项"或者点"恢复默认"看是哪几条不对劲，回头再细调。
+  系统会按内容语义把{{ content_label }}整理成几个主题。分类名可以改，归错的条目后续也可以微调。
 </p>
+
+{% if category_message %}
+<div class="work-progress-panel" style="margin-bottom: 18px;">
+  <div class="work-progress-title">
+    <span class="work-progress-spinner" aria-hidden="true"></span>
+    {{ category_message }}
+  </div>
+  <p class="work-progress-detail">可以继续浏览，后台整理完成后刷新这个页面就能看到分类。</p>
+</div>
+{% endif %}
 
 {% if categories %}
 <div class="cat-grid">
@@ -69,16 +78,36 @@
   {% endif %}
 </div>
 {% else %}
-<div class="empty" style="text-align:left;">
-  <p>还没有分类。</p>
+<div class="empty empty-panel" style="text-align:left; max-width: 560px;">
+  <h2 style="margin-top:0;">还没有分类</h2>
+  {% if category_import_candidate %}
+  <p>发现已有分类，可以从旧的本地数据库导入到当前安装目录。</p>
   <p style="font-size:13px; color: var(--text-tertiary);">
-    跑一次 <code>recall index --kind {{ content_kind }}</code> 把所有条目编码进向量库；<br>
-    再跑 <code>recall categorize --kind {{ content_kind }}</code> 让算法自动分类。
+    {{ category_import_candidate.category_count }} 个分类 · 可匹配 {{ category_import_candidate.match_count }} 条{{ content_label }}
   </p>
+  <p style="font-size:12px; color: var(--text-tertiary); word-break: break-all;">
+    来源：{{ category_import_candidate.source_name }}
+  </p>
+  <form hx-post="{{ kind_prefix }}/categories/import"
+        hx-target="body"
+        hx-swap="outerHTML">
+    <input type="hidden" name="source_token" value="{{ category_import_candidate.source_token }}">
+    <button class="btn-primary" type="submit" data-disable-on-request>
+      导入已有分类
+    </button>
+  </form>
+  {% else %}
+  <p>先让系统在后台整理一次。它会建立搜索索引，再把{{ content_label }}按主题分组。</p>
   {% if uncategorized_count > 0 %}
-  <p style="font-size:13px; color: var(--text-tertiary);">
-    当前有 {{ uncategorized_count }} 条等待归类。
-  </p>
+  <p style="font-size:13px; color: var(--text-tertiary);">当前有 {{ uncategorized_count }} 条等待归类。</p>
+  {% endif %}
+  <form hx-post="{{ kind_prefix }}/categories/organize"
+        hx-target="body"
+        hx-swap="outerHTML">
+    <button class="btn-primary" type="submit" data-disable-on-request {% if category_message %}disabled{% endif %}>
+      开始整理分类
+    </button>
+  </form>
   {% endif %}
 </div>
 {% endif %}

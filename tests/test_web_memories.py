@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from src.db import SCHEMA_SQL
 from src.recall import selector
 from src.web import app as web_app
+from src.web import helpers as web_helpers
 
 
 @contextmanager
@@ -28,17 +29,17 @@ def isolated_memories_db():
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA_SQL)
     conn.execute("ALTER TABLE favorites ADD COLUMN category_id INTEGER")
-    conn.execute("CREATE TABLE favorites_vec (id TEXT PRIMARY KEY, embedding BLOB)")
-    conn.execute("CREATE TABLE likes_vec (id TEXT PRIMARY KEY, embedding BLOB)")
+    conn.execute("CREATE TABLE favorites_vec (id TEXT PRIMARY KEY, user_id TEXT, embedding BLOB)")
+    conn.execute("CREATE TABLE likes_vec (id TEXT PRIMARY KEY, user_id TEXT, embedding BLOB)")
 
-    original_web_get_connection = web_app.get_connection
+    original_web_get_connection = web_helpers._db_get_connection
     original_selector_get_connection = selector.get_connection
-    web_app.get_connection = lambda: conn
+    web_helpers._db_get_connection = lambda: conn
     selector.get_connection = lambda: conn
     try:
         yield conn
     finally:
-        web_app.get_connection = original_web_get_connection
+        web_helpers._db_get_connection = original_web_get_connection
         selector.get_connection = original_selector_get_connection
         conn.close()
 

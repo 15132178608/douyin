@@ -3,11 +3,16 @@
 {% elif auth_status == 'failed' %}
 <div class="status-row setup-status-row">
   <span class="status-dot dot-failed"></span>
-  <span class="status-msg">{{ auth_message or "二维码已失效，请重新生成。" }}</span>
+  <span class="status-msg">{{ auth_message or "手机取消了登录或二维码已失效，请重新生成。" }}</span>
+</div>
+{% elif auth_status == 'scan_pending' %}
+<div class="status-row setup-status-row">
+  <span class="status-dot dot-scan-pending"></span>
+  <span class="status-msg">{{ auth_message or "手机已扫码，等待你在抖音 App 确认登录..." }}</span>
 </div>
 {% else %}
 <div class="status-row setup-status-row">
-  <span class="status-dot dot-qr"></span>
-  <span class="status-msg">等待手机扫码确认...</span>
+  <span class="status-dot dot-scan-pending"></span>
+  <span class="status-msg">等待手机扫码...</span>
 </div>
 {% endif %}

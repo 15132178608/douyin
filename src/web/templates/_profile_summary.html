@@ -25,7 +25,7 @@
         {% if request.state.current_user.douyin_unique_id %}
           抖音号 {{ request.state.current_user.douyin_unique_id }}
         {% elif profile_exists %}
-          昵称和头像还没读取到，不影响同步收藏和喜欢
+          昵称和头像还没读取到，可继续使用已有登录态
         {% else %}
           扫码绑定后会显示抖音昵称和头像
         {% endif %}
@@ -34,14 +34,5 @@
   </div>
   {% if profile_refresh_message %}
   <div class="profile-refresh-message {{ profile_refresh_status or '' }}">{{ profile_refresh_message }}</div>
-  {% endif %}
-  {# 登录态已过期 #}
-  {% if profile_exists %}
-  <button class="btn btn-secondary profile-refresh-btn"
-          hx-post="/auth/profile/refresh"
-          hx-target="#profile-summary"
-          hx-swap="outerHTML">
-    刷新账号资料
-  </button>
   {% endif %}
 </div>

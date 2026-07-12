@@ -55,6 +55,7 @@ MAX_API_PAGES = 500
 AUTH_QR_API_KEYWORD = "/passport/web/get_qrcode/"
 AUTH_QR_REGENERATE_FALLBACK_INTERVAL_S = 45
 AUTH_QR_REGENERATE_SAFETY_MARGIN_S = 10
+AUTH_SHOW_ACCOUNT_WAIT_S = 3
 DEFAULT_AUTH_SCREENSHOT_PATH = settings.playwright_profile_path.parent / "auth" / "douyin-login.png"
 
 # 调试时用：URL 含这些关键词的 XHR 也会被打印（但不会被当作 collection 数据处理）
@@ -580,6 +581,69 @@ def _is_login_required_payload(payload: object) -> bool:
         return True
 
     return status in {8, 10008, 10009, 2190009}
+
+
+def classify_auth_flow_state(
+    *,
+    event: str | None = None,
+    visual_state: dict | None = None,
+    api_payload: object | None = None,
+) -> dict[str, str]:
+    """Map mocked auth-flow signals to stable UI states and Chinese copy."""
+    if api_payload is not None and _is_login_required_payload(api_payload):
+        return {"status": "login_invalid", "message": "登录态已失效，请重新绑定抖音账号。"}
+
+    normalized_event = (event or "").strip().lower()
+    if normalized_event in {"starting", "qr_generating"}:
+        return {"status": "qr_generating", "message": "正在生成二维码，请稍候..."}
+    if normalized_event in {"login_confirmed", "confirmed"}:
+        return {"status": "confirmed", "message": "确认完成，正在保存登录状态..."}
+    if normalized_event == "success":
+        return {"status": "success", "message": "绑定成功。"}
+    if normalized_event == "timeout":
+        return {"status": "timeout", "message": "扫码超时，请重新生成二维码后再试。"}
+
+    state = visual_state or {}
+    if state.get("has_expired_qr"):
+        return {"status": "timeout", "message": "二维码已失效，请重新生成二维码。"}
+    if state.get("has_login_cancelled"):
+        return {"status": "cancelled", "message": "手机取消了登录，请重新扫码。"}
+    if state.get("has_one_click_login"):
+        return {"status": "confirmed", "message": "确认完成，正在保存登录状态..."}
+    if state.get("has_scan_pending"):
+        return {"status": "scan_pending", "message": "手机已扫码，等待你在抖音 App 确认登录..."}
+    if state.get("has_qr"):
+        return {"status": "waiting_scan", "message": "请用抖音 App 扫描二维码。"}
+
+    return {"status": "qr_generating", "message": "正在生成二维码，请稍候..."}
+
+
+def trace_auth_flow_state_machine(signals: list[dict]) -> dict:
+    """Trace mocked auth-flow signals through stable crawler auth states."""
+    terminal_statuses = {"success", "cancelled", "timeout", "login_invalid"}
+    states: list[dict] = []
+    for signal in signals:
+        state = classify_auth_flow_state(
+            event=signal.get("event"),
+            visual_state=signal.get("visual_state"),
+            api_payload=signal.get("api_payload"),
+        )
+        step = {
+            "status": state["status"],
+            "message": state["message"],
+            "signal": signal,
+        }
+        states.append(step)
+        if state["status"] in terminal_statuses:
+            break
+
+    statuses = [step["status"] for step in states]
+    return {
+        "states": states,
+        "statuses": statuses,
+        "covered_statuses": sorted(set(statuses)),
+        "terminal_status": statuses[-1] if statuses else None,
+    }
 
 
 @dataclass
@@ -1224,6 +1288,7 @@ class DouyinCrawler:
         panel_timeout_s: int = 60,
         screenshot_path: Path | None = None,
         on_qr_capture: Callable[[AuthQrCapture], None] | None = None,
+        on_scan_pending: Callable[[], None] | None = None,
         on_login_confirmed: Callable[[], None] | None = None,
     ) -> AuthResult:
         """
@@ -1239,7 +1304,20 @@ class DouyinCrawler:
         handler = None
         previous_callback = self._auth_qr_capture_callback
         self._auth_qr_capture_callback = on_qr_capture
+        scan_pending_notified = False
         login_confirmed_notified = False
+
+        def notify_scan_pending() -> None:
+            nonlocal scan_pending_notified
+            if scan_pending_notified:
+                return
+            scan_pending_notified = True
+            if on_scan_pending is None:
+                return
+            try:
+                on_scan_pending()
+            except Exception as e:
+                logger.warning("Login scan-pending callback failed: {}", e)
 
         def notify_login_confirmed() -> None:
             nonlocal login_confirmed_notified
@@ -1279,10 +1357,16 @@ class DouyinCrawler:
                 return AuthResult(False, f"打开后台授权页失败：{e}", screenshot_path)
 
             state = self._auth_visual_state()
+            if state.get("has_expired_qr"):
+                return AuthResult(False, "二维码已失效，请重新生成二维码。", screenshot_path)
+            if state.get("has_login_cancelled"):
+                return AuthResult(False, "手机取消了登录，请重新扫码。", screenshot_path)
+            if state.get("has_scan_pending") or state.get("has_one_click_login"):
+                notify_scan_pending()
             if state.get("has_one_click_login"):
                 self._confirm_scanned_login_if_needed()
                 notify_login_confirmed()
-                time.sleep(0.5)
+                time.sleep(0.25)
                 if self._has_usable_login_state(timeout_ms=2_000):
                     return AuthResult(True, "扫码后的确认登录已自动完成，登录态已保存。", None)
 
@@ -1316,24 +1400,40 @@ class DouyinCrawler:
                 )
 
             scan_deadline = time.time() + timeout_s
+            last_api_login_check_at = 0.0
 
             next_refresh = _next_auth_qr_refresh_time(
                 self._auth_qr_capture.expire_time if self._auth_qr_capture else None
             )
             while time.time() < scan_deadline:
                 state = self._auth_visual_state()
+                if state.get("has_expired_qr"):
+                    return AuthResult(False, "二维码已失效，请重新生成二维码。", screenshot_path)
+                if state.get("has_login_cancelled"):
+                    return AuthResult(False, "手机取消了登录，请重新扫码。", screenshot_path)
+                if state.get("has_scan_pending") or state.get("has_one_click_login"):
+                    notify_scan_pending()
                 if state.get("has_one_click_login") and self._confirm_scanned_login_if_needed():
                     notify_login_confirmed()
-                    time.sleep(0.5)
+                    time.sleep(0.25)
                     if self._has_usable_login_state(timeout_ms=2_000):
                         return AuthResult(True, "扫码后的确认登录已自动完成，登录态已保存。", screenshot_path)
 
                 current_login_cookie = self._login_cookie_fingerprint()
                 if current_login_cookie and current_login_cookie != initial_login_cookie:
+                    notify_scan_pending()
                     notify_login_confirmed()
                     if self._is_api_logged_in(timeout_ms=2_000):
                         return AuthResult(True, "扫码授权成功，登录态已保存。", screenshot_path)
                     logger.warning("Login cookie changed but collection API is still unauthenticated; keep waiting.")
+
+                now = time.time()
+                if now - last_api_login_check_at >= 1.0:
+                    last_api_login_check_at = now
+                    if self._is_api_logged_in(timeout_ms=1_500):
+                        notify_scan_pending()
+                        notify_login_confirmed()
+                        return AuthResult(True, "扫码授权成功，登录态已保存。", screenshot_path)
 
                 if time.time() >= next_refresh:
                     if _should_refresh_login_screenshot(state):
@@ -1357,7 +1457,7 @@ class DouyinCrawler:
                     next_refresh = _next_auth_qr_refresh_time(
                         self._auth_qr_capture.expire_time if self._auth_qr_capture else None
                     )
-                time.sleep(0.5)
+                time.sleep(0.25)
 
             return AuthResult(False, f"等待扫码超时（{timeout_s}s）。二维码截图：{screenshot_path}", screenshot_path)
         finally:
@@ -1370,13 +1470,27 @@ class DouyinCrawler:
         deadline = time.time() + max(panel_timeout_s, 5)
         nav_timeout_ms = max(5_000, int(max(panel_timeout_s, 5) * 1000))
         try:
-            self._page.goto(DOUYIN_HOME_URL, wait_until="domcontentloaded", timeout=nav_timeout_ms)
-            logger.info("Auth page domcontentloaded in {:.2f}s.", time.perf_counter() - opened_at)
+            self._page.goto(DOUYIN_HOME_URL, wait_until="commit", timeout=nav_timeout_ms)
+            logger.info("Auth page navigation committed in {:.2f}s.", time.perf_counter() - opened_at)
         except Exception as e:
             logger.warning("Auth page navigation timed out/failed, continuing with current DOM: {}", e)
 
         last_result = None
-        while time.time() < deadline:
+        last_button_attempt_at = 0.0
+
+        def trigger_login_button_fallback() -> dict:
+            nonlocal last_button_attempt_at
+            last_button_attempt_at = time.time()
+            try:
+                click_result = self._page.evaluate(CLICK_LOGIN_BUTTON_JS)
+                logger.info("Login button fallback result: {}", click_result)
+                return click_result if isinstance(click_result, dict) else {"ok": False, "reason": "unexpected result"}
+            except Exception as e:
+                logger.debug("Login button fallback failed: {}", e)
+                return {"ok": False, "reason": str(e)}
+
+        show_account_deadline = min(deadline, time.time() + AUTH_SHOW_ACCOUNT_WAIT_S)
+        while time.time() < show_account_deadline:
             try:
                 ready = self._page.evaluate("typeof window.showAccount === 'function'")
                 if ready:
@@ -1389,15 +1503,48 @@ class DouyinCrawler:
                     break
             except Exception as e:
                 last_result = {"ok": False, "reason": str(e)}
-            time.sleep(0.25)
+            if not (isinstance(last_result, dict) and last_result.get("ok")):
+                click_result = trigger_login_button_fallback()
+                if click_result.get("ok"):
+                    last_result = click_result
+                    break
+            time.sleep(0.1)
+
+        if not (isinstance(last_result, dict) and last_result.get("ok")):
+            logger.info(
+                "window.showAccount was not ready within {:.1f}s; trying visible login button fallback.",
+                AUTH_SHOW_ACCOUNT_WAIT_S,
+            )
+            click_result = trigger_login_button_fallback()
+            if click_result.get("ok"):
+                last_result = click_result
+
+            if not (isinstance(last_result, dict) and last_result.get("ok")):
+                while time.time() < deadline:
+                    try:
+                        ready = self._page.evaluate("typeof window.showAccount === 'function'")
+                        if ready:
+                            last_result = self._page.evaluate(SHOW_LOGIN_PANEL_JS)
+                            logger.info(
+                                "Login panel trigger result after slow fallback wait {:.2f}s: {}",
+                                time.perf_counter() - opened_at,
+                                last_result,
+                            )
+                            break
+                    except Exception as e:
+                        last_result = {"ok": False, "reason": str(e)}
+                    if (
+                        not (isinstance(last_result, dict) and last_result.get("ok"))
+                        and time.time() - last_button_attempt_at >= 1.0
+                    ):
+                        click_result = trigger_login_button_fallback()
+                        if click_result.get("ok"):
+                            last_result = click_result
+                            break
+                    time.sleep(0.1)
 
         if not (isinstance(last_result, dict) and last_result.get("ok")):
             logger.warning("Login panel was not triggered: {}", last_result)
-            try:
-                click_result = self._page.evaluate(CLICK_LOGIN_BUTTON_JS)
-                logger.info("Login button fallback result: {}", click_result)
-            except Exception as e:
-                logger.warning("Login button fallback failed: {}", e)
 
         visual_started_at = time.perf_counter()
         self._wait_for_auth_visual(timeout_s=max(1, int(deadline - time.time())))
@@ -1438,9 +1585,11 @@ class DouyinCrawler:
                 state.get("has_qr")
                 or state.get("has_risk_challenge")
                 or state.get("has_one_click_login")
+                or state.get("has_scan_pending")
+                or state.get("has_login_cancelled")
             ):
                 return
-            time.sleep(0.5)
+            time.sleep(0.2)
 
     def _auth_visual_state(self) -> dict:
         assert self._page is not None
@@ -1481,6 +1630,31 @@ class DouyinCrawler:
                         text.includes('确认登录') ||
                         text.includes('授权登录') ||
                         text.includes('同意并登录');
+                    const scanPendingMarkers = [
+                        '扫码成功',
+                        '扫描成功',
+                        '已扫码',
+                        '已扫描',
+                        '请在手机上确认',
+                        '请在手机确认',
+                        '手机上确认',
+                        '等待确认',
+                        '待确认'
+                    ];
+                    const loginCancelledMarkers = [
+                        '登录已取消',
+                        '已取消登录',
+                        '取消登录'
+                    ];
+                    const expiredQrMarkers = [
+                        '二维码已失效',
+                        '二维码已过期',
+                        '二维码失效',
+                        '二维码过期'
+                    ];
+                    const hasScanPending = scanPendingMarkers.some((marker) => text.includes(marker));
+                    const hasLoginCancelled = loginCancelledMarkers.some((marker) => text.includes(marker));
+                    const hasExpiredQr = expiredQrMarkers.some((marker) => text.includes(marker));
                     const lower = text.toLowerCase();
                     const hasRiskChallenge =
                         text.includes('请完成下列验证') ||
@@ -1492,6 +1666,9 @@ class DouyinCrawler:
                         text,
                         has_qr: qrCandidates.length > 0,
                         has_one_click_login: hasOneClickLogin,
+                        has_scan_pending: hasScanPending,
+                        has_login_cancelled: hasLoginCancelled,
+                        has_expired_qr: hasExpiredQr,
                         has_risk_challenge: hasRiskChallenge,
                     };
                 }

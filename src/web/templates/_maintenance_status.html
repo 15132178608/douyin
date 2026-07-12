@@ -43,7 +43,7 @@
     {% if maintenance_status.server.url %}
       <p class="maintenance-meta">{{ maintenance_status.server.url }} · pid={{ maintenance_status.server.pid }}</p>
     {% else %}
-      <p class="maintenance-meta">可用 `uv run python -m src.cli serve` 启动。</p>
+      <p class="maintenance-meta">可从开始菜单或启动脚本重新打开。</p>
     {% endif %}
   </section>
 
@@ -77,7 +77,7 @@
       <p class="maintenance-main">当前版本 {{ update.local_version }}</p>
       {% if update.error %}
         <p class="maintenance-meta">无法检查最新版本：{{ update.error }}</p>
-        <p class="maintenance-meta">可手动打开 GitHub Releases，或运行 `uv run python -m src.cli update`。</p>
+        <p class="maintenance-meta">可手动打开 GitHub Releases 查看最新版本。</p>
       {% elif update.update_available %}
         <p class="maintenance-meta">最新版本 {{ update.latest_version }} 可安装。</p>
         {% if update.asset_url %}
@@ -85,14 +85,14 @@
         {% elif update.release_url %}
           <p class="maintenance-meta"><a href="{{ update.release_url }}" target="_blank" rel="noopener">打开 Release 页面</a></p>
         {% endif %}
-        <p class="maintenance-meta">安装前可先运行 `uv run python -m src.cli stop`，数据和登录资料不会随安装包覆盖。</p>
+        <p class="maintenance-meta">安装前可先停止本地服务，数据和登录资料不会随安装包覆盖。</p>
       {% else %}
         <p class="maintenance-meta">已是最新版本{% if update.latest_version %}（{{ update.latest_version }}）{% endif %}。</p>
-        <p class="maintenance-meta">手动检查：`uv run python -m src.cli update`。</p>
+        <p class="maintenance-meta">需要时可通过控制入口手动检查更新。</p>
       {% endif %}
     {% else %}
       <p class="maintenance-main">未检查更新</p>
-      <p class="maintenance-meta">可运行 `uv run python -m src.cli update` 查看最新安装包。</p>
+      <p class="maintenance-meta">可通过控制入口查看最新安装包。</p>
     {% endif %}
   </section>
 
@@ -105,6 +105,10 @@
       <p class="maintenance-main">还没有 SQLite 备份</p>
       <p class="maintenance-meta">{{ maintenance_status.backups.output_dir }}</p>
     {% endif %}
+    <p class="maintenance-meta">
+      普通备份保留最近 {{ maintenance_status.backups.retention.keep_latest }} 份；
+      升级前/恢复前安全备份会单独保护。
+    </p>
     {% if maintenance_status.backups["items"] %}
       <div class="backup-list">
         {% for backup in maintenance_status.backups["items"] %}

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
+import inspect
 
 from src import db
 from src import onboarding
@@ -23,8 +24,8 @@ def isolated_onboarding_db():
     )
     conn.row_factory = sqlite3.Row
     conn.executescript(db.SCHEMA_SQL)
-    conn.execute("CREATE TABLE favorites_vec (id TEXT PRIMARY KEY)")
-    conn.execute("CREATE TABLE likes_vec (id TEXT PRIMARY KEY)")
+    conn.execute("CREATE TABLE favorites_vec (id TEXT PRIMARY KEY, user_id TEXT)")
+    conn.execute("CREATE TABLE likes_vec (id TEXT PRIMARY KEY, user_id TEXT)")
     conn.execute(
         """
         INSERT INTO users (id, display_name, created_at)
@@ -72,8 +73,8 @@ def test_items_and_index_counts_are_content_kind_scoped() -> None:
             """,
             (now, now),
         )
-        conn.execute("INSERT INTO favorites_vec (id) VALUES ('fav-1')")
-        conn.execute("INSERT INTO likes_vec (id) VALUES ('default:like-1')")
+        conn.execute("INSERT INTO favorites_vec (id, user_id) VALUES ('fav-1', 'default')")
+        conn.execute("INSERT INTO likes_vec (id, user_id) VALUES ('default:like-1', 'default')")
 
         status = onboarding.get_onboarding_status("default")
 
@@ -85,6 +86,16 @@ def test_items_and_index_counts_are_content_kind_scoped() -> None:
         assert status["likes"]["total"] == 1
         assert status["likes"]["indexed"] == 1
         assert status["likes"]["needs_index"] is False
+
+
+def test_index_count_query_avoids_or_join_for_homepage_performance() -> None:
+    source = inspect.getsource(onboarding._count_indexed_items)
+
+    assert "JOIN" not in source
+    assert "EXISTS" not in source
+    assert "id LIKE ?" in source
+    assert "min(int(total), indexed)" in source
+    assert "DEFAULT_USER_ID" in source
 
 
 def test_profile_and_job_summary_are_reported() -> None:

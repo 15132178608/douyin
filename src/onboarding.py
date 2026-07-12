@@ -21,31 +21,35 @@ def _count_items(content_kind: str, user_id: str) -> int:
     return int(row["c"] or 0)
 
 
-def _count_indexed_items(content_kind: str, user_id: str) -> int:
+def _count_indexed_items(content_kind: str, user_id: str, total: int | None = None) -> int:
     kind = get_content_kind(content_kind)
     uid = normalize_user_id(user_id)
     conn = get_connection()
     try:
-        row = conn.execute(
-            f"""
-            SELECT COUNT(*) AS c
-            FROM {kind.table} item
-            JOIN {kind.vector_table} vec
-              ON vec.id = (? || ':' || item.id)
-              OR (? = 'default' AND vec.id = item.id)
-            WHERE item.user_id = ? AND item.is_removed = 0
-            """,
-            (uid, uid, uid),
-        ).fetchone()
+        if uid == DEFAULT_USER_ID:
+            prefixed = conn.execute(
+                f"SELECT COUNT(*) AS c FROM {kind.vector_table} WHERE id LIKE ?",
+                (f"{uid}:%",),
+            ).fetchone()["c"]
+            legacy = conn.execute(
+                f"SELECT COUNT(*) AS c FROM {kind.vector_table} WHERE id NOT LIKE '%:%'",
+            ).fetchone()["c"]
+            indexed = int(prefixed or 0) + int(legacy or 0)
+        else:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS c FROM {kind.vector_table} WHERE id LIKE ?",
+                (f"{uid}:%",),
+            ).fetchone()
+            indexed = int(row["c"] or 0)
     except sqlite3.OperationalError:
         return 0
-    return int(row["c"] or 0)
+    return min(int(total), indexed) if total is not None else indexed
 
 
 def _content_status(content_kind: str, user_id: str) -> dict[str, Any]:
     kind = get_content_kind(content_kind)
     total = _count_items(kind.key, user_id)
-    indexed = _count_indexed_items(kind.key, user_id)
+    indexed = _count_indexed_items(kind.key, user_id, total=total)
     return {
         "key": kind.key,
         "label": kind.label,

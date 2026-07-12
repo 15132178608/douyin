@@ -12,4 +12,90 @@
     </div>
   </div>
 </section>
+<script>
+(function () {
+  const statusArea = document.getElementById("setup-auth-status-area");
+  const SETUP_AUTH_POLL_MS = 350;
+  let setupAuthPollTimer = null;
+
+  function setupAuthPanel(root) {
+    if (!root) return null;
+    if (root.matches && root.matches(".setup-auth-status")) return root;
+    return root.querySelector ? root.querySelector(".setup-auth-status") : null;
+  }
+
+  function setupAuthStatusKey(root) {
+    const panel = setupAuthPanel(root);
+    if (!panel) return "";
+    return [
+      panel.getAttribute("data-setup-auth-state") || "",
+      panel.getAttribute("data-setup-qr-version") || "",
+      panel.getAttribute("data-setup-message-key") || ""
+    ].join("|");
+  }
+
+  function shouldPollSetupAuth() {
+    const panel = setupAuthPanel(statusArea);
+    return panel && panel.getAttribute("data-setup-poll") === "true";
+  }
+
+  function syncSetupAuthPolling() {
+    if (shouldPollSetupAuth() && !setupAuthPollTimer) {
+      refreshSetupAuthStatus();
+      setupAuthPollTimer = window.setInterval(refreshSetupAuthStatus, SETUP_AUTH_POLL_MS);
+    } else if (!shouldPollSetupAuth() && setupAuthPollTimer) {
+      window.clearInterval(setupAuthPollTimer);
+      setupAuthPollTimer = null;
+    }
+  }
+
+  async function refreshSetupAuthStatus(force) {
+    if (!statusArea) return;
+    try {
+      const response = await fetch("/setup/auth-status", {
+        headers: { "X-Requested-With": "fetch" },
+        cache: "no-store"
+      });
+      if (!response.ok) return;
+      const html = await response.text();
+      const scratch = document.createElement("div");
+      scratch.innerHTML = html;
+      const currentKey = setupAuthStatusKey(statusArea);
+      const nextKey = setupAuthStatusKey(scratch);
+      if (!force && nextKey === currentKey) { return; }
+      statusArea.innerHTML = html;
+      syncSetupAuthPolling();
+      if (statusArea.querySelector("[data-auth-success]")) {
+        window.setTimeout(function () { window.location.href = "/"; }, 1200);
+      }
+    } catch (_error) {
+      if (setupAuthPollTimer) {
+        window.clearInterval(setupAuthPollTimer);
+        setupAuthPollTimer = null;
+      }
+    }
+  }
+
+  document.addEventListener("submit", async function (event) {
+    const form = event.target;
+    if (!form || !form.matches || !form.matches("[data-setup-auth-start]")) return;
+    event.preventDefault();
+    try {
+      const response = await fetch(form.action, {
+        method: form.method || "POST",
+        body: new FormData(form),
+        headers: { "X-Requested-With": "fetch" },
+        cache: "no-store"
+      });
+      if (!response.ok) return;
+      statusArea.innerHTML = await response.text();
+      syncSetupAuthPolling();
+    } catch (_error) {
+      return;
+    }
+  });
+
+  syncSetupAuthPolling();
+})();
+</script>
 {% endblock %}
