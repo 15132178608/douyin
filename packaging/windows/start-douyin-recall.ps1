@@ -443,11 +443,30 @@ function Wait-WebReady {
     throw "Timeout waiting for Douyin Recall Web service at $Url. See $LogsDir\serve.err.log"
 }
 
+function Get-FileSha256 {
+    param([string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $bytes = $sha256.ComputeHash($stream)
+            return ([System.BitConverter]::ToString($bytes)).Replace("-", "")
+        }
+        finally {
+            $sha256.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
 function Get-RuntimeFingerprint {
     $parts = @()
     foreach ($path in @($PyProjectPath, $UvLockPath)) {
         if (Test-Path $path) {
-            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $hash = Get-FileSha256 -Path $path
             $parts += "$path=$hash"
         }
     }

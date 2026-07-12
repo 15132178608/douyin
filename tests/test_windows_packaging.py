@@ -169,6 +169,8 @@ class WindowsPackagingTests(unittest.TestCase):
 
         self.assertIn("$RuntimePreparedPath", launcher)
         self.assertIn("$VenvPython", launcher)
+        self.assertIn("[System.Security.Cryptography.SHA256]::Create()", launcher)
+        self.assertNotIn("Get-FileHash", launcher)
         self.assertIn("function Test-RuntimePrepared", launcher)
         self.assertIn("function Write-RuntimePreparedMarker", launcher)
         self.assertIn("function Start-RecallServiceProcess", launcher)
@@ -650,6 +652,40 @@ class WindowsPackagingTests(unittest.TestCase):
             script.index("Stop-PortOwner -LocalPort $Port"),
             script.index("Restore-InnoRegistration -Snapshot $originalRegistration"),
         )
+
+    def test_upgrade_qa_covers_real_installers_migration_reindex_and_uninstall(self) -> None:
+        script = read_script("qa-upgrade-build.ps1")
+
+        self.assertIn("$OldInstallerPath", script)
+        self.assertIn("$NewInstallerPath", script)
+        self.assertIn('ExpectedVersion "0.1.20"', script)
+        self.assertIn('ExpectedVersion "0.1.21"', script)
+        self.assertGreaterEqual(script.count('"/NOICONS"'), 1)
+        self.assertGreaterEqual(script.count("-AppRoot $appRoot"), 2)
+        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.21\\upgrade-qa", script)
+        self.assertIn("$env:TEMP = $tempRoot", script)
+        self.assertIn("$env:TMP = $tempRoot", script)
+        self.assertIn("$env:HF_HOME = $hfCacheRoot", script)
+        self.assertIn("$env:SENTENCE_TRANSFORMERS_HOME", script)
+        self.assertIn("CREATE VIRTUAL TABLE favorites_vec USING vec0", script)
+        self.assertIn("CREATE VIRTUAL TABLE favorites_fts USING fts5", script)
+        self.assertIn('"user_id" not in columns(backup, "favorites_fts")', script)
+        self.assertIn('"pre-install-recall-*.db"', script)
+        self.assertIn("runtime.start_background_workers()", script)
+        self.assertIn("pending_before_worker == expected_pending", script)
+        self.assertIn("class FakeEncoder", script)
+        self.assertIn('"fake_encoder": True', script)
+        self.assertIn('hybrid.search_for_kind(', script)
+        self.assertIn('successful_jobs == 4', script)
+        self.assertIn("Run isolated uninstaller", script)
+        self.assertIn('uninstaller removed user database', script)
+        self.assertIn("Restore-InnoRegistration -Snapshot $originalRegistration", script)
+        self.assertLess(
+            script.index("$originalRegistration = Save-InnoRegistration"),
+            script.index("-InstallerPath $OldInstallerPath"),
+        )
+        self.assertNotIn("Remove-Item -Recurse", script)
+        self.assertNotIn("rm -rf", script)
 
     def test_workflow_publishes_setup_exe_to_github_release_on_version_tags(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
