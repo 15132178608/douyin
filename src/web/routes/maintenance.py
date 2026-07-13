@@ -23,6 +23,39 @@ def public_operation_error_message(prefix: str, message: str | None = None) -> s
     return f"{(prefix or '操作失败').strip()}，请打开诊断包或日志查看详情。"
 
 
+def _has_any_active_jobs() -> bool:
+    return db_module.get_connection().execute(
+        "SELECT 1 FROM job_queue WHERE status IN ('pending', 'running') LIMIT 1"
+    ).fetchone() is not None
+
+
+def _committed_restore_message(result: maintenance.RestoreResult) -> str:
+    message = (
+        f"已恢复数据库。恢复前安全备份：{result.safety_backup_path.name}"
+        if result.safety_backup_path is not None
+        else "已恢复数据库；原目标数据库不存在，因此未创建恢复前安全备份。"
+    )
+    if result.cleanup_warnings:
+        message += "；恢复已提交，但有隔离 sidecar 未能清理，请查看日志。"
+    return message
+
+
+def _restart_after_committed_restore(
+    result: maintenance.RestoreResult,
+) -> tuple[str, str]:
+    message = _committed_restore_message(result)
+    try:
+        init_schema()
+        runtime.start_background_workers()
+    except Exception as exc:
+        logger.exception("Database restore committed but runtime restart failed: {}", exc)
+        return (
+            message + "；数据库恢复已完成，但服务重新初始化失败，请打开诊断包或日志查看详情。",
+            "danger",
+        )
+    return message, "warning" if result.cleanup_warnings else "success"
+
+
 def _public_backup_item(item: dict | None) -> dict | None:
     if not item:
         return None
@@ -241,12 +274,7 @@ def restore_backup(
             },
             status_code=400,
         )
-    active_jobs = [
-        job
-        for job in jobs.list_jobs(user_id=user_id, limit=200)
-        if job.get("status") in {"pending", "running"}
-    ]
-    if active_jobs:
+    if _has_any_active_jobs():
         return templates.TemplateResponse(
             request,
             "_restore_preview.html",
@@ -257,25 +285,50 @@ def restore_backup(
             },
             status_code=409,
         )
+    workers_stopped = False
     try:
         runtime.stop_background_workers()
+        workers_stopped = True
+        if _has_any_active_jobs():
+            runtime.start_background_workers()
+            return templates.TemplateResponse(
+                request,
+                "_restore_preview.html",
+                {
+                    "restore_report": _public_restore_report_for_template(report),
+                    "restore_message": "后台队列在停止期间产生了新任务，未执行恢复。",
+                    "restore_message_kind": "danger",
+                },
+                status_code=409,
+            )
         result = maintenance.restore_sqlite_backup(
             resolved_backup_path,
             close_connection=db_module.close_connection,
         )
-        init_schema()
-        runtime.start_background_workers()
-        message = f"已恢复数据库。恢复前安全备份：{result.safety_backup_path.name}"
-        message_kind = "success"
     except Exception as exc:
         logger.exception("SQLite restore failed: {}", exc)
         try:
-            init_schema()
+            if workers_stopped:
+                init_schema()
             runtime.start_background_workers()
         except Exception:
             logger.exception("Could not restart database connection after failed restore")
         message = public_operation_error_message("恢复失败", str(exc))
         message_kind = "danger"
+    else:
+        message, message_kind = _restart_after_committed_restore(result)
+        return templates.TemplateResponse(
+            request,
+            "_restore_preview.html",
+            {
+                "restore_report": _public_restore_report_for_template(report),
+                "restore_message": message,
+                "restore_message_kind": message_kind,
+                "restore_committed": True,
+                "restore_runtime_ready": message_kind != "danger",
+            },
+            status_code=200,
+        )
     return templates.TemplateResponse(
         request,
         "_maintenance_status.html",

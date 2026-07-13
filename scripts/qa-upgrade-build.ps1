@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OldInstallerPath,
     [string]$NewInstallerPath = "D:\douyinclaude\packaging\windows\out\DouyinRecallSetup.exe",
-    [string]$QaRoot = "D:\codexDownload\douyin-release-v0.1.22\upgrade-qa",
+    [string]$QaRoot = "D:\codexDownload\douyin-release-v0.1.23\upgrade-qa",
     [string]$PythonPath = "",
     [switch]$SkipUninstall
 )
@@ -184,8 +184,8 @@ foreach ($requiredFile in @($OldInstallerPath, $NewInstallerPath, $PythonPath)) 
 $OldInstallerPath = (Resolve-Path -LiteralPath $OldInstallerPath).Path
 $NewInstallerPath = (Resolve-Path -LiteralPath $NewInstallerPath).Path
 $PythonPath = (Resolve-Path -LiteralPath $PythonPath).Path
-Assert-InstallerVersion -Path $OldInstallerPath -ExpectedVersion "0.1.21"
-Assert-InstallerVersion -Path $NewInstallerPath -ExpectedVersion "0.1.22"
+Assert-InstallerVersion -Path $OldInstallerPath -ExpectedVersion "0.1.22"
+Assert-InstallerVersion -Path $NewInstallerPath -ExpectedVersion "0.1.23"
 
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $runRoot = Join-Path $QaRoot "upgrade-$stamp-$PID"
@@ -194,7 +194,7 @@ $dataRoot = Join-Path $appRoot "data"
 $dbPath = Join-Path $dataRoot "recall.db"
 $reportPath = Join-Path $runRoot "qa-upgrade-result.json"
 $seedPath = Join-Path $runRoot "seed-legacy-search-db.py"
-$verifyPath = Join-Path $runRoot "verify-v0.1.22-upgrade.py"
+$verifyPath = Join-Path $runRoot "verify-v0.1.23-upgrade.py"
 $verifyUninstallPath = Join-Path $runRoot "verify-uninstall-data.py"
 $tempRoot = Join-Path $runRoot "temp"
 $hfCacheRoot = Join-Path $runRoot "hf-cache"
@@ -230,7 +230,7 @@ sqlite_vec.load(conn)
 conn.enable_load_extension(False)
 conn.executescript(
     """
-    PRAGMA foreign_keys = ON;
+    PRAGMA foreign_keys = OFF;
     CREATE TABLE users (
         id TEXT PRIMARY KEY,
         display_name TEXT NOT NULL,
@@ -258,7 +258,8 @@ conn.executescript(
         llm_tags TEXT,
         video_created_at TIMESTAMP,
         digg_count INTEGER,
-        PRIMARY KEY (user_id, id)
+        PRIMARY KEY (user_id, id),
+        FOREIGN KEY (user_id) REFERENCES users(id)
     );
     CREATE TABLE likes (
         user_id TEXT NOT NULL DEFAULT 'default',
@@ -282,8 +283,57 @@ conn.executescript(
         llm_tags TEXT,
         video_created_at TIMESTAMP,
         digg_count INTEGER,
-        PRIMARY KEY (user_id, id)
+        PRIMARY KEY (user_id, id),
+        FOREIGN KEY (user_id) REFERENCES users(id)
     );
+    CREATE TABLE recall_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL DEFAULT 'default',
+        favorite_id TEXT NOT NULL,
+        recalled_at TIMESTAMP NOT NULL,
+        channel TEXT,
+        user_action TEXT,
+        FOREIGN KEY (favorite_id) REFERENCES favorites(id)
+    );
+    CREATE TABLE like_recall_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL DEFAULT 'default',
+        like_id TEXT NOT NULL,
+        recalled_at TIMESTAMP NOT NULL,
+        channel TEXT,
+        user_action TEXT,
+        FOREIGN KEY (like_id) REFERENCES likes(id)
+    );
+    CREATE TABLE uncollect_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL DEFAULT 'default',
+        favorite_id TEXT NOT NULL,
+        initiated_at TIMESTAMP NOT NULL,
+        finished_at TIMESTAMP,
+        status TEXT NOT NULL,
+        channel TEXT,
+        error_message TEXT,
+        FOREIGN KEY (favorite_id) REFERENCES favorites(id)
+    );
+    CREATE TABLE unlike_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL DEFAULT 'default',
+        like_id TEXT NOT NULL,
+        initiated_at TIMESTAMP NOT NULL,
+        finished_at TIMESTAMP,
+        status TEXT NOT NULL,
+        channel TEXT,
+        error_message TEXT,
+        FOREIGN KEY (like_id) REFERENCES likes(id)
+    );
+    CREATE INDEX idx_recall_favorite ON recall_log(favorite_id);
+    CREATE INDEX idx_recall_time ON recall_log(recalled_at DESC);
+    CREATE INDEX idx_like_recall_like ON like_recall_log(like_id);
+    CREATE INDEX idx_like_recall_time ON like_recall_log(recalled_at DESC);
+    CREATE INDEX idx_uncollect_favorite ON uncollect_log(favorite_id);
+    CREATE INDEX idx_uncollect_time ON uncollect_log(initiated_at DESC);
+    CREATE INDEX idx_unlike_like ON unlike_log(like_id);
+    CREATE INDEX idx_unlike_time ON unlike_log(initiated_at DESC);
     CREATE VIRTUAL TABLE favorites_vec USING vec0(
         id TEXT PRIMARY KEY,
         embedding FLOAT[1024]
@@ -375,13 +425,50 @@ for user_id in ("default", "alice"):
         "INSERT INTO likes_fts (id, title, description, author, user_note) VALUES (?, ?, '', '', '')",
         (like_id, f"upgrade recovery like {user_id}"),
     )
+    conn.execute(
+        "INSERT INTO recall_log (user_id, favorite_id, recalled_at, channel, user_action) "
+        "VALUES (?, ?, ?, 'web', 'opened')",
+        (user_id, favorite_id, now),
+    )
+    conn.execute(
+        "INSERT INTO like_recall_log (user_id, like_id, recalled_at, channel, user_action) "
+        "VALUES (?, ?, ?, 'web', 'opened')",
+        (user_id, like_id, now),
+    )
+    conn.execute(
+        "INSERT INTO uncollect_log (user_id, favorite_id, initiated_at, status, channel) "
+        "VALUES (?, ?, ?, 'success', 'web')",
+        (user_id, favorite_id, now),
+    )
+    conn.execute(
+        "INSERT INTO unlike_log (user_id, like_id, initiated_at, status, channel) "
+        "VALUES (?, ?, ?, 'success', 'web')",
+        (user_id, like_id, now),
+    )
 conn.commit()
+for table in ("favorites", "likes"):
+    foreign_keys = sorted(
+        conn.execute(f"PRAGMA foreign_key_list({table})"),
+        key=lambda row: (row[0], row[1]),
+    )
+    assert [
+        (int(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4]))
+        for row in foreign_keys
+    ] == [(0, 0, "users", "user_id", "id")]
 assert {row[1] for row in conn.execute("PRAGMA table_info(favorites_vec)")} == {"id", "embedding"}
 assert "user_id" not in {row[1] for row in conn.execute("PRAGMA table_info(favorites_fts)")}
 assert conn.execute("SELECT COUNT(*) FROM favorites").fetchone()[0] == 2
 assert conn.execute("SELECT COUNT(*) FROM likes").fetchone()[0] == 2
 assert conn.execute("SELECT COUNT(*) FROM favorites_vec").fetchone()[0] == 2
 assert conn.execute("SELECT COUNT(*) FROM likes_fts").fetchone()[0] == 2
+for table in ("recall_log", "like_recall_log", "uncollect_log", "unlike_log"):
+    assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 2
+try:
+    conn.execute("PRAGMA foreign_key_check").fetchall()
+except sqlite3.OperationalError as exc:
+    assert "foreign key mismatch" in str(exc).lower(), exc
+else:
+    raise AssertionError("legacy fixture must expose the single-column foreign-key mismatch")
 conn.close()
 '@
 
@@ -409,6 +496,24 @@ def columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
+def foreign_keys(
+    conn: sqlite3.Connection,
+    table: str,
+) -> list[tuple[int, int, str, str, str]]:
+    rows = sorted(
+        conn.execute(f"PRAGMA foreign_key_list({table})"),
+        key=lambda row: (row[0], row[1]),
+    )
+    return [
+        (int(row[0]), int(row[1]), str(row[2]), str(row[3]), str(row[4]))
+        for row in rows
+    ]
+
+
+def index_columns(conn: sqlite3.Connection, index_name: str) -> list[str]:
+    return [str(row[2]) for row in conn.execute(f"PRAGMA index_info({index_name})")]
+
+
 backup = sqlite3.connect(backup_path)
 try:
     backup.enable_load_extension(True)
@@ -420,6 +525,18 @@ try:
     assert backup.execute("SELECT COUNT(*) FROM likes").fetchone()[0] == 2
     assert backup.execute("SELECT COUNT(*) FROM favorites_vec").fetchone()[0] == 2
     assert backup.execute("SELECT COUNT(*) FROM likes_fts").fetchone()[0] == 2
+    for table in ("favorites", "likes"):
+        assert foreign_keys(backup, table) == [
+            (0, 0, "users", "user_id", "id"),
+        ]
+    for table in ("recall_log", "like_recall_log", "uncollect_log", "unlike_log"):
+        assert backup.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 2
+    try:
+        backup.execute("PRAGMA foreign_key_check").fetchall()
+    except sqlite3.OperationalError as exc:
+        assert "foreign key mismatch" in str(exc).lower(), exc
+    else:
+        raise AssertionError("pre-install backup must retain the legacy foreign-key mismatch")
 finally:
     backup.close()
 
@@ -443,6 +560,77 @@ indexer.get_encoder = lambda: fake_encoder
 hybrid.get_encoder = lambda: fake_encoder
 
 db.init_schema()
+conn = db.get_connection()
+assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+for table in ("favorites", "likes"):
+    assert foreign_keys(conn, table) == [
+        (0, 0, "users", "user_id", "id"),
+    ]
+log_specs = {
+    "recall_log": ("favorites", "favorite_id", "idx_recall_favorite", "recalled_at"),
+    "like_recall_log": ("likes", "like_id", "idx_like_recall_like", "recalled_at"),
+    "uncollect_log": ("favorites", "favorite_id", "idx_uncollect_favorite", "initiated_at"),
+    "unlike_log": ("likes", "like_id", "idx_unlike_like", "initiated_at"),
+}
+legacy_log_counts = {}
+for table, (parent, item_column, item_index, time_column) in log_specs.items():
+    legacy_log_counts[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    assert legacy_log_counts[table] == 2, (table, legacy_log_counts[table])
+    assert foreign_keys(conn, table) == [
+        (0, 0, parent, "user_id", "user_id"),
+        (0, 1, parent, item_column, "id"),
+    ]
+    assert index_columns(conn, item_index) == ["user_id", item_column]
+    time_index = {
+        "recall_log": "idx_recall_time",
+        "like_recall_log": "idx_like_recall_time",
+        "uncollect_log": "idx_uncollect_time",
+        "unlike_log": "idx_unlike_time",
+    }[table]
+    assert index_columns(conn, time_index) == ["user_id", time_column]
+    assert {
+        str(row[0])
+        for row in conn.execute(f"SELECT DISTINCT user_id FROM {table}")
+    } == {"default", "alice"}
+
+legacy_log_max_ids = {
+    table: int(conn.execute(f"SELECT MAX(id) FROM {table}").fetchone()[0])
+    for table in log_specs
+}
+for user_id in ("default", "alice"):
+    favorite_id = f"{user_id}-favorite"
+    like_id = f"{user_id}-like"
+    conn.execute(
+        "INSERT INTO recall_log (user_id, favorite_id, recalled_at, channel) "
+        "VALUES (?, ?, '2026-07-13T00:00:00+00:00', 'qa')",
+        (user_id, favorite_id),
+    )
+    conn.execute(
+        "INSERT INTO like_recall_log (user_id, like_id, recalled_at, channel) "
+        "VALUES (?, ?, '2026-07-13T00:00:00+00:00', 'qa')",
+        (user_id, like_id),
+    )
+    conn.execute(
+        "INSERT INTO uncollect_log (user_id, favorite_id, initiated_at, status, channel) "
+        "VALUES (?, ?, '2026-07-13T00:00:00+00:00', 'pending', 'qa')",
+        (user_id, favorite_id),
+    )
+    conn.execute(
+        "INSERT INTO unlike_log (user_id, like_id, initiated_at, status, channel) "
+        "VALUES (?, ?, '2026-07-13T00:00:00+00:00', 'pending', 'qa')",
+        (user_id, like_id),
+    )
+assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+for table, previous_max in legacy_log_max_ids.items():
+    assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 4
+    assert int(conn.execute(f"SELECT MAX(id) FROM {table}").fetchone()[0]) > previous_max
+
+db.init_schema()
+assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+for table in log_specs:
+    assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 4
+
 pending_before_worker = {
     (item["user_id"], item["content_kind"], item["reason"])
     for item in db.list_pending_search_reindexes()
@@ -475,7 +663,6 @@ try:
 finally:
     runtime.stop_background_workers()
 
-conn = db.get_connection()
 assert "user_id" in columns(conn, "favorites_vec")
 assert "user_id" in columns(conn, "favorites_fts")
 assert "user_id" in columns(conn, "likes_vec")
@@ -512,12 +699,18 @@ successful_jobs = conn.execute(
 assert successful_jobs == 4, successful_jobs
 report = {
     "status": "passed",
-    "old_version": "0.1.21",
-    "new_version": "0.1.22",
+    "old_version": "0.1.22",
+    "new_version": "0.1.23",
     "app_root": str(app_root),
     "database": str(db_path),
     "preinstall_backup": str(backup_path),
     "content_counts": {"favorites": 2, "likes": 2},
+    "legacy_log_counts_before_new_writes": legacy_log_counts,
+    "log_counts_after_migration": {
+        table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in log_specs
+    },
+    "foreign_key_check": [],
     "pending_before_worker": sorted([list(item) for item in pending_before_worker]),
     "pending_after_worker": [],
     "successful_index_jobs": successful_jobs,
@@ -546,6 +739,9 @@ try:
     assert conn.execute("SELECT COUNT(*) FROM likes").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM favorites_fts").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM likes_fts").fetchone()[0] == 2
+    for table in ("recall_log", "like_recall_log", "uncollect_log", "unlike_log"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 4
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 finally:
     conn.close()
 '@
@@ -558,10 +754,10 @@ try {
     Invoke-IsolatedInstaller `
         -InstallerPath $OldInstallerPath `
         -AppRoot $appRoot `
-        -Label "v0.1.21"
+        -Label "v0.1.22"
     Assert-True `
         -Condition (Test-Path -LiteralPath (Join-Path $appRoot "src\db.py") -PathType Leaf) `
-        -Message "v0.1.21 install is missing src\db.py: $appRoot"
+        -Message "v0.1.22 install is missing src\db.py: $appRoot"
 
     Write-Step "Seed a populated legacy search schema"
     Invoke-PythonScript -ScriptPath $seedPath -Arguments @($dbPath)
@@ -569,11 +765,11 @@ try {
     Invoke-IsolatedInstaller `
         -InstallerPath $NewInstallerPath `
         -AppRoot $appRoot `
-        -Label "v0.1.22 in-place upgrade"
+        -Label "v0.1.23 in-place upgrade"
     $installedProject = Get-Content -Raw -LiteralPath (Join-Path $appRoot "pyproject.toml")
     Assert-True `
-        -Condition $installedProject.Contains('version = "0.1.22"') `
-        -Message "In-place upgrade did not install v0.1.22 source."
+        -Condition $installedProject.Contains('version = "0.1.23"') `
+        -Message "In-place upgrade did not install v0.1.23 source."
 
     Write-Step "Verify installer-created pre-upgrade database backup"
     $preinstallBackups = @(

@@ -448,6 +448,8 @@ def test_maintenance_center_exposes_backup_and_full_maintenance_actions() -> Non
     assert 'hx-post="/maintenance/restore"' in restore_preview
     assert 'name="confirm_text"' in restore_preview
     assert "输入“恢复”" in restore_preview
+    assert "restore_committed" in restore_preview
+    assert "当前页面不再提供恢复按钮" in restore_preview
     assert "attention_codes" in maintenance_status
     assert '"/maintenance"' in app_source
     assert "enqueue_full_maintenance" in app_source

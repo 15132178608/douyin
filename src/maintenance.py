@@ -5,16 +5,23 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import sqlite3
+import stat as stat_module
+import tempfile
 from typing import Any
+import uuid
 
+from loguru import logger
+
+from src import db as db_module
 from src import jobs
 from src import server_runtime
 from src import update_check
-from src.config import PROJECT_ROOT
+from src.config import PROJECT_ROOT, settings
 from src.content.kinds import get_content_kind, list_content_kinds
 from src.db import get_connection
 from src.tenancy import DEFAULT_USER_ID, normalize_user_id, user_playwright_profile_path
@@ -30,6 +37,7 @@ REQUIRED_RESTORE_TABLES = {
     "crawl_runs",
     "like_crawl_runs",
 }
+MANIFEST_REQUIRED_COUNT_TABLES = {"users", "favorites", "likes"}
 ORDINARY_BACKUP_PATTERN = "recall-backup-*.db"
 PROTECTED_BACKUP_PATTERNS = (
     "pre-install-recall-*.db",
@@ -38,6 +46,135 @@ PROTECTED_BACKUP_PATTERNS = (
 )
 RECOVERY_BACKUP_PATTERNS = (ORDINARY_BACKUP_PATTERN, *PROTECTED_BACKUP_PATTERNS)
 BACKUP_TIMESTAMP_RE = re.compile(r"(\d{8}-\d{6})")
+MIGRATION_PRESERVED_TABLES = (
+    "users",
+    "favorites",
+    "likes",
+    "job_queue",
+    "crawl_runs",
+    "like_crawl_runs",
+    "recall_log",
+    "like_recall_log",
+    "uncollect_log",
+    "unlike_log",
+)
+CURRENT_SCHEMA_COLUMNS = {
+    "users": {
+        "id", "display_name", "created_at", "disabled_at", "douyin_nickname",
+        "douyin_unique_id", "douyin_sec_uid", "douyin_avatar_url",
+        "douyin_profile_updated_at",
+    },
+    "favorites": {
+        "user_id", "id", "title", "description", "author", "author_id",
+        "video_url", "cover_url", "duration_ms", "favorited_at", "first_seen_at",
+        "last_seen_at", "last_recalled_at", "user_note", "raw_json", "is_removed",
+        "discovery_index", "video_tags", "video_created_at", "digg_count",
+        "category_id", "llm_tags",
+    },
+    "likes": {
+        "user_id", "id", "title", "description", "author", "author_id",
+        "video_url", "cover_url", "duration_ms", "liked_at", "first_seen_at",
+        "last_seen_at", "last_recalled_at", "user_note", "raw_json", "is_removed",
+        "discovery_index", "video_tags", "video_created_at", "digg_count",
+        "category_id", "llm_tags",
+    },
+    "recall_log": {
+        "id", "user_id", "favorite_id", "recalled_at", "channel", "user_action",
+    },
+    "like_recall_log": {
+        "id", "user_id", "like_id", "recalled_at", "channel", "user_action",
+    },
+    "uncollect_log": {
+        "id", "user_id", "favorite_id", "initiated_at", "finished_at", "status",
+        "channel", "error_message",
+    },
+    "unlike_log": {
+        "id", "user_id", "like_id", "initiated_at", "finished_at", "status",
+        "channel", "error_message",
+    },
+    "crawl_runs": {
+        "id", "started_at", "finished_at", "status", "new_count", "updated_count",
+        "removed_count", "error_message", "user_id",
+    },
+    "like_crawl_runs": {
+        "id", "started_at", "finished_at", "status", "new_count", "updated_count",
+        "removed_count", "error_message", "user_id",
+    },
+    "categories": {
+        "id", "account_id", "name", "auto_name", "keywords_json", "item_count",
+        "centroid_blob", "algo", "created_at", "updated_at",
+    },
+    "like_categories": {
+        "id", "account_id", "name", "auto_name", "keywords_json", "item_count",
+        "centroid_blob", "algo", "created_at", "updated_at",
+    },
+    "job_queue": {
+        "id", "user_id", "kind", "payload_json", "status", "attempts",
+        "max_attempts", "created_at", "started_at", "finished_at", "error_message",
+        "next_run_at",
+    },
+    "invite_codes": {
+        "code_hash", "created_by_user_id", "claimed_by_user_id", "max_uses",
+        "used_count", "expires_at", "created_at", "disabled_at",
+    },
+    "web_sessions": {
+        "token_hash", "user_id", "created_at", "expires_at", "revoked_at",
+    },
+    "search_reindex_state": {
+        "user_id", "content_kind", "required_at", "reason", "completed_at",
+    },
+    "login_rate_limits": {
+        "scope", "subject_hash", "window_started_at", "failed_count",
+        "blocked_until", "updated_at",
+    },
+}
+CURRENT_PRIMARY_KEYS = {
+    "users": ("id",),
+    "invite_codes": ("code_hash",),
+    "web_sessions": ("token_hash",),
+    "favorites": ("user_id", "id"),
+    "likes": ("user_id", "id"),
+    "recall_log": ("id",),
+    "like_recall_log": ("id",),
+    "crawl_runs": ("id",),
+    "like_crawl_runs": ("id",),
+    "uncollect_log": ("id",),
+    "unlike_log": ("id",),
+    "job_queue": ("id",),
+    "search_reindex_state": ("user_id", "content_kind"),
+    "login_rate_limits": ("scope", "subject_hash"),
+    "categories": ("id",),
+    "like_categories": ("id",),
+}
+CURRENT_FOREIGN_KEY_CONSTRAINTS = {
+    "invite_codes": (
+        ("users", (("claimed_by_user_id", "id"),)),
+        ("users", (("created_by_user_id", "id"),)),
+    ),
+    "web_sessions": (("users", (("user_id", "id"),)),),
+    "favorites": (("users", (("user_id", "id"),)),),
+    "likes": (("users", (("user_id", "id"),)),),
+    "recall_log": (
+        ("favorites", (("user_id", "user_id"), ("favorite_id", "id"))),
+    ),
+    "like_recall_log": (
+        ("likes", (("user_id", "user_id"), ("like_id", "id"))),
+    ),
+    "uncollect_log": (
+        ("favorites", (("user_id", "user_id"), ("favorite_id", "id"))),
+    ),
+    "unlike_log": (
+        ("likes", (("user_id", "user_id"), ("like_id", "id"))),
+    ),
+    "job_queue": (("users", (("user_id", "id"),)),),
+    "search_reindex_state": (("users", (("user_id", "id"),)),),
+}
+CURRENT_LOG_FOREIGN_KEYS = {
+    "recall_log": ("favorites", "favorite_id"),
+    "like_recall_log": ("likes", "like_id"),
+    "uncollect_log": ("favorites", "favorite_id"),
+    "unlike_log": ("likes", "like_id"),
+}
 DOUYIN_AUTH_ERROR_MARKERS = (
     "用户未登录",
     "登录态失效",
@@ -67,8 +204,9 @@ class BackupInfo:
 class RestoreResult:
     backup_path: Path
     restored_path: Path
-    safety_backup_path: Path
+    safety_backup_path: Path | None
     validation: dict
+    cleanup_warnings: tuple[str, ...] = ()
 
 
 def _timestamp() -> str:
@@ -794,6 +932,238 @@ def create_sqlite_backup(output_dir: Path | None = None):
     return result
 
 
+def _sqlite_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _sqlite_readonly_uri(path: Path) -> str:
+    return f"{path.resolve().as_uri()}?mode=ro"
+
+
+def _open_sqlite_readonly(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(_sqlite_readonly_uri(path), uri=True)
+
+
+def _sqlite_backup_snapshot(source_path: Path, destination_path: Path) -> None:
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    source = _open_sqlite_readonly(source_path)
+    try:
+        destination = sqlite3.connect(str(destination_path))
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+    finally:
+        source.close()
+
+
+def _sidecar_info(path: Path, suffix: str) -> dict:
+    sidecar = Path(str(path) + suffix)
+    try:
+        stat = sidecar.stat()
+    except FileNotFoundError:
+        return {"path": str(sidecar), "exists": False, "size_bytes": 0}
+    is_file = stat_module.S_ISREG(stat.st_mode)
+    return {
+        "path": str(sidecar),
+        "exists": is_file,
+        "size_bytes": stat.st_size if is_file else 0,
+    }
+
+
+def _consolidate_sqlite_file(path: Path) -> None:
+    conn = sqlite3.connect(str(path), isolation_level=None, timeout=5)
+    try:
+        checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpoint is not None and int(checkpoint[0]) != 0:
+            raise RuntimeError(f"目标数据库 WAL checkpoint 仍忙：{tuple(checkpoint)}")
+        journal_mode = str(conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0]).lower()
+        if journal_mode != "delete":
+            raise RuntimeError(f"无法把目标数据库切换到自包含模式：{journal_mode}")
+    finally:
+        conn.close()
+
+
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    return {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({_sqlite_identifier(table)})").fetchall()
+    }
+
+
+def _primary_key_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    rows = conn.execute(f"PRAGMA table_info({_sqlite_identifier(table)})").fetchall()
+    return [str(row[1]) for row in sorted(rows, key=lambda row: int(row[5])) if int(row[5])]
+
+
+def _foreign_key_constraints(
+    conn: sqlite3.Connection,
+    table: str,
+) -> tuple[tuple[str, tuple[tuple[str, str], ...]], ...]:
+    rows = conn.execute(f"PRAGMA foreign_key_list({_sqlite_identifier(table)})").fetchall()
+    grouped: dict[int, tuple[str, list[tuple[int, str, str]]]] = {}
+    for row in rows:
+        constraint_id = int(row[0])
+        parent = str(row[2])
+        if constraint_id not in grouped:
+            grouped[constraint_id] = (parent, [])
+        grouped_parent, columns = grouped[constraint_id]
+        if grouped_parent != parent:
+            return (("<invalid>", ()),)
+        columns.append((int(row[1]), str(row[3]), str(row[4])))
+    constraints = [
+        (
+            parent,
+            tuple((source, target) for _seq, source, target in sorted(columns)),
+        )
+        for parent, columns in grouped.values()
+    ]
+    return tuple(sorted(constraints))
+
+
+def _schema_requires_migration(conn: sqlite3.Connection, tables: set[str]) -> bool:
+    for table, expected_columns in CURRENT_SCHEMA_COLUMNS.items():
+        if table not in tables or not expected_columns.issubset(_table_columns(conn, table)):
+            return True
+    for table, expected_primary_key in CURRENT_PRIMARY_KEYS.items():
+        if table not in tables or tuple(_primary_key_columns(conn, table)) != expected_primary_key:
+            return True
+    for table, expected_constraints in CURRENT_FOREIGN_KEY_CONSTRAINTS.items():
+        if table not in tables or _foreign_key_constraints(conn, table) != tuple(
+            sorted(expected_constraints)
+        ):
+            return True
+    return False
+
+
+def _preserved_counts(conn: sqlite3.Connection, tables: set[str]) -> dict[str, int]:
+    return {
+        table: int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM {_sqlite_identifier(table)}"
+            ).fetchone()[0]
+        )
+        for table in MIGRATION_PRESERVED_TABLES
+        if table in tables
+    }
+
+
+def _log_sequences(conn: sqlite3.Connection, tables: set[str]) -> dict[str, int | None]:
+    if "sqlite_sequence" not in tables:
+        return {table: None for table in CURRENT_LOG_FOREIGN_KEYS}
+    result: dict[str, int | None] = {}
+    for table in CURRENT_LOG_FOREIGN_KEYS:
+        row = conn.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = ?",
+            (table,),
+        ).fetchone()
+        result[table] = int(row[0]) if row is not None else None
+    return result
+
+
+def _run_schema_migration(database_path: Path) -> None:
+    try:
+        db_module.init_schema_at(database_path)
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        raise RuntimeError(f"备份 schema 迁移失败：{exc}") from exc
+
+
+def _rehearse_backup_migration(source_path: Path) -> dict:
+    report = {
+        "attempted": True,
+        "ok": False,
+        "source_counts": {},
+        "migrated_counts": {},
+        "source_sequences": {},
+        "migrated_sequences": {},
+        "integrity_check": None,
+        "foreign_key_check": [],
+        "schema_current": False,
+        "errors": [],
+    }
+    try:
+        source = _open_sqlite_readonly(source_path)
+        try:
+            source_tables = _table_names(source)
+            report["source_counts"] = _preserved_counts(source, source_tables)
+            report["source_sequences"] = _log_sequences(source, source_tables)
+        finally:
+            source.close()
+
+        with tempfile.TemporaryDirectory(prefix="douyin-recall-backup-validate-") as tmp:
+            migrated_path = Path(tmp) / "recall.db"
+            _sqlite_backup_snapshot(source_path, migrated_path)
+            _run_schema_migration(migrated_path)
+            migrated = _open_sqlite_readonly(migrated_path)
+            try:
+                integrity = migrated.execute("PRAGMA integrity_check").fetchone()
+                report["integrity_check"] = integrity[0] if integrity else None
+                migrated_tables = _table_names(migrated)
+                all_migrated_counts = _preserved_counts(migrated, migrated_tables)
+                report["migrated_counts"] = {
+                    table: all_migrated_counts[table]
+                    for table in report["source_counts"]
+                    if table in all_migrated_counts
+                }
+                report["migrated_sequences"] = _log_sequences(migrated, migrated_tables)
+                report["missing_required_tables"] = sorted(
+                    REQUIRED_RESTORE_TABLES - migrated_tables
+                )
+                report["schema_current"] = not _schema_requires_migration(
+                    migrated,
+                    migrated_tables,
+                )
+                report["foreign_key_check"] = [
+                    {
+                        "table": row[0],
+                        "rowid": row[1],
+                        "parent": row[2],
+                        "foreign_key_id": row[3],
+                    }
+                    for row in migrated.execute("PRAGMA foreign_key_check").fetchall()
+                ]
+            finally:
+                migrated.close()
+
+        if report["integrity_check"] != "ok":
+            report["errors"].append(
+                f"迁移副本 integrity_check 失败：{report['integrity_check']}"
+            )
+        if report["foreign_key_check"]:
+            report["errors"].append(
+                f"迁移副本仍有 {len(report['foreign_key_check'])} 条外键违规。"
+            )
+        if report.get("missing_required_tables"):
+            report["errors"].append(
+                "迁移副本仍缺少必要表：" + ", ".join(report["missing_required_tables"])
+            )
+        if not report["schema_current"]:
+            report["errors"].append("迁移副本仍缺少当前版本要求的列、主键或外键。")
+        if report["migrated_counts"] != report["source_counts"]:
+            report["errors"].append("迁移副本关键表行数与原备份不一致。")
+        for table, source_sequence in report["source_sequences"].items():
+            migrated_sequence = report["migrated_sequences"].get(table)
+            if source_sequence is not None and (
+                migrated_sequence is None or migrated_sequence < source_sequence
+            ):
+                report["errors"].append(
+                    f"迁移副本 {table} 的 sqlite_sequence 发生倒退。"
+                )
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        report["errors"].append(str(exc))
+    report["ok"] = not report["errors"]
+    return report
+
+
 def validate_sqlite_backup(backup_path: Path | str) -> dict:
     path = Path(backup_path)
     report = {
@@ -803,9 +1173,17 @@ def validate_sqlite_backup(backup_path: Path | str) -> dict:
         "exists": path.exists(),
         "size_bytes": path.stat().st_size if path.exists() and path.is_file() else 0,
         "integrity_check": None,
+        "foreign_key_check": [],
+        "schema_migration_required": False,
+        "migration_validation": None,
         "required_tables_present": False,
         "missing_tables": [],
         "counts": {"favorites": 0, "likes": 0, "users": 0},
+        "sidecars": {
+            suffix: _sidecar_info(path, suffix)
+            for suffix in ("-wal", "-shm", "-journal")
+        },
+        "warnings": [],
         "errors": [],
     }
     if not path.exists() or not path.is_file():
@@ -813,24 +1191,48 @@ def validate_sqlite_backup(backup_path: Path | str) -> dict:
         return report
 
     conn: sqlite3.Connection | None = None
+    migration_candidate = False
     try:
-        conn = sqlite3.connect(str(path))
+        conn = _open_sqlite_readonly(path)
         integrity = conn.execute("PRAGMA integrity_check").fetchone()
         report["integrity_check"] = integrity[0] if integrity else None
         if report["integrity_check"] != "ok":
             report["errors"].append(f"SQLite integrity_check 失败：{report['integrity_check']}")
 
-        tables = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-        }
+        tables = _table_names(conn)
         missing = sorted(REQUIRED_RESTORE_TABLES - tables)
         report["missing_tables"] = missing
         report["required_tables_present"] = not missing
         if missing:
-            report["errors"].append("缺少必要表：" + ", ".join(missing))
+            core_missing = sorted({"favorites", "likes"} - tables)
+            if core_missing:
+                report["errors"].append("缺少核心内容表：" + ", ".join(core_missing))
+            else:
+                migration_candidate = True
+
+        try:
+            report["foreign_key_check"] = [
+                {
+                    "table": row[0],
+                    "rowid": row[1],
+                    "parent": row[2],
+                    "foreign_key_id": row[3],
+                }
+                for row in conn.execute("PRAGMA foreign_key_check").fetchall()
+            ]
+        except sqlite3.Error as e:
+            report["foreign_key_check_error"] = str(e)
+            if "foreign key mismatch" in str(e).lower():
+                migration_candidate = True
+            else:
+                report["errors"].append(f"SQLite foreign_key_check 失败：{e}")
+        if report["foreign_key_check"]:
+            report["errors"].append(
+                f"SQLite foreign_key_check 发现 {len(report['foreign_key_check'])} 条违规。"
+            )
+
+        if not missing:
+            migration_candidate = migration_candidate or _schema_requires_migration(conn, tables)
 
         for table in ("favorites", "likes", "users"):
             if table in tables:
@@ -841,22 +1243,162 @@ def validate_sqlite_backup(backup_path: Path | str) -> dict:
         if conn is not None:
             conn.close()
 
+    report["schema_migration_required"] = migration_candidate
+    if migration_candidate and not report["errors"] and not report["foreign_key_check"]:
+        migration_validation = _rehearse_backup_migration(path)
+        report["migration_validation"] = migration_validation
+        if migration_validation["ok"]:
+            report["required_tables_present"] = True
+            report["warnings"].append(
+                "备份使用可迁移的旧数据库结构；恢复时会先迁移隔离副本。"
+            )
+        else:
+            report["errors"].append(
+                "旧数据库结构无法安全迁移：" + "；".join(migration_validation["errors"])
+            )
+
     report["ok"] = not report["errors"]
     return report
 
 
 def _file_sha256(path: Path) -> str | None:
-    if not path.exists() or not path.is_file():
+    try:
+        if not path.is_file():
+            return None
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
         return None
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
-def _sqlite_identifier(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
+def _copy_manifest_snapshot_locked(
+    source_path: Path,
+    destination_path: Path,
+    expected_sha256: str,
+) -> None:
+    expected = str(expected_sha256 or "").strip().lower()
+    if not expected:
+        raise ValueError("manifest restore requires an expected SHA256.")
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(source_path), isolation_level=None, timeout=5)
+    try:
+        preexisting_sidecars = [
+            suffix
+            for suffix in ("-wal", "-journal")
+            if int(_sidecar_info(source_path, suffix)["size_bytes"]) > 0
+        ]
+        if preexisting_sidecars:
+            raise ValueError(
+                "manifest source is not self-contained: " + ", ".join(preexisting_sidecars)
+            )
+        conn.execute("BEGIN IMMEDIATE")
+        actual = (_file_sha256(source_path) or "").lower()
+        if actual != expected:
+            raise ValueError(
+                f"manifest source SHA256 changed before restore: expected={expected} actual={actual}"
+            )
+        locked_sidecars = [
+            suffix
+            for suffix in ("-wal", "-journal")
+            if int(_sidecar_info(source_path, suffix)["size_bytes"]) > 0
+        ]
+        if locked_sidecars:
+            raise ValueError(
+                "manifest source gained an unverified sidecar: " + ", ".join(locked_sidecars)
+            )
+        shutil.copy2(source_path, destination_path)
+        copied = (_file_sha256(destination_path) or "").lower()
+        if copied != expected:
+            raise ValueError(
+                f"manifest snapshot SHA256 mismatch: expected={expected} actual={copied}"
+            )
+        conn.execute("ROLLBACK")
+    finally:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        conn.close()
+
+
+def _create_safety_backup(target_path: Path, safety_path: Path) -> tuple[bool, Path]:
+    """Preserve the target and identify whether the copy is valid SQLite."""
+    try:
+        _sqlite_backup_snapshot(target_path, safety_path)
+        validation = validate_sqlite_backup(safety_path)
+        if validation["ok"]:
+            return True, safety_path
+    except sqlite3.Error:
+        pass
+    if safety_path.exists() and safety_path.is_file():
+        safety_path.unlink()
+    forensic_path = safety_path.with_suffix(".corrupt")
+    shutil.copy2(target_path, forensic_path)
+    for suffix in ("-wal", "-shm", "-journal"):
+        source_sidecar = Path(str(target_path) + suffix)
+        if source_sidecar.exists() and source_sidecar.is_file():
+            shutil.copy2(source_sidecar, Path(str(forensic_path) + suffix))
+    return False, forensic_path
+
+
+def _restore_quarantined_sidecars(moved: list[tuple[Path, Path]]) -> None:
+    errors: list[str] = []
+    for original_path, quarantine_path in reversed(moved):
+        if not quarantine_path.exists():
+            continue
+        try:
+            os.replace(quarantine_path, original_path)
+        except OSError as exc:
+            errors.append(f"{quarantine_path} -> {original_path}: {exc}")
+    if errors:
+        raise RuntimeError("无法回滚数据库 sidecar 隔离：" + "；".join(errors))
+
+
+def _quarantine_sqlite_sidecars(target_path: Path) -> list[tuple[Path, Path]]:
+    """Move target sidecars away before the main-file replacement."""
+    moved: list[tuple[Path, Path]] = []
+    token = uuid.uuid4().hex
+    try:
+        for suffix in ("-wal", "-shm", "-journal"):
+            sidecar = Path(str(target_path) + suffix)
+            if not sidecar.exists():
+                continue
+            if not sidecar.is_file():
+                raise RuntimeError(f"数据库 sidecar 不是普通文件：{sidecar}")
+            quarantine = target_path.parent / (
+                f".{target_path.name}.restore-sidecar-{token}{suffix}"
+            )
+            os.replace(sidecar, quarantine)
+            moved.append((sidecar, quarantine))
+    except Exception as move_error:
+        try:
+            _restore_quarantined_sidecars(moved)
+        except Exception as rollback_error:
+            raise ExceptionGroup(
+                "数据库 sidecar 隔离失败，且已移动文件也无法回滚。",
+                [move_error, rollback_error],
+            )
+        raise
+    return moved
+
+
+def _cleanup_restore_stage(prepared_path: Path, warnings: list[str]) -> None:
+    """Best-effort cleanup that never changes a committed restore into a failure."""
+    for candidate in (
+        prepared_path,
+        *(Path(str(prepared_path) + suffix) for suffix in ("-wal", "-shm", "-journal")),
+    ):
+        try:
+            if not candidate.exists():
+                continue
+            if not candidate.is_file():
+                raise OSError("path is not a regular file")
+            candidate.unlink()
+        except OSError as exc:
+            warning = f"未能清理恢复临时文件 {candidate}: {exc}"
+            warnings.append(warning)
+            logger.warning(warning)
 
 
 def _table_counts(path: Path, table_names: list[str]) -> tuple[dict[str, int], list[str]]:
@@ -919,12 +1461,32 @@ def validate_delivery_manifest_backup(manifest_path: Path | str) -> dict:
     backup_entry = _manifest_backup_entry(manifest)
     backup_path = _manifest_path_value(backup_entry.get("path"), path)
     expected_sha = backup_entry.get("sha256")
-    expected_counts = {
-        str(table): int(count)
-        for table, count in (backup_entry.get("source_counts") or backup_entry.get("backup_counts") or {}).items()
-    }
+    raw_counts = backup_entry.get("source_counts") or backup_entry.get("backup_counts") or {}
+    try:
+        if not isinstance(raw_counts, dict):
+            raise TypeError("counts must be an object")
+        expected_counts = {}
+        for table, count in raw_counts.items():
+            if isinstance(count, bool) or not isinstance(count, int):
+                raise TypeError(f"{table} count must be an integer")
+            if count < 0:
+                raise ValueError(f"{table} count cannot be negative")
+            expected_counts[str(table)] = count
+    except (TypeError, ValueError) as exc:
+        errors.append(f"delivery manifest 的关键表数量无效：{exc}")
+        expected_counts = {}
     backup_report["expected_sha256"] = expected_sha
     backup_report["expected_counts"] = expected_counts
+    if not str(expected_sha or "").strip():
+        errors.append("delivery manifest 缺少 pre_release_backup.backup.sha256。")
+    if not expected_counts:
+        errors.append("delivery manifest 缺少有效的关键表数量。")
+    else:
+        missing_count_tables = sorted(MANIFEST_REQUIRED_COUNT_TABLES - set(expected_counts))
+        if missing_count_tables:
+            errors.append(
+                "delivery manifest 缺少关键表数量：" + ", ".join(missing_count_tables)
+            )
 
     if backup_path is None:
         errors.append("delivery manifest 缺少 pre_release_backup.backup.path。")
@@ -941,6 +1503,16 @@ def validate_delivery_manifest_backup(manifest_path: Path | str) -> dict:
         backup_report["validation"] = validation
         if not validation["ok"]:
             errors.extend(validation["errors"])
+        nonempty_manifest_sidecars = [
+            suffix
+            for suffix in ("-wal", "-journal")
+            if int((validation.get("sidecars", {}).get(suffix) or {}).get("size_bytes") or 0) > 0
+        ]
+        if nonempty_manifest_sidecars:
+            errors.append(
+                "manifest 备份必须是自包含 SQLite 文件；发现未纳入 SHA256 的 sidecar："
+                + ", ".join(nonempty_manifest_sidecars)
+            )
 
         if expected_counts:
             table_names = list(expected_counts)
@@ -990,6 +1562,9 @@ def restore_from_delivery_manifest(
             db_path=db_path,
             backup_dir=backup_dir,
             close_connection=close_connection,
+            expected_sha256=validation["backup"]["expected_sha256"],
+            expected_counts=validation["backup"]["expected_counts"],
+            require_self_contained=True,
         )
     except Exception as exc:
         report["ok"] = False
@@ -1000,8 +1575,11 @@ def restore_from_delivery_manifest(
     report["restore"] = {
         "backup_path": str(result.backup_path),
         "restored_path": str(result.restored_path),
-        "safety_backup_path": str(result.safety_backup_path),
+        "safety_backup_path": (
+            str(result.safety_backup_path) if result.safety_backup_path is not None else None
+        ),
         "validation": result.validation,
+        "cleanup_warnings": list(result.cleanup_warnings),
     }
     return report
 
@@ -1032,9 +1610,12 @@ def restore_sqlite_backup(
     db_path: Path | None = None,
     backup_dir: Path | None = None,
     close_connection=None,
+    expected_sha256: str | None = None,
+    expected_counts: dict[str, int] | None = None,
+    require_self_contained: bool = False,
 ) -> RestoreResult:
     source_path = Path(backup_path)
-    target_path = Path(db_path) if db_path is not None else PROJECT_ROOT / "data" / "recall.db"
+    target_path = Path(db_path) if db_path is not None else Path(settings.db_path)
     safety_dir = _backup_dir(backup_dir)
     validation = validate_sqlite_backup(source_path)
     if not validation["ok"]:
@@ -1045,31 +1626,95 @@ def restore_sqlite_backup(
     except FileNotFoundError:
         pass
 
-    safety_dir.mkdir(parents=True, exist_ok=True)
-    safety_path = safety_dir / f"pre-restore-recall-{_timestamp()}.db"
-    if target_path.exists():
-        current = sqlite3.connect(str(target_path))
-        safety = sqlite3.connect(str(safety_path))
-        try:
-            current.backup(safety)
-        finally:
-            safety.close()
-            current.close()
-    else:
-        safety_path.write_bytes(b"")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = tempfile.NamedTemporaryFile(
+        prefix=f".{target_path.name}.restore-",
+        suffix=".db",
+        dir=str(target_path.parent),
+        delete=False,
+    )
+    prepared_path = Path(temp_file.name)
+    temp_file.close()
+    safety_path: Path | None = None
+    cleanup_warnings: list[str] = []
+    try:
+        if require_self_contained:
+            _copy_manifest_snapshot_locked(
+                source_path,
+                prepared_path,
+                str(expected_sha256 or ""),
+            )
+        else:
+            _sqlite_backup_snapshot(source_path, prepared_path)
+        _run_schema_migration(prepared_path)
+        prepared_validation = validate_sqlite_backup(prepared_path)
+        if not prepared_validation["ok"] or prepared_validation["schema_migration_required"]:
+            errors = list(prepared_validation["errors"])
+            if prepared_validation["schema_migration_required"]:
+                errors.append("恢复临时副本在迁移后仍不是当前 schema。")
+            raise ValueError("恢复临时副本校验未通过：" + "；".join(errors))
+        if expected_counts:
+            migrated_counts, missing = _table_counts(
+                prepared_path,
+                list(expected_counts),
+            )
+            count_errors = [
+                f"{table}: expected={expected} actual={migrated_counts.get(table)}"
+                for table, expected in expected_counts.items()
+                if table in missing or migrated_counts.get(table) != int(expected)
+            ]
+            if count_errors:
+                raise ValueError(
+                    "恢复临时副本与 manifest 关键表数量不一致：" + "；".join(count_errors)
+                )
 
-    if close_connection is not None:
-        close_connection()
-
-    shutil.copy2(source_path, target_path)
-    for suffix in ("-wal", "-shm"):
-        sidecar = Path(str(target_path) + suffix)
-        if sidecar.exists() and sidecar.is_file():
-            sidecar.unlink()
+        with db_module.block_new_connections():
+            if close_connection is not None:
+                close_connection()
+            target_was_valid_sqlite = True
+            target_existed = target_path.exists()
+            if target_existed:
+                safety_dir.mkdir(parents=True, exist_ok=True)
+                safety_path = safety_dir / (
+                    "pre-restore-recall-"
+                    + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f-")
+                    + uuid.uuid4().hex[:8]
+                    + ".db"
+                )
+                target_was_valid_sqlite, safety_path = _create_safety_backup(
+                    target_path,
+                    safety_path,
+                )
+                if target_was_valid_sqlite:
+                    _consolidate_sqlite_file(target_path)
+            quarantined_sidecars = _quarantine_sqlite_sidecars(target_path)
+            try:
+                os.replace(prepared_path, target_path)
+            except Exception as replace_error:
+                try:
+                    _restore_quarantined_sidecars(quarantined_sidecars)
+                except Exception as rollback_error:
+                    safety_hint = str(safety_path) if safety_path is not None else "未创建"
+                    raise ExceptionGroup(
+                        "数据库主文件替换失败，sidecar 回滚也失败；"
+                        f"请保留现场并使用安全备份恢复：{safety_hint}",
+                        [replace_error, rollback_error],
+                    )
+                raise
+            for _original_path, quarantine_path in quarantined_sidecars:
+                try:
+                    quarantine_path.unlink()
+                except OSError as exc:
+                    warning = f"恢复已完成，但未能清理隔离 sidecar {quarantine_path}: {exc}"
+                    cleanup_warnings.append(warning)
+                    logger.warning(warning)
+    finally:
+        _cleanup_restore_stage(prepared_path, cleanup_warnings)
 
     return RestoreResult(
         backup_path=source_path,
         restored_path=target_path,
         safety_backup_path=safety_path,
         validation=validation,
+        cleanup_warnings=tuple(cleanup_warnings),
     )

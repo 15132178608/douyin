@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.23
+
+- Legacy content audit tables now migrate atomically to tenant-safe composite foreign keys without losing IDs, fields, row counts, or `sqlite_sequence` state.
+- Backup validation rehearses known legacy migrations on an isolated SQLite snapshot, rejects real orphan data, includes committed WAL frames, and restores through a validated atomic replacement with worker quiescence and pre-cutover sidecar quarantine.
+- Manifest rollback now locks and rechecks the hashed source, requires core table counts, blocks live-service CLI restores, and reports post-commit runtime or cleanup failures without falsely claiming the database restore failed.
+- Database doctor and backup checks now include foreign-key health, while user removal clears content, audit rows, search partitions, recovery markers, jobs, and sessions in dependency-safe order.
+- Windows startup keeps Hugging Face and sentence-transformer model caches under the configured D-drive runtime cache, avoiding unexpected multi-gigabyte writes to the user profile.
+- The v0.1.22-to-v0.1.23 installer upgrade gate now seeds the historical log-FK schema and verifies migration, automatic search recovery, backup preservation, and uninstall data retention.
+
+See [docs/releases/v0.1.23.md](docs/releases/v0.1.23.md).
+
 ## v0.1.22
 
 - Legacy vec/FTS upgrades now persist per-user, per-content recovery markers and automatically enqueue force-reindex work until both search partitions exactly match active content.

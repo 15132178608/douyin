@@ -700,6 +700,30 @@ def rollback_from_manifest_cmd(
     """从 delivery manifest 校验并回滚到发布前备份。"""
     from src import maintenance
 
+    target_path = Path(db_path) if db_path is not None else Path(settings.db_path)
+    restores_live_database = target_path.resolve() == Path(settings.db_path).resolve()
+    if apply_changes and restores_live_database:
+        service_status = server_runtime.get_server_status()
+        if service_status.get("running"):
+            error = (
+                "本地 Web 服务仍在运行；请先执行 recall stop，确认服务停止后再应用恢复。"
+            )
+            if json_output:
+                click.echo(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "mode": "apply",
+                            "restored": False,
+                            "errors": [error],
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                raise click.exceptions.Exit(1)
+            raise click.ClickException(error)
+
     report = maintenance.restore_from_delivery_manifest(
         manifest_path,
         apply=apply_changes,
@@ -732,6 +756,8 @@ def rollback_from_manifest_cmd(
         restore = report["restore"] or {}
         _safe_echo(f"已按 delivery manifest 恢复: {restore.get('restored_path')}")
         _safe_echo(f"恢复前安全备份: {restore.get('safety_backup_path')}")
+        for warning in restore.get("cleanup_warnings") or []:
+            _safe_echo(warning, err=True)
     else:
         _safe_echo("校验通过。未执行恢复；需要恢复时加 --apply。")
 

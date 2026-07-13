@@ -201,10 +201,11 @@ uv run python -m src.cli rollback-from-manifest --manifest data\release-checks\d
 该命令默认 dry-run，只校验 `delivery-manifest-*.json` 中记录的 `pre-release-recall-*.db` 是否存在、SHA256 是否一致、SQLite 是否完整、关键表数量是否匹配。确认要回滚时才显式执行：
 
 ```powershell
+uv run python -m src.cli stop
 uv run python -m src.cli rollback-from-manifest --manifest data\release-checks\delivery-manifest-YYYYMMDD-HHMMSS.json --apply
 ```
 
-如果 SHA256 或关键表数量不匹配，命令会拒绝恢复。
+如果本地 Web 服务仍在运行，或 SHA256 / 关键表数量不匹配，命令会拒绝恢复。
 
 复核交付证据清单：
 
@@ -262,8 +263,8 @@ uv run python scripts\preflight_summary.py
 推荐核对命令：
 
 ```powershell
-gh release view v0.1.22 --json tagName,name,isDraft,isPrerelease,assets
-gh release download v0.1.22 --pattern DouyinRecallSetup.exe --dir <qa-directory>
+gh release view v0.1.23 --json tagName,name,isDraft,isPrerelease,assets
+gh release download v0.1.23 --pattern DouyinRecallSetup.exe --dir <qa-directory>
 Get-FileHash -Algorithm SHA256 -LiteralPath <qa-directory>\DouyinRecallSetup.exe
 ```
 

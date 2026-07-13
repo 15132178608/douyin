@@ -4,7 +4,13 @@
     <div class="maintenance-message {{ restore_message_kind or 'info' }}">{{ restore_message }}</div>
   {% endif %}
 
-  {% if restore_report.ok %}
+  {% if restore_committed %}
+    {% if restore_runtime_ready %}
+      <p class="maintenance-main">数据库文件已经恢复并重新初始化完成。为避免重复覆盖，当前页面不再提供恢复按钮。</p>
+    {% else %}
+      <p class="maintenance-main">数据库文件已经恢复。为避免重复覆盖，当前页面不再提供恢复按钮；请查看日志并重启本地服务。</p>
+    {% endif %}
+  {% elif restore_report.ok %}
     <p class="maintenance-main">{{ restore_report.name }} 可以用于恢复。</p>
     <div class="maintenance-run-list">
       <div class="maintenance-run">

@@ -16,7 +16,9 @@ from urllib.parse import parse_qs
 
 from click.testing import CliRunner
 
+from src import cli as cli_module
 from src import db
+from src.config import settings
 from src.cli import _console_safe, cli
 from src.crawler.douyin import (
     AUTH_QR_REGENERATE_FALLBACK_INTERVAL_S,
@@ -769,6 +771,53 @@ def test_rollback_from_manifest_cli_apply_restores_valid_manifest_backup() -> No
         assert title == "manifest restored"
         assert "已按 delivery manifest 恢复" in result.output
         assert "pre-restore-recall" in result.output
+
+
+def test_rollback_from_manifest_cli_blocks_live_database_while_web_service_runs() -> None:
+    runner = CliRunner()
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        backup_path = root / "pre-release-recall-cli-live.db"
+        current_db = root / "current.db"
+        manifest_path = root / "delivery-manifest-cli-live.json"
+        create_backup_db(backup_path, favorite_title="manifest restored")
+        create_backup_db(current_db, favorite_title="current")
+        write_manifest_for_backup(manifest_path, backup_path)
+        original_db_path = settings.db_path
+        original_get_server_status = cli_module.server_runtime.get_server_status
+        settings.db_path = current_db
+        cli_module.server_runtime.get_server_status = lambda: {
+            "running": True,
+            "pid": 12345,
+        }
+        try:
+            result = runner.invoke(
+                cli,
+                [
+                    "rollback-from-manifest",
+                    "--manifest",
+                    str(manifest_path),
+                    "--apply",
+                    "--json",
+                ],
+            )
+        finally:
+            settings.db_path = original_db_path
+            cli_module.server_runtime.get_server_status = original_get_server_status
+
+        payload = json.loads(result.output)
+        current = sqlite3.connect(current_db)
+        try:
+            title = current.execute(
+                "SELECT title FROM favorites WHERE id = 'fav-1'"
+            ).fetchone()[0]
+        finally:
+            current.close()
+        assert result.exit_code == 1
+        assert payload["ok"] is False
+        assert payload["restored"] is False
+        assert "Web 服务仍在运行" in payload["errors"][0]
+        assert title == "current"
 
 
 def test_rollback_from_manifest_cli_rejects_sha_mismatch() -> None:
