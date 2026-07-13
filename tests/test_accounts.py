@@ -14,6 +14,7 @@ from pathlib import Path
 
 from src import db
 from src import accounts
+from src import tenancy
 from src.config import settings
 
 
@@ -133,8 +134,222 @@ def test_user_profile_paths_are_isolated() -> None:
     bob = accounts.profile_path_for_user("bob")
 
     assert alice != bob
-    assert str(alice).endswith("data\\users\\alice\\playwright_profile")
-    assert str(bob).endswith("data\\users\\bob\\playwright_profile")
+    assert alice.name == "playwright_profile"
+    assert bob.name == "playwright_profile"
+
+
+def test_user_profile_paths_honor_configured_root(tmp_path: Path, monkeypatch) -> None:
+    custom_root = tmp_path / "custom-users"
+    monkeypatch.setattr(settings, "user_data_root", custom_root)
+    monkeypatch.setattr(settings, "playwright_profile_path", tmp_path / "empty-single-profile")
+    monkeypatch.setattr(tenancy, "PROJECT_ROOT", tmp_path / "empty-legacy-project", raising=False)
+
+    assert accounts.profile_path_for_user("alice") == custom_root / "~u-alice" / "playwright_profile"
+    for user_id in (None, "", "   "):
+        assert (
+            accounts.profile_path_for_user(user_id)
+            == custom_root / "~u-default" / "playwright_profile"
+        )
+
+
+def test_untrusted_user_ids_stay_in_distinct_profile_directories(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    custom_root = tmp_path / "custom-users"
+    monkeypatch.setattr(settings, "user_data_root", custom_root)
+    monkeypatch.setattr(settings, "playwright_profile_path", tmp_path / "empty-single-profile")
+    monkeypatch.setattr(tenancy, "PROJECT_ROOT", tmp_path / "empty-legacy-project", raising=False)
+    user_ids = (
+        ".",
+        "..",
+        "../escape",
+        r"..\escape",
+        "/absolute",
+        r"C:\escape",
+        "alice/bob",
+        r"alice\bob",
+        "Alice",
+        "alice",
+        "alice.",
+        "CON",
+        "a" * 300,
+    )
+
+    paths = {
+        user_id: accounts.profile_path_for_user(user_id)
+        for user_id in user_ids
+    }
+
+    root = custom_root.resolve()
+    for path in paths.values():
+        relative = path.resolve().relative_to(root)
+        assert len(relative.parts) == 2
+        assert relative.parts[-1] == "playwright_profile"
+    assert len(set(paths.values())) == len(user_ids)
+    assert paths["alice."] != accounts.profile_path_for_user("alice")
+
+
+def test_hashed_profile_directory_cannot_alias_a_raw_user_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    custom_root = tmp_path / "custom-users"
+    monkeypatch.setattr(settings, "user_data_root", custom_root)
+    monkeypatch.setattr(settings, "playwright_profile_path", tmp_path / "empty-single-profile")
+    monkeypatch.setattr(tenancy, "PROJECT_ROOT", tmp_path / "empty-legacy-project", raising=False)
+
+    unsafe_path = accounts.profile_path_for_user("alice/bob")
+    attacker_chosen_id = unsafe_path.parent.name
+
+    assert attacker_chosen_id.startswith("~h-")
+    assert accounts.profile_path_for_user(attacker_chosen_id) != unsafe_path
+
+
+def test_profile_path_reuses_nonempty_legacy_user_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    custom_root = tmp_path / "custom-users"
+    legacy_project = tmp_path / "legacy-project"
+    legacy_profile = legacy_project / "data" / "users" / "alice" / "playwright_profile"
+    legacy_profile.mkdir(parents=True)
+    (legacy_profile / "Local State").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(settings, "user_data_root", custom_root)
+    monkeypatch.setattr(settings, "playwright_profile_path", tmp_path / "empty-single-profile")
+    monkeypatch.setattr(tenancy, "PROJECT_ROOT", legacy_project, raising=False)
+
+    assert accounts.profile_path_for_user("alice") == legacy_profile
+
+
+def test_profile_path_reuses_legacy_uppercase_user_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    custom_root = tmp_path / "custom-users"
+    legacy_project = tmp_path / "legacy-project"
+    legacy_profile = legacy_project / "data" / "users" / "Alice" / "playwright_profile"
+    legacy_profile.mkdir(parents=True)
+    (legacy_profile / "Local State").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(settings, "user_data_root", custom_root)
+    monkeypatch.setattr(settings, "playwright_profile_path", tmp_path / "empty-single-profile")
+    monkeypatch.setattr(tenancy, "PROJECT_ROOT", legacy_project, raising=False)
+
+    assert accounts.profile_path_for_user("Alice") == legacy_profile
+
+
+def test_case_distinct_users_do_not_share_an_uppercase_legacy_profile(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    legacy_project = tmp_path / "legacy-project"
+    legacy_root = legacy_project / "data" / "users"
+    legacy_profile = legacy_root / "Alice" / "playwright_profile"
+    legacy_profile.mkdir(parents=True)
+    (legacy_profile / "Local State").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(settings, "user_data_root", legacy_root)
+    monkeypatch.setattr(settings, "playwright_profile_path", tmp_path / "empty-single-profile")
+    monkeypatch.setattr(tenancy, "PROJECT_ROOT", legacy_project, raising=False)
+
+    uppercase = accounts.profile_path_for_user("Alice")
+    lowercase = accounts.profile_path_for_user("alice")
+
+    assert uppercase == legacy_profile
+    assert lowercase == legacy_root / "~u-alice" / "playwright_profile"
+    assert lowercase != uppercase
+
+
+def test_profile_path_reuses_long_legacy_user_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    user_id = "a" * 97
+    custom_root = tmp_path / "custom-users"
+    legacy_project = tmp_path / "legacy-project"
+    legacy_profile = legacy_project / "data" / "users" / user_id / "playwright_profile"
+    legacy_profile.mkdir(parents=True)
+    (legacy_profile / "Local State").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(settings, "user_data_root", custom_root)
+    monkeypatch.setattr(settings, "playwright_profile_path", tmp_path / "empty-single-profile")
+    monkeypatch.setattr(tenancy, "PROJECT_ROOT", legacy_project, raising=False)
+
+    assert accounts.profile_path_for_user(user_id) == legacy_profile
+
+
+def test_profile_path_ignores_non_profile_files_in_legacy_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    custom_root = tmp_path / "custom-users"
+    legacy_project = tmp_path / "legacy-project"
+    legacy_profile = legacy_project / "data" / "users" / "alice" / "playwright_profile"
+    legacy_profile.mkdir(parents=True)
+    (legacy_profile / "stale.tmp").write_text("not chromium data", encoding="utf-8")
+    monkeypatch.setattr(settings, "user_data_root", custom_root)
+    monkeypatch.setattr(settings, "playwright_profile_path", tmp_path / "empty-single-profile")
+    monkeypatch.setattr(tenancy, "PROJECT_ROOT", legacy_project, raising=False)
+
+    assert accounts.profile_path_for_user("alice") == (
+        custom_root / "~u-alice" / "playwright_profile"
+    )
+
+
+def test_profile_path_uses_initialized_legacy_when_configured_directory_is_garbage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    custom_root = tmp_path / "custom-users"
+    canonical_profile = custom_root / "~u-alice" / "playwright_profile"
+    canonical_profile.mkdir(parents=True)
+    (canonical_profile / "stale.tmp").write_text("not chromium data", encoding="utf-8")
+    legacy_project = tmp_path / "legacy-project"
+    legacy_profile = legacy_project / "data" / "users" / "alice" / "playwright_profile"
+    legacy_profile.mkdir(parents=True)
+    (legacy_profile / "Local State").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(settings, "user_data_root", custom_root)
+    monkeypatch.setattr(settings, "playwright_profile_path", tmp_path / "empty-single-profile")
+    monkeypatch.setattr(tenancy, "PROJECT_ROOT", legacy_project, raising=False)
+
+    assert accounts.profile_path_for_user("alice") == legacy_profile
+
+
+def test_profile_path_prefers_nonempty_configured_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    custom_root = tmp_path / "custom-users"
+    canonical_profile = custom_root / "~u-alice" / "playwright_profile"
+    canonical_profile.mkdir(parents=True)
+    (canonical_profile / "Local State").write_text("canonical", encoding="utf-8")
+    legacy_project = tmp_path / "legacy-project"
+    legacy_profile = legacy_project / "data" / "users" / "alice" / "playwright_profile"
+    legacy_profile.mkdir(parents=True)
+    (legacy_profile / "Local State").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(settings, "user_data_root", custom_root)
+    monkeypatch.setattr(settings, "playwright_profile_path", tmp_path / "empty-single-profile")
+    monkeypatch.setattr(tenancy, "PROJECT_ROOT", legacy_project, raising=False)
+
+    assert accounts.profile_path_for_user("alice") == canonical_profile
+
+
+def test_default_profile_path_reuses_nonempty_single_user_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    custom_root = tmp_path / "custom-users"
+    legacy_project = tmp_path / "legacy-project"
+    empty_legacy_profile = (
+        legacy_project / "data" / "users" / "default" / "playwright_profile"
+    )
+    empty_legacy_profile.mkdir(parents=True)
+    single_user_profile = tmp_path / "single-user-profile"
+    single_user_profile.mkdir()
+    (single_user_profile / "Local State").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(settings, "user_data_root", custom_root)
+    monkeypatch.setattr(settings, "playwright_profile_path", single_user_profile)
+    monkeypatch.setattr(tenancy, "PROJECT_ROOT", legacy_project, raising=False)
+
+    assert accounts.profile_path_for_user("default") == single_user_profile
 
 
 def test_update_douyin_profile_stores_display_fields() -> None:
