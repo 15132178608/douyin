@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.24
+
+- Doctor now discovers Sentence Transformers and Hugging Face model caches from explicit environment variables, the Windows D-drive runtime cache, and the legacy project cache, while rejecting empty, metadata-only, locked, and incomplete cache content.
+- Service audit guidance now reserves Repair State for genuinely stale PID records; live recorded processes with missing or mismatched listeners are directed through the safe Stop Service flow instead.
+- Windows control output, troubleshooting guidance, and regression coverage remain aligned with the Python runtime behavior.
+- The public-v0.1.23-to-v0.1.24 upgrade gate preserves the existing database backup, migration, automatic search recovery, and uninstall-retention checks.
+
+See [docs/releases/v0.1.24.md](docs/releases/v0.1.24.md).
+
 ## v0.1.23
 
 - Legacy content audit tables now migrate atomically to tenant-safe composite foreign keys without losing IDs, fields, row counts, or `sqlite_sequence` state.
