@@ -17,8 +17,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "data" / "release-checks"))
     parser.add_argument("--benchmarks-dir", default=str(PROJECT_ROOT / "data" / "benchmarks"))
     parser.add_argument("--audits-dir", default=str(PROJECT_ROOT / "data" / "audits"))
-    parser.add_argument("--build-installer", action="store_true")
-    parser.add_argument("--installer-path", default=None)
+    installer_mode = parser.add_mutually_exclusive_group()
+    installer_mode.add_argument("--build-installer", action="store_true")
+    installer_mode.add_argument("--installer-path", default=None)
     parser.add_argument("--update-performance-baseline", action="store_true")
     args = parser.parse_args(argv)
 

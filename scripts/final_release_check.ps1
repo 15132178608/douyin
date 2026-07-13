@@ -1,5 +1,7 @@
 param(
     [string]$OutputDir = "",
+    [string]$BenchmarksDir = "",
+    [string]$AuditsDir = "",
     [switch]$BuildInstaller,
     [string]$InstallerPath = "",
     [switch]$UpdatePerformanceBaseline
@@ -42,6 +44,12 @@ $script = Join-Path $ProjectRoot "scripts\final_release_check.py"
 $argsList = @($script)
 if ($OutputDir) {
     $argsList += @("--output-dir", $OutputDir)
+}
+if ($BenchmarksDir) {
+    $argsList += @("--benchmarks-dir", $BenchmarksDir)
+}
+if ($AuditsDir) {
+    $argsList += @("--audits-dir", $AuditsDir)
 }
 if ($BuildInstaller) {
     $argsList += "--build-installer"

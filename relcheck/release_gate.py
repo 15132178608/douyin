@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import tomllib
 from typing import Callable, Sequence
 
 from src.config import PROJECT_ROOT, settings
@@ -21,6 +22,7 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "release-checks"
 DOWNLOAD_ROOT = Path("D:/codexDownload/douyinclaude-release-gate")
 DEFAULT_RELEASE_EVIDENCE_RETENTION_KEEP = 8
 DEFAULT_BENCHMARKS_DIR = PROJECT_ROOT / "data" / "benchmarks"
+DEFAULT_AUDITS_DIR = PROJECT_ROOT / "data" / "audits"
 DEFAULT_DIAGNOSTICS_DIR = PROJECT_ROOT / "data" / "diagnostics"
 RELEASE_EVIDENCE_TIMESTAMP_RE = re.compile(r"(\d{8}-\d{6})")
 RELEASE_CHECK_REPORT_PATTERNS = (
@@ -60,6 +62,7 @@ Runner = Callable[[Sequence[str], Path, dict[str, str], int], CommandResult]
 PerformanceChecker = Callable[[Path, bool], dict]
 PreReleaseBackupChecker = Callable[[Path], dict]
 ManifestRollbackChecker = Callable[[Path], dict]
+InstallerChecker = Callable[[Path, str], dict]
 
 
 def _timestamp() -> str:
@@ -108,6 +111,87 @@ def _sha256(path: Path | None) -> str | None:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _project_version() -> str:
+    with (PROJECT_ROOT / "pyproject.toml").open("rb") as handle:
+        payload = tomllib.load(handle)
+    return str(payload["project"]["version"])
+
+
+def check_installer_artifact(
+    installer_path: Path | str,
+    expected_version: str,
+    *,
+    runner: Runner | None = None,
+    env: dict[str, str] | None = None,
+) -> dict:
+    """Validate one already-built Windows installer and return stable evidence."""
+    path = Path(installer_path)
+    script = PROJECT_ROOT / "scripts" / "inspect-installer.ps1"
+    execute = runner or run_command
+    result = execute(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-InstallerPath",
+            str(path),
+            "-ExpectedVersion",
+            str(expected_version),
+        ],
+        PROJECT_ROOT,
+        env if env is not None else _default_env(),
+        120,
+    )
+    check = _check_result(
+        "installer_artifact",
+        result,
+        {"script": str(script), "installer": str(path)},
+        stdout_limit=None,
+    )
+    metadata: dict = {
+        "schema_version": 1,
+        "ok": False,
+        "path": str(path),
+        "name": path.name,
+        "size_bytes": 0,
+        "sha256": None,
+        "product_version": None,
+        "file_version": None,
+        "expected_version": str(expected_version),
+        "authenticode_status": None,
+        "errors": [],
+    }
+    try:
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        if not lines:
+            raise ValueError("installer inspection returned no JSON")
+        payload = json.loads(lines[-1])
+        if not isinstance(payload, dict):
+            raise TypeError("installer inspection JSON must be an object")
+        metadata.update(payload)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        message = f"Could not parse installer inspection evidence: {exc}"
+        metadata["errors"] = [message]
+        check["ok"] = False
+        check["exit_code"] = 1
+        check["stderr"] = "\n".join(part for part in (check.get("stderr", ""), message) if part)
+
+    if not bool(metadata.get("ok")):
+        check["ok"] = False
+        if check.get("exit_code") == 0:
+            check["exit_code"] = 1
+        errors = [str(item) for item in metadata.get("errors") or []]
+        if errors:
+            check["stderr"] = "\n".join(
+                part for part in (check.get("stderr", ""), *errors) if part
+            )
+    check["installer"] = metadata
+    return check
 
 
 def _evidence_file_info(path: Path, *, category: str, pattern: str | None = None) -> dict:
@@ -704,8 +788,15 @@ def render_delivery_manifest_markdown(manifest: dict) -> str:
     lines.extend(
         [
             f"- requested: `{installer.get('requested')}`",
+            f"- source: `{installer.get('source')}`",
+            f"- built: `{installer.get('built')}`",
+            f"- validated: `{installer.get('validated')}`",
             f"- path: `{installer.get('path')}`",
+            f"- size_bytes: `{installer.get('size_bytes')}`",
+            f"- product_version: `{installer.get('product_version')}`",
+            f"- expected_version: `{installer.get('expected_version')}`",
             f"- sha256: `{installer.get('sha256')}`",
+            f"- authenticode_status: `{installer.get('authenticode_status')}`",
             "",
             "## Evidence",
             "",
@@ -743,8 +834,16 @@ def render_markdown_report(report: dict) -> str:
                 "",
                 "## Installer",
                 "",
+                f"- requested: `{installer.get('requested')}`",
+                f"- source: `{installer.get('source')}`",
+                f"- built: `{installer.get('built')}`",
+                f"- validated: `{installer.get('validated')}`",
                 f"- path: `{installer.get('path')}`",
+                f"- size_bytes: `{installer.get('size_bytes')}`",
+                f"- product_version: `{installer.get('product_version')}`",
+                f"- expected_version: `{installer.get('expected_version')}`",
                 f"- sha256: `{installer.get('sha256')}`",
+                f"- authenticode_status: `{installer.get('authenticode_status')}`",
             ]
         )
     lines.extend(["", "## Commands", ""])
@@ -770,8 +869,12 @@ def render_markdown_report(report: dict) -> str:
 def _default_checks(
     python_executable: str,
     output_dir: Path | str = DEFAULT_OUTPUT_DIR,
+    benchmarks_dir: Path | str = DEFAULT_BENCHMARKS_DIR,
+    audits_dir: Path | str = DEFAULT_AUDITS_DIR,
 ) -> list[tuple[str, list[str], int, dict[str, str]]]:
     output_root = Path(output_dir)
+    benchmark_root = Path(benchmarks_dir)
+    audit_root = Path(audits_dir)
     installed_smoke_report = output_root / "installed-smoke-report.json"
     return [
         ("pytest", [python_executable, "-m", "pytest", "-q"], 600, {}),
@@ -796,27 +899,47 @@ def _default_checks(
         ),
         (
             "database_safety_audit",
-            [python_executable, str(PROJECT_ROOT / "scripts" / "database_safety_audit.py")],
+            [
+                python_executable,
+                str(PROJECT_ROOT / "scripts" / "database_safety_audit.py"),
+                "--output-dir",
+                str(audit_root),
+            ],
             300,
-            {"report": str(PROJECT_ROOT / "data" / "audits" / "database-safety-audit.json")},
+            {"report": str(audit_root / "database-safety-audit.json")},
         ),
         (
             "backup_restore_drill",
-            [python_executable, str(PROJECT_ROOT / "scripts" / "backup_restore_drill.py")],
+            [
+                python_executable,
+                str(PROJECT_ROOT / "scripts" / "backup_restore_drill.py"),
+                "--output-dir",
+                str(audit_root / "backup-restore-drill"),
+            ],
             300,
-            {"report": str(PROJECT_ROOT / "data" / "audits" / "backup-restore-drill" / "backup-restore-drill.json")},
+            {"report": str(audit_root / "backup-restore-drill" / "backup-restore-drill.json")},
         ),
         (
             "web_benchmark",
-            [python_executable, str(PROJECT_ROOT / "scripts" / "benchmark_web_pages.py")],
+            [
+                python_executable,
+                str(PROJECT_ROOT / "scripts" / "benchmark_web_pages.py"),
+                "--output-dir",
+                str(benchmark_root),
+            ],
             300,
-            {"report_dir": str(PROJECT_ROOT / "data" / "benchmarks")},
+            {"report_dir": str(benchmark_root)},
         ),
         (
             "query_performance_audit",
-            [python_executable, str(PROJECT_ROOT / "scripts" / "query_performance_audit.py")],
+            [
+                python_executable,
+                str(PROJECT_ROOT / "scripts" / "query_performance_audit.py"),
+                "--output-dir",
+                str(benchmark_root),
+            ],
             300,
-            {"report": str(PROJECT_ROOT / "data" / "benchmarks" / "query-performance-audit.md")},
+            {"report": str(benchmark_root / "query-performance-audit.md")},
         ),
         (
             "acceptance_matrix",
@@ -839,11 +962,13 @@ def run_release_gate(
     *,
     output_dir: Path | str = DEFAULT_OUTPUT_DIR,
     benchmarks_dir: Path | str = DEFAULT_BENCHMARKS_DIR,
+    audits_dir: Path | str = DEFAULT_AUDITS_DIR,
     diagnostics_dir: Path | str = DEFAULT_DIAGNOSTICS_DIR,
     runner: Runner | None = None,
     performance_checker: PerformanceChecker | None = None,
     pre_release_backup_checker: PreReleaseBackupChecker | None = None,
     manifest_rollback_checker: ManifestRollbackChecker | None = None,
+    installer_checker: InstallerChecker | None = None,
     include_installer_build: bool = False,
     installer_path: Path | str | None = None,
     python_executable: str | None = None,
@@ -852,9 +977,14 @@ def run_release_gate(
     cleanup_release_evidence: bool = False,
     release_evidence_keep: int = DEFAULT_RELEASE_EVIDENCE_RETENTION_KEEP,
 ) -> dict:
+    if include_installer_build and installer_path is not None:
+        raise ValueError("include_installer_build and installer_path are mutually exclusive")
+
     start = time.perf_counter()
     stamp = _timestamp()
     output_root = Path(output_dir)
+    benchmark_root = Path(benchmarks_dir)
+    audit_root = Path(audits_dir)
     env = _default_env()
     execute = runner or run_command
     python = python_executable or sys.executable
@@ -867,7 +997,12 @@ def run_release_gate(
         ok = False
 
     if ok or not stop_on_failure:
-        for name, command, timeout, artifacts in _default_checks(python, output_root):
+        for name, command, timeout, artifacts in _default_checks(
+            python,
+            output_root,
+            benchmark_root,
+            audit_root,
+        ):
             result = execute(command, PROJECT_ROOT, env, timeout)
             stdout_limit = None if name == "doctor_json" else 8000
             check = _check_result(name, result, artifacts, stdout_limit=stdout_limit)
@@ -878,16 +1013,46 @@ def run_release_gate(
                     break
 
     if ok:
-        check_performance = performance_checker or check_performance_regression
-        perf_check = check_performance(output_root, update_baseline=update_performance_baseline)
+        if performance_checker is None:
+            perf_check = check_performance_regression(
+                output_root,
+                benchmarks_dir=benchmark_root,
+                update_baseline=update_performance_baseline,
+            )
+        else:
+            perf_check = performance_checker(
+                output_root,
+                update_baseline=update_performance_baseline,
+            )
         checks.append(perf_check)
         if not perf_check["ok"]:
             ok = False
 
+    installer_requested = bool(include_installer_build or installer_path is not None)
+    candidate = (
+        Path(installer_path)
+        if installer_path is not None
+        else PROJECT_ROOT / "packaging" / "windows" / "out" / "DouyinRecallSetup.exe"
+    )
+    expected_version = _project_version() if installer_requested else None
     installer_report = {
-        "requested": bool(include_installer_build),
-        "path": str(installer_path) if installer_path is not None else None,
+        "requested": installer_requested,
+        "source": (
+            "built"
+            if include_installer_build
+            else ("external" if installer_path is not None else None)
+        ),
+        "built": False,
+        "validated": False,
+        "path": str(candidate) if installer_requested else None,
+        "name": candidate.name if installer_requested else None,
+        "size_bytes": 0 if installer_requested else None,
+        "product_version": None,
+        "file_version": None,
+        "expected_version": expected_version,
         "sha256": None,
+        "authenticode_status": None,
+        "errors": [],
     }
     if ok and include_installer_build:
         build_script = PROJECT_ROOT / "packaging" / "windows" / "build-installer.ps1"
@@ -904,11 +1069,41 @@ def run_release_gate(
             env,
             900,
         )
-        checks.append(_check_result("installer_build", result, {"script": str(build_script)}))
-        ok = ok and result.exit_code == 0
-        candidate = Path(installer_path) if installer_path is not None else PROJECT_ROOT / "packaging" / "windows" / "out" / "DouyinRecallSetup.exe"
-        installer_report["path"] = str(candidate)
-        installer_report["sha256"] = _sha256(candidate)
+        build_check = _check_result("installer_build", result, {"script": str(build_script)})
+        checks.append(build_check)
+        installer_report["built"] = bool(build_check["ok"])
+        ok = ok and build_check["ok"]
+
+    if ok and installer_requested:
+        inspect = installer_checker or (
+            lambda path, version: check_installer_artifact(
+                path,
+                version,
+                runner=execute,
+                env=env,
+            )
+        )
+        installer_check = inspect(candidate, str(expected_version))
+        checks.append(installer_check)
+        metadata = installer_check.get("installer")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        for key in (
+            "path",
+            "name",
+            "size_bytes",
+            "product_version",
+            "file_version",
+            "expected_version",
+            "authenticode_status",
+            "errors",
+        ):
+            if key in metadata:
+                installer_report[key] = metadata[key]
+        sha256 = metadata.get("sha256")
+        installer_report["sha256"] = str(sha256).lower() if sha256 else None
+        installer_report["validated"] = bool(installer_check.get("ok"))
+        ok = ok and bool(installer_check.get("ok"))
 
     report = {
         "ok": bool(ok),
@@ -948,8 +1143,11 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Run the Douyin Recall release gate.")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
-    parser.add_argument("--build-installer", action="store_true")
-    parser.add_argument("--installer-path", default=None)
+    parser.add_argument("--benchmarks-dir", default=str(DEFAULT_BENCHMARKS_DIR))
+    parser.add_argument("--audits-dir", default=str(DEFAULT_AUDITS_DIR))
+    installer_mode = parser.add_mutually_exclusive_group()
+    installer_mode.add_argument("--build-installer", action="store_true")
+    installer_mode.add_argument("--installer-path", default=None)
     parser.add_argument("--continue-on-failure", action="store_true")
     parser.add_argument("--update-performance-baseline", action="store_true")
     parser.add_argument("--keep-release-evidence", type=int, default=DEFAULT_RELEASE_EVIDENCE_RETENTION_KEEP)
@@ -958,6 +1156,8 @@ def main(argv: list[str] | None = None) -> int:
 
     report = run_release_gate(
         output_dir=Path(args.output_dir),
+        benchmarks_dir=Path(args.benchmarks_dir),
+        audits_dir=Path(args.audits_dir),
         include_installer_build=args.build_installer,
         installer_path=Path(args.installer_path) if args.installer_path else None,
         stop_on_failure=not args.continue_on_failure,
