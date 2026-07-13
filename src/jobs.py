@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sqlite3
 import time
 import traceback
 from typing import Any
@@ -17,6 +18,7 @@ from src.tenancy import DEFAULT_USER_ID, normalize_user_id
 
 DEFAULT_STALE_RUNNING_SECONDS = 60 * 60
 MAX_RETRY_DELAY_SECONDS = 60 * 60
+DURABLE_SEARCH_REINDEX_DELAY_SECONDS = 15 * 60
 
 
 def _now() -> datetime:
@@ -32,13 +34,53 @@ def _canonical_payload_json(payload: dict[str, Any] | None) -> str:
     return json.dumps(payload or {}, ensure_ascii=False, sort_keys=True)
 
 
+def _decode_payload_object(raw: Any) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _is_durable_search_reindex_job(conn: Any, row: Any) -> bool:
+    if row["kind"] != "index":
+        return False
+    payload = _decode_payload_object(row["payload_json"])
+    if payload.get("force") is not True:
+        return False
+    if payload.get("schema_reindex") is True:
+        # Schema-recovery jobs remain replayable until the queue row itself is
+        # committed as success, including the small crash window after the
+        # durable marker was completed.
+        return True
+    content_kind = str(payload.get("content_kind") or "favorites")
+    try:
+        marker = conn.execute(
+            """
+            SELECT 1
+            FROM search_reindex_state
+            WHERE user_id = ?
+              AND content_kind = ?
+              AND completed_at IS NULL
+            """,
+            (normalize_user_id(row["user_id"]), content_kind),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        # Conservatively retain a force-index job when marker verification is
+        # temporarily unavailable. Terminal failure here could leave an
+        # upgraded user's search partition permanently empty.
+        logger.warning("Could not verify durable search reindex marker: {}", exc)
+        return True
+    return marker is not None
+
+
 def _find_open_duplicate_job_id(
     *,
+    conn: Any,
     user_id: str,
     kind: str,
     payload_json: str,
 ) -> int | None:
-    conn = get_connection()
     rows = conn.execute(
         """
         SELECT id, payload_json
@@ -71,29 +113,43 @@ def enqueue_job(
     conn = get_connection()
     uid = normalize_user_id(user_id)
     payload_json = _canonical_payload_json(payload)
-    if suppress_duplicate:
-        existing_id = _find_open_duplicate_job_id(
-            user_id=uid,
-            kind=kind,
-            payload_json=payload_json,
+    owns_transaction = False
+    try:
+        if suppress_duplicate and not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+            owns_transaction = True
+        if suppress_duplicate:
+            existing_id = _find_open_duplicate_job_id(
+                conn=conn,
+                user_id=uid,
+                kind=kind,
+                payload_json=payload_json,
+            )
+            if existing_id is not None:
+                if owns_transaction:
+                    conn.execute("COMMIT")
+                return existing_id
+        cur = conn.execute(
+            """
+            INSERT INTO job_queue (
+                user_id, kind, payload_json, status, max_attempts, created_at
+            ) VALUES (?, ?, ?, 'pending', ?, ?)
+            """,
+            (
+                uid,
+                kind,
+                payload_json,
+                max(1, int(max_attempts or 1)),
+                _now(),
+            ),
         )
-        if existing_id is not None:
-            return existing_id
-    cur = conn.execute(
-        """
-        INSERT INTO job_queue (
-            user_id, kind, payload_json, status, max_attempts, created_at
-        ) VALUES (?, ?, ?, 'pending', ?, ?)
-        """,
-        (
-            uid,
-            kind,
-            payload_json,
-            max(1, int(max_attempts or 1)),
-            _now(),
-        ),
-    )
-    return int(cur.lastrowid)
+        if owns_transaction:
+            conn.execute("COMMIT")
+        return int(cur.lastrowid)
+    except Exception:
+        if owns_transaction and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
 
 
 def enqueue_pending_search_reindexes() -> list[int]:
@@ -106,7 +162,11 @@ def enqueue_pending_search_reindexes() -> list[int]:
             enqueue_job(
                 "index",
                 user_id=item["user_id"],
-                payload={"content_kind": item["content_kind"], "force": True},
+                payload={
+                    "content_kind": item["content_kind"],
+                    "force": True,
+                    "schema_reindex": True,
+                },
             )
         )
     return job_ids
@@ -141,66 +201,109 @@ def claim_next_job() -> dict | None:
     if updated.rowcount == 0:
         return None
     claimed = conn.execute("SELECT * FROM job_queue WHERE id = ?", (row["id"],)).fetchone()
-    payload_text = claimed["payload_json"] or "{}"
-    try:
-        payload = json.loads(payload_text)
-    except json.JSONDecodeError:
-        payload = {}
+    payload = _decode_payload_object(claimed["payload_json"])
     data = dict(claimed)
     data["payload"] = payload
     return data
 
 
-def finish_job(job_id: int) -> None:
+def _lease_condition(
+    attempts: int | None,
+    started_at: Any | None,
+) -> tuple[str, tuple[Any, ...]]:
+    if attempts is None and started_at is None:
+        return "", ()
+    if attempts is None or started_at is None:
+        raise ValueError("attempts and started_at must be provided together")
+    return (
+        " AND status = 'running' AND attempts = ? AND started_at = ?",
+        (int(attempts), started_at),
+    )
+
+
+def finish_job(
+    job_id: int,
+    *,
+    attempts: int | None = None,
+    started_at: Any | None = None,
+) -> bool:
     conn = get_connection()
-    conn.execute(
-        """
+    lease_sql, lease_params = _lease_condition(attempts, started_at)
+    updated = conn.execute(
+        f"""
         UPDATE job_queue
         SET status = 'success',
             finished_at = ?,
             error_message = NULL
-        WHERE id = ?
+        WHERE id = ?{lease_sql}
         """,
-        (_now(), job_id),
+        (_now(), job_id, *lease_params),
     )
+    return updated.rowcount == 1
 
 
-def fail_job(job_id: int, error_message: str) -> None:
+def fail_job(
+    job_id: int,
+    error_message: str,
+    *,
+    attempts: int | None = None,
+    started_at: Any | None = None,
+) -> bool:
     conn = get_connection()
+    lease_sql, lease_params = _lease_condition(attempts, started_at)
     row = conn.execute(
-        "SELECT attempts, max_attempts FROM job_queue WHERE id = ?",
-        (job_id,),
+        f"""
+        SELECT user_id, kind, payload_json, attempts, max_attempts
+        FROM job_queue
+        WHERE id = ?{lease_sql}
+        """,
+        (job_id, *lease_params),
     ).fetchone()
     if row is None:
-        return
+        return False
     now = _now()
     attempts = int(row["attempts"] or 0)
     max_attempts = max(1, int(row["max_attempts"] or 1))
-    if attempts < max_attempts:
-        delay_seconds = _retry_delay_seconds(attempts)
-        conn.execute(
-            """
+    durable_reindex = _is_durable_search_reindex_job(conn, row)
+    if attempts < max_attempts or durable_reindex:
+        exhausted = attempts >= max_attempts
+        delay_seconds = (
+            DURABLE_SEARCH_REINDEX_DELAY_SECONDS
+            if exhausted
+            else _retry_delay_seconds(attempts)
+        )
+        next_max_attempts = attempts + 1 if exhausted else max_attempts
+        updated = conn.execute(
+            f"""
             UPDATE job_queue
             SET status = 'pending',
+                max_attempts = ?,
                 next_run_at = ?,
                 started_at = NULL,
                 finished_at = NULL,
                 error_message = ?
-            WHERE id = ?
+            WHERE id = ?{lease_sql}
             """,
-            (datetime.fromtimestamp(now.timestamp() + delay_seconds, timezone.utc), str(error_message), job_id),
+            (
+                next_max_attempts,
+                datetime.fromtimestamp(now.timestamp() + delay_seconds, timezone.utc),
+                str(error_message),
+                job_id,
+                *lease_params,
+            ),
         )
-        return
-    conn.execute(
-        """
+        return updated.rowcount == 1
+    updated = conn.execute(
+        f"""
         UPDATE job_queue
         SET status = 'failed',
             finished_at = ?,
             error_message = ?
-        WHERE id = ?
+        WHERE id = ?{lease_sql}
         """,
-        (now, str(error_message), job_id),
+        (now, str(error_message), job_id, *lease_params),
     )
+    return updated.rowcount == 1
 
 
 def recover_stale_running_jobs(
@@ -219,7 +322,7 @@ def recover_stale_running_jobs(
         params.append(normalize_user_id(user_id))
     stale_rows = conn.execute(
         f"""
-        SELECT id, attempts, max_attempts
+        SELECT id, user_id, kind, payload_json, attempts, max_attempts, started_at
         FROM job_queue
         WHERE status = 'running'
           AND started_at IS NOT NULL
@@ -232,31 +335,56 @@ def recover_stale_running_jobs(
     for row in stale_rows:
         attempts = int(row["attempts"] or 0)
         max_attempts = max(1, int(row["max_attempts"] or 1))
-        if attempts >= max_attempts:
-            conn.execute(
+        durable_reindex = _is_durable_search_reindex_job(conn, row)
+        if attempts >= max_attempts and not durable_reindex:
+            updated = conn.execute(
                 """
                 UPDATE job_queue
                 SET status = 'failed',
                     finished_at = ?,
                     error_message = ?
                 WHERE id = ?
+                  AND status = 'running'
+                  AND started_at = ?
+                  AND attempts = ?
                 """,
-                (now, "stale running job reached max attempts", row["id"]),
+                (
+                    now,
+                    "stale running job reached max attempts",
+                    row["id"],
+                    row["started_at"],
+                    attempts,
+                ),
             )
         else:
-            conn.execute(
+            exhausted = attempts >= max_attempts
+            delay_seconds = DURABLE_SEARCH_REINDEX_DELAY_SECONDS if exhausted else 0
+            next_max_attempts = attempts + 1 if exhausted else max_attempts
+            updated = conn.execute(
                 """
                 UPDATE job_queue
                 SET status = 'pending',
+                    max_attempts = ?,
                     next_run_at = ?,
                     started_at = NULL,
                     finished_at = NULL,
                     error_message = ?
                 WHERE id = ?
+                  AND status = 'running'
+                  AND started_at = ?
+                  AND attempts = ?
                 """,
-                (now, "stale running job recovered", row["id"]),
+                (
+                    next_max_attempts,
+                    datetime.fromtimestamp(now.timestamp() + delay_seconds, timezone.utc),
+                    "stale running job recovered",
+                    row["id"],
+                    row["started_at"],
+                    attempts,
+                ),
             )
-        recovered += 1
+        if updated.rowcount == 1:
+            recovered += 1
     return recovered
 
 
@@ -284,10 +412,7 @@ def list_jobs(
     out: list[dict] = []
     for row in rows:
         item = dict(row)
-        try:
-            item["payload"] = json.loads(item.get("payload_json") or "{}")
-        except json.JSONDecodeError:
-            item["payload"] = {}
+        item["payload"] = _decode_payload_object(item.get("payload_json"))
         out.append(item)
     return out
 
@@ -367,6 +492,19 @@ class DefaultJobHandlers:
         from src.embedding.indexer import index_all
 
         content_kind = payload.get("content_kind") or "favorites"
+        schema_reindex = payload.get("schema_reindex") is True
+        if schema_reindex:
+            still_pending = any(
+                item["user_id"] == user_id and item["content_kind"] == content_kind
+                for item in db.list_pending_search_reindexes()
+            )
+            if not still_pending:
+                logger.info(
+                    "Skipping replay of completed search schema reindex for {} {}",
+                    user_id,
+                    content_kind,
+                )
+                return
         index_all(
             batch_size=int(payload.get("batch_size") or 32),
             force=bool(payload.get("force") or False),
@@ -494,15 +632,29 @@ def run_next_job(handlers: Any | None = None) -> bool:
     try:
         handler = getattr(active_handlers, job["kind"])
     except AttributeError as e:
-        fail_job(job["id"], f"Unknown job kind: {job['kind']}")
+        fail_job(
+            job["id"],
+            f"Unknown job kind: {job['kind']}",
+            attempts=job["attempts"],
+            started_at=job["started_at"],
+        )
         raise RuntimeError(f"Unknown job kind: {job['kind']}") from e
 
     try:
         handler(job["user_id"], job["payload"])
     except Exception as e:
-        fail_job(job["id"], f"{e}\n{traceback.format_exc()}")
+        fail_job(
+            job["id"],
+            f"{e}\n{traceback.format_exc()}",
+            attempts=job["attempts"],
+            started_at=job["started_at"],
+        )
     else:
-        finish_job(job["id"])
+        finish_job(
+            job["id"],
+            attempts=job["attempts"],
+            started_at=job["started_at"],
+        )
     return True
 
 

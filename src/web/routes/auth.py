@@ -85,7 +85,12 @@ def _fetch_douyin_profile_for_user(user_id: str) -> dict:
 
 @router.get("/login", response_class=HTMLResponse)
 def login_form(request: Request, next: str = "/"):
-    return templates.TemplateResponse(request, "login.html", {"next": next, "error": ""})
+    next_target = web_security.safe_local_redirect_target(next)
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {"next": next_target, "error": ""},
+    )
 
 
 @router.post("/login", response_class=HTMLResponse)
@@ -95,13 +100,14 @@ def login_claim_invite(
     display_name: str = Form(""),
     next: str = Form("/"),
 ):
+    next_target = web_security.safe_local_redirect_target(next)
     client_ip = web_security.login_client_ip(request)
     retry_after = web_security.login_retry_after(client_ip, invite_code)
     if retry_after > 0:
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"next": next or "/", "error": "尝试次数过多，请稍后再试。"},
+            {"next": next_target, "error": "尝试次数过多，请稍后再试。"},
             status_code=429,
             headers={"Retry-After": str(retry_after)},
         )
@@ -112,12 +118,12 @@ def login_claim_invite(
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"next": next or "/", "error": str(exc)},
+            {"next": next_target, "error": str(exc)},
             status_code=429 if retry_after > 0 else 400,
             headers={"Retry-After": str(retry_after)} if retry_after > 0 else None,
         )
     web_security.clear_login_failures(client_ip, invite_code)
-    response = RedirectResponse(next or "/", status_code=303)
+    response = RedirectResponse(next_target, status_code=303)
     web_security.set_session_cookie(response, token)
     return response
 

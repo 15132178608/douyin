@@ -225,6 +225,81 @@ def test_login_rate_limit_blocks_repeated_failures_and_sets_retry_after() -> Non
         ]
 
 
+def test_login_redirect_target_only_allows_local_absolute_paths() -> None:
+    rejected = (
+        "https://evil.example/path",
+        "//evil.example/path",
+        "///evil.example/path",
+        r"\evil.example\path",
+        r"/\evil.example/path",
+        "/%5Cevil.example/path",
+        "/%255Cevil.example/path",
+        "%2F%2Fevil.example/path",
+        "/%2Fevil.example/path",
+        "/%252Fevil.example/path",
+        "/\r/evil.example",
+        "/" + "a" * 4096,
+    )
+    allowed = (
+        "/",
+        "/memories",
+        "/memories?source=likes&sort=recent",
+        "/search?q=//evil.example",
+        "/search?q=https%3A%2F%2Fevil.example%2Fa",
+        "/search?q=a%26b",
+    )
+
+    for value in rejected:
+        assert web_security.safe_local_redirect_target(value) == "/"
+    for value in allowed:
+        assert web_security.safe_local_redirect_target(value) == value
+
+
+def test_login_form_and_success_redirect_sanitize_next_target() -> None:
+    with isolated_web_accounts_db():
+        accounts.ensure_default_user()
+        malicious_code = accounts.create_invite(
+            created_by_user_id="default",
+            code="REDIRECT-BLOCK-CODE",
+        )
+        local_code = accounts.create_invite(
+            created_by_user_id="default",
+            code="REDIRECT-LOCAL-CODE",
+        )
+        client = TestClient(web_app.app)
+
+        form_response = client.get(
+            "/login",
+            params={"next": "https://evil.example/steal"},
+        )
+        blocked_response = client.post(
+            "/login",
+            data={
+                "invite_code": malicious_code,
+                "display_name": "Alice",
+                "next": "//evil.example/steal",
+            },
+            follow_redirects=False,
+        )
+        local_response = client.post(
+            "/login",
+            data={
+                "invite_code": local_code,
+                "display_name": "Bob",
+                "next": "/memories?source=likes&sort=recent",
+            },
+            follow_redirects=False,
+        )
+
+        assert form_response.status_code == 200
+        assert 'name="next" value="/"' in form_response.text
+        assert "evil.example" not in form_response.text
+        assert blocked_response.status_code == 303
+        assert blocked_response.headers["location"] == "/"
+        assert local_response.status_code == 303
+        assert local_response.headers["location"] == "/memories?source=likes&sort=recent"
+
+
 def test_secure_session_cookie_is_used_for_login_and_logout() -> None:
     original_secure = settings.session_cookie_secure
     with isolated_web_accounts_db():
@@ -913,6 +988,8 @@ if __name__ == "__main__":
     tests = [
         test_home_page_only_shows_items_for_session_user,
         test_protected_page_redirects_without_session_when_auth_required,
+        test_login_redirect_target_only_allows_local_absolute_paths,
+        test_login_form_and_success_redirect_sanitize_next_target,
         test_uncollect_route_enqueues_background_job_for_session_user,
         test_job_enqueue_routes_scope_sync_and_index_to_session_user,
         test_first_run_jobs_enqueue_sync_and_index_once_per_session_user,

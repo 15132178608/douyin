@@ -7,6 +7,8 @@ Run:
 from __future__ import annotations
 
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +17,7 @@ from tempfile import TemporaryDirectory
 from src import db
 from src import exporter
 from src import jobs
+from src.config import settings
 
 
 @contextmanager
@@ -32,11 +35,14 @@ def isolated_jobs_db():
     )
 
     original_get_connection = jobs.get_connection
+    original_db_get_connection = db.get_connection
     jobs.get_connection = lambda: conn
+    db.get_connection = lambda: conn
     try:
         yield conn
     finally:
         jobs.get_connection = original_get_connection
+        db.get_connection = original_db_get_connection
         conn.close()
 
 
@@ -74,6 +80,43 @@ def test_enqueue_job_suppresses_duplicate_open_work_with_same_payload() -> None:
         assert second_id == first_id
         assert len(rows) == 1
         assert rows[0]["payload_json"] == '{"content_kind": "favorites", "max_pages": 5}'
+
+
+def test_enqueue_job_suppresses_concurrent_duplicate_work(tmp_path: Path) -> None:
+    db_path = tmp_path / "jobs-concurrency.db"
+    original_path = settings.db_path
+    db.close_connection()
+    settings.db_path = db_path
+    try:
+        db.init_schema()
+        conn = db.get_connection()
+        conn.execute(
+            """
+            INSERT INTO users (id, display_name, created_at)
+            VALUES ('alice', 'Alice', ?)
+            """,
+            (datetime.now(timezone.utc),),
+        )
+        barrier = threading.Barrier(2)
+
+        def enqueue(_index: int) -> int:
+            barrier.wait(timeout=5)
+            return jobs.enqueue_job(
+                "index",
+                user_id="alice",
+                payload={"content_kind": "favorites", "force": True},
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            job_ids = list(pool.map(enqueue, range(2)))
+
+        assert job_ids[0] == job_ids[1]
+        assert db.get_connection().execute(
+            "SELECT COUNT(*) AS c FROM job_queue"
+        ).fetchone()["c"] == 1
+    finally:
+        db.close_connection()
+        settings.db_path = original_path
 
 
 def test_enqueue_job_allows_new_work_after_terminal_state() -> None:
@@ -125,6 +168,186 @@ def test_fail_job_requeues_until_max_attempts_with_backoff() -> None:
         assert row["max_attempts"] == 3
         assert row["next_run_at"] is not None
         assert "temporary" in row["error_message"]
+
+
+def test_durable_search_reindex_keeps_retrying_after_attempt_budget() -> None:
+    with isolated_jobs_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO search_reindex_state (
+                user_id, content_kind, required_at, reason
+            ) VALUES ('alice', 'favorites', ?, 'schema_rebuilt')
+            """,
+            (datetime.now(timezone.utc),),
+        )
+        job_id = jobs.enqueue_job(
+            "index",
+            user_id="alice",
+            payload={"content_kind": "favorites", "force": True},
+            max_attempts=3,
+        )
+
+        class RecoveringHandlers:
+            calls = 0
+
+            def index(self, user_id: str, payload: dict) -> None:
+                self.calls += 1
+                if self.calls <= 4:
+                    raise RuntimeError("encoder temporarily unavailable")
+                conn.execute(
+                    """
+                    UPDATE search_reindex_state
+                    SET completed_at = ?
+                    WHERE user_id = ? AND content_kind = ?
+                    """,
+                    (datetime.now(timezone.utc), user_id, payload["content_kind"]),
+                )
+
+        handlers = RecoveringHandlers()
+        for expected_attempts in (1, 2):
+            assert jobs.run_next_job(handlers) is True
+            row = conn.execute(
+                "SELECT status, attempts, next_run_at FROM job_queue WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            assert (row["status"], row["attempts"]) == ("pending", expected_attempts)
+            conn.execute(
+                "UPDATE job_queue SET next_run_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc) - timedelta(seconds=1), job_id),
+            )
+
+        assert jobs.run_next_job(handlers) is True
+        exhausted = conn.execute(
+            "SELECT status, attempts, max_attempts, next_run_at FROM job_queue WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        assert (exhausted["status"], exhausted["attempts"], exhausted["max_attempts"]) == (
+            "pending",
+            3,
+            4,
+        )
+        assert exhausted["next_run_at"] > datetime.now(timezone.utc)
+        assert jobs.claim_next_job() is None
+        assert conn.execute("SELECT COUNT(*) AS c FROM job_queue").fetchone()["c"] == 1
+
+        conn.execute(
+            "UPDATE job_queue SET next_run_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc) - timedelta(seconds=1), job_id),
+        )
+        assert jobs.run_next_job(handlers) is True
+        delayed_again = conn.execute(
+            "SELECT status, attempts, max_attempts, next_run_at FROM job_queue WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        assert (
+            delayed_again["status"],
+            delayed_again["attempts"],
+            delayed_again["max_attempts"],
+        ) == ("pending", 4, 5)
+        assert delayed_again["next_run_at"] > datetime.now(timezone.utc)
+
+        conn.execute(
+            "UPDATE job_queue SET next_run_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc) - timedelta(seconds=1), job_id),
+        )
+        assert jobs.run_next_job(handlers) is True
+        final = conn.execute(
+            "SELECT status, attempts FROM job_queue WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        marker = conn.execute(
+            "SELECT completed_at FROM search_reindex_state WHERE user_id = 'alice'"
+        ).fetchone()
+        assert (final["status"], final["attempts"]) == ("success", 5)
+        assert marker["completed_at"] is not None
+
+
+def test_non_object_payload_does_not_crash_worker_or_become_durable() -> None:
+    class FailingHandlers:
+        def index(self, user_id: str, payload: dict) -> None:
+            assert payload == {}
+            raise RuntimeError("invalid payload is terminal")
+
+    with isolated_jobs_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO search_reindex_state (
+                user_id, content_kind, required_at, reason
+            ) VALUES ('alice', 'favorites', ?, 'schema_rebuilt')
+            """,
+            (datetime.now(timezone.utc),),
+        )
+        job_id = jobs.enqueue_job("index", user_id="alice", max_attempts=1)
+        conn.execute("UPDATE job_queue SET payload_json = '[]' WHERE id = ?", (job_id,))
+
+        assert jobs.run_next_job(FailingHandlers()) is True
+
+        row = conn.execute(
+            "SELECT status, attempts FROM job_queue WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        assert (row["status"], row["attempts"]) == ("failed", 1)
+
+
+def test_force_index_without_reindex_marker_still_fails_terminally() -> None:
+    class FailingHandlers:
+        def index(self, user_id: str, payload: dict) -> None:
+            raise RuntimeError("not durable")
+
+    with isolated_jobs_db() as conn:
+        job_id = jobs.enqueue_job(
+            "index",
+            user_id="alice",
+            payload={"content_kind": "favorites", "force": True},
+            max_attempts=1,
+        )
+
+        assert jobs.run_next_job(FailingHandlers()) is True
+
+        row = conn.execute(
+            "SELECT status, attempts FROM job_queue WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        assert (row["status"], row["attempts"]) == ("failed", 1)
+
+
+def test_pending_reindex_marker_replaces_old_failed_job_only_once() -> None:
+    with isolated_jobs_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO search_reindex_state (
+                user_id, content_kind, required_at, reason
+            ) VALUES ('alice', 'favorites', ?, 'schema_rebuilt')
+            """,
+            (datetime.now(timezone.utc),),
+        )
+        old_id = jobs.enqueue_job(
+            "index",
+            user_id="alice",
+            payload={"content_kind": "favorites", "force": True},
+            max_attempts=1,
+        )
+        conn.execute(
+            """
+            UPDATE job_queue
+            SET status = 'failed', attempts = 1, finished_at = ?
+            WHERE id = ?
+            """,
+            (datetime.now(timezone.utc), old_id),
+        )
+
+        first = jobs.enqueue_pending_search_reindexes()
+        second = jobs.enqueue_pending_search_reindexes()
+
+        rows = conn.execute(
+            "SELECT id, status FROM job_queue ORDER BY id"
+        ).fetchall()
+        assert first == second
+        assert first[0] != old_id
+        assert [(row["id"], row["status"]) for row in rows] == [
+            (old_id, "failed"),
+            (first[0], "pending"),
+        ]
 
 
 def test_claim_next_job_skips_pending_jobs_until_next_run_at() -> None:
@@ -191,6 +414,205 @@ def test_recover_stale_running_jobs_can_recover_immediately_on_startup() -> None
         assert row["started_at"] is None
         assert row["next_run_at"] is not None
         assert "stale running job recovered" in row["error_message"]
+
+
+def test_recover_stale_durable_reindex_after_attempt_budget() -> None:
+    with isolated_jobs_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO search_reindex_state (
+                user_id, content_kind, required_at, reason
+            ) VALUES ('alice', 'favorites', ?, 'schema_rebuilt')
+            """,
+            (datetime.now(timezone.utc),),
+        )
+        job_id = jobs.enqueue_job(
+            "index",
+            user_id="alice",
+            payload={"content_kind": "favorites", "force": True},
+            max_attempts=3,
+        )
+        conn.execute(
+            """
+            UPDATE job_queue
+            SET status = 'running', attempts = 3, started_at = ?
+            WHERE id = ?
+            """,
+            (datetime.now(timezone.utc) - timedelta(hours=2), job_id),
+        )
+
+        recovered = jobs.recover_stale_running_jobs(stale_after_seconds=3600)
+
+        row = conn.execute(
+            """
+            SELECT status, attempts, max_attempts, started_at, next_run_at
+            FROM job_queue WHERE id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        assert recovered == 1
+        assert (row["status"], row["attempts"], row["max_attempts"]) == (
+            "pending",
+            3,
+            4,
+        )
+        assert row["started_at"] is None
+        assert row["next_run_at"] > datetime.now(timezone.utc)
+
+
+def test_recover_stale_running_jobs_uses_compare_and_swap() -> None:
+    with isolated_jobs_db() as conn:
+        job_id = jobs.enqueue_job("sync_favorites", user_id="alice")
+        stale_started = datetime.now(timezone.utc) - timedelta(hours=2)
+        fresh_started = datetime.now(timezone.utc)
+        conn.execute(
+            "UPDATE job_queue SET status = 'running', started_at = ?, attempts = 1 WHERE id = ?",
+            (stale_started, job_id),
+        )
+
+        class RacingConnection:
+            def __init__(self, wrapped: sqlite3.Connection) -> None:
+                self.wrapped = wrapped
+                self.injected = False
+
+            def execute(self, sql: str, params=()):
+                normalized = " ".join(sql.split())
+                if not self.injected and "UPDATE job_queue SET status = 'pending'" in normalized:
+                    self.injected = True
+                    self.wrapped.execute(
+                        "UPDATE job_queue SET started_at = ?, attempts = 2 WHERE id = ?",
+                        (fresh_started, job_id),
+                    )
+                return self.wrapped.execute(sql, params)
+
+        original_get_connection = jobs.get_connection
+        jobs.get_connection = lambda: RacingConnection(conn)
+        racing = jobs.get_connection()
+        jobs.get_connection = lambda: racing
+        try:
+            recovered = jobs.recover_stale_running_jobs(stale_after_seconds=3600)
+        finally:
+            jobs.get_connection = original_get_connection
+
+        row = conn.execute(
+            "SELECT status, attempts, started_at FROM job_queue WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        assert recovered == 0
+        assert (row["status"], row["attempts"], row["started_at"]) == (
+            "running",
+            2,
+            fresh_started,
+        )
+
+
+def test_old_worker_cannot_finish_or_fail_a_reclaimed_attempt() -> None:
+    with isolated_jobs_db() as conn:
+        job_id = jobs.enqueue_job("sync_favorites", user_id="alice")
+
+        class ReclaimingHandlers:
+            first_attempts: int | None = None
+            first_started_at = None
+
+            def sync_favorites(self, user_id: str, payload: dict) -> None:
+                row = conn.execute(
+                    "SELECT attempts, started_at FROM job_queue WHERE id = ?",
+                    (job_id,),
+                ).fetchone()
+                self.first_attempts = row["attempts"]
+                self.first_started_at = row["started_at"]
+                conn.execute(
+                    """
+                    UPDATE job_queue
+                    SET status = 'pending', started_at = NULL, next_run_at = NULL
+                    WHERE id = ?
+                    """,
+                    (job_id,),
+                )
+                reclaimed = jobs.claim_next_job()
+                assert reclaimed["id"] == job_id
+                assert reclaimed["attempts"] == 2
+
+        handlers = ReclaimingHandlers()
+        assert jobs.run_next_job(handlers) is True
+
+        row = conn.execute(
+            "SELECT status, attempts FROM job_queue WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        assert (row["status"], row["attempts"]) == ("running", 2)
+        assert jobs.fail_job(
+            job_id,
+            "late failure",
+            attempts=handlers.first_attempts,
+            started_at=handlers.first_started_at,
+        ) is False
+        assert conn.execute(
+            "SELECT status FROM job_queue WHERE id = ?",
+            (job_id,),
+        ).fetchone()["status"] == "running"
+
+
+def test_completed_schema_reindex_replay_is_a_safe_noop() -> None:
+    from src.embedding import indexer
+
+    with isolated_jobs_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO search_reindex_state (
+                user_id, content_kind, required_at, reason, completed_at
+            ) VALUES ('alice', 'favorites', ?, 'schema_rebuilt', ?)
+            """,
+            (datetime.now(timezone.utc), datetime.now(timezone.utc)),
+        )
+        job_id = jobs.enqueue_job(
+            "index",
+            user_id="alice",
+            payload={
+                "content_kind": "favorites",
+                "force": True,
+                "schema_reindex": True,
+            },
+            max_attempts=1,
+        )
+        conn.execute(
+            """
+            UPDATE job_queue
+            SET status = 'running', attempts = 1, started_at = ?
+            WHERE id = ?
+            """,
+            (datetime.now(timezone.utc) - timedelta(hours=2), job_id),
+        )
+
+        recovered = jobs.recover_stale_running_jobs(stale_after_seconds=3600)
+        row = conn.execute(
+            "SELECT status, attempts, max_attempts FROM job_queue WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        assert recovered == 1
+        assert (row["status"], row["attempts"], row["max_attempts"]) == (
+            "pending",
+            1,
+            2,
+        )
+        conn.execute(
+            "UPDATE job_queue SET next_run_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc) - timedelta(seconds=1), job_id),
+        )
+        original_index_all = indexer.index_all
+        indexer.index_all = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("completed schema recovery must not rebuild again")
+        )
+        try:
+            assert jobs.run_next_job() is True
+        finally:
+            indexer.index_all = original_index_all
+
+        final = conn.execute(
+            "SELECT status, attempts FROM job_queue WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        assert (final["status"], final["attempts"]) == ("success", 2)
 
 
 def test_run_next_job_dispatches_known_jobs_and_marks_success() -> None:
@@ -303,9 +725,17 @@ if __name__ == "__main__":
         test_enqueue_job_allows_new_work_after_terminal_state,
         test_finish_and_fail_job_persist_terminal_state,
         test_fail_job_requeues_until_max_attempts_with_backoff,
+        test_durable_search_reindex_keeps_retrying_after_attempt_budget,
+        test_non_object_payload_does_not_crash_worker_or_become_durable,
+        test_force_index_without_reindex_marker_still_fails_terminally,
+        test_pending_reindex_marker_replaces_old_failed_job_only_once,
         test_claim_next_job_skips_pending_jobs_until_next_run_at,
         test_recover_stale_running_jobs_requeues_expired_running_work,
         test_recover_stale_running_jobs_can_recover_immediately_on_startup,
+        test_recover_stale_durable_reindex_after_attempt_budget,
+        test_recover_stale_running_jobs_uses_compare_and_swap,
+        test_old_worker_cannot_finish_or_fail_a_reclaimed_attempt,
+        test_completed_schema_reindex_replay_is_a_safe_noop,
         test_run_next_job_dispatches_known_jobs_and_marks_success,
         test_default_backup_sqlite_handler_writes_backup_to_payload_output_dir,
         test_default_categorize_handler_runs_kmeans_for_requested_content_kind,

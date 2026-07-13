@@ -4,11 +4,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import ipaddress
+from urllib.parse import unquote, urlsplit
 
 from fastapi import Request, Response
 
 from src.config import settings
 from src.db import get_connection
+
+
+MAX_REDIRECT_TARGET_LENGTH = 4096
+MAX_REDIRECT_DECODE_ROUNDS = 5
 
 
 def _now() -> datetime:
@@ -25,6 +30,38 @@ def _as_datetime(value) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _redirect_probe_is_safe(probe: str) -> bool:
+    if any(ord(char) < 32 or ord(char) == 127 for char in probe):
+        return False
+    if not probe.startswith("/") or probe.startswith("//"):
+        return False
+    try:
+        parsed = urlsplit(probe)
+    except ValueError:
+        return False
+    return not parsed.scheme and not parsed.netloc and "\\" not in parsed.path
+
+
+def safe_local_redirect_target(value: str | None) -> str:
+    """Return a local absolute path, or ``/`` for external/ambiguous targets."""
+    candidate = str(value or "").strip()
+    if not candidate or len(candidate) > MAX_REDIRECT_TARGET_LENGTH:
+        return "/"
+
+    probe = candidate
+    for _ in range(MAX_REDIRECT_DECODE_ROUNDS):
+        if not _redirect_probe_is_safe(probe):
+            return "/"
+        try:
+            decoded = unquote(probe, errors="strict")
+        except UnicodeDecodeError:
+            return "/"
+        if decoded == probe:
+            return candidate
+        probe = decoded
+    return "/"
 
 
 def login_client_ip(request: Request) -> str:

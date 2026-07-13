@@ -251,6 +251,37 @@ def test_init_schema_rebuilds_legacy_search_index_tables(tmp_path: Path, monkeyp
             ("alice", "likes", "search_index_schema_rebuilt"),
         }
 
+        stale_embedding = sqlite_vec.serialize_float32(
+            np.ones(1024, dtype=np.float32).tolist()
+        )
+        live.execute(
+            """
+            INSERT INTO favorites_vec (id, user_id, embedding)
+            VALUES ('alice:stale', 'alice', ?)
+            """,
+            (stale_embedding,),
+        )
+        live.execute(
+            """
+            INSERT INTO favorites_fts (
+                id, user_id, title, description, author, user_note
+            ) VALUES ('alice:stale', 'alice', 'stale', '', '', '')
+            """
+        )
+        assert db.search_index_counts("alice", "favorites") == {
+            "active": 1,
+            "vector": 1,
+            "fts": 1,
+        }
+        assert db.complete_search_reindex("alice", "favorites") is False
+        assert live.execute(
+            """
+            SELECT completed_at
+            FROM search_reindex_state
+            WHERE user_id = 'alice' AND content_kind = 'favorites'
+            """
+        ).fetchone()["completed_at"] is None
+
         class FakeEncoder:
             def encode(self, texts, batch_size=32):
                 return np.ones((len(texts), 1024), dtype=np.float32)
