@@ -8,7 +8,9 @@ from fastapi import FastAPI
 
 from src.db import init_schema
 import src.web.routes.auth as auth_routes
-import src.web.routes.content as content
+import src.web.routes.browse as browse_routes
+import src.web.routes.categories as categories_routes
+import src.web.routes.item_actions as item_action_routes
 import src.web.routes.jobs as jobs_routes
 import src.web.routes.maintenance as maintenance_routes
 import src.web.routes.media as media_routes
@@ -37,4 +39,6 @@ app.include_router(setup_routes.router)
 app.include_router(jobs_routes.router)
 app.include_router(maintenance_routes.router)
 app.include_router(media_routes.router)
-app.include_router(content.router)
+app.include_router(browse_routes.router)
+app.include_router(categories_routes.router)
+app.include_router(item_action_routes.router)

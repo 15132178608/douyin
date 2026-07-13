@@ -32,17 +32,36 @@ def test_web_app_is_application_assembly_only() -> None:
     assert len(app_source.splitlines()) <= 300
     assert "@app.on_event" not in app_source
     assert "lifespan=" in app_source
-    for module in ("auth", "setup", "content", "jobs", "maintenance", "media"):
+    for module in (
+        "auth",
+        "setup",
+        "browse",
+        "categories",
+        "item_actions",
+        "jobs",
+        "maintenance",
+        "media",
+    ):
         assert f"src.web.routes.{module}" in app_source
         assert "app.include_router" in app_source
     assert "import *" not in app_source
     assert "def __getattr__" not in app_source
 
     routes_dir = ROOT / "src" / "web" / "routes"
-    for module in ("auth", "setup", "jobs", "maintenance", "media"):
+    for module in (
+        "auth",
+        "setup",
+        "browse",
+        "categories",
+        "item_actions",
+        "jobs",
+        "maintenance",
+        "media",
+    ):
         source = (routes_dir / f"{module}.py").read_text(encoding="utf-8")
         assert "router.get(" in source or "router.post(" in source
         assert ")(content." not in source
+    assert not (routes_dir / "content.py").exists()
 
 
 def test_route_modules_are_decoupled_and_route_topology_stays_stable() -> None:
@@ -75,10 +94,95 @@ def test_route_modules_are_decoupled_and_route_topology_stays_stable() -> None:
     from src.web.app import app
 
     assert len(app.routes) == 80
-    assert sum(
-        getattr(route.endpoint, "__module__", "") == "src.web.routes.content"
+    route_module_counts = {
+        module: sum(
+            getattr(route.endpoint, "__module__", "") == f"src.web.routes.{module}"
+            for route in app.routes
+        )
+        for module in ("browse", "categories", "item_actions")
+    }
+    assert route_module_counts == {
+        "browse": 16,
+        "categories": 14,
+        "item_actions": 16,
+    }
+    split_route_topology = {
+        module: {
+            f"{','.join(sorted(route.methods or []))} {route.path}"
+            for route in app.routes
+            if getattr(route.endpoint, "__module__", "") == f"src.web.routes.{module}"
+        }
+        for module in route_module_counts
+    }
+    assert split_route_topology == {
+        "browse": {
+            "GET /",
+            "GET /authors",
+            "GET /duplicates",
+            "GET /empty-status",
+            "GET /likes",
+            "GET /likes/authors",
+            "GET /likes/empty-status",
+            "GET /likes/notes",
+            "GET /likes/page",
+            "GET /likes/search",
+            "GET /likes/timeline",
+            "GET /memories",
+            "GET /notes",
+            "GET /page",
+            "GET /search",
+            "GET /timeline",
+        },
+        "categories": {
+            "GET /categories",
+            "GET /categories/{category_id}/name/edit",
+            "GET /categories/{category_id}/name/view",
+            "GET /likes/categories",
+            "GET /likes/categories/{category_id}/name/edit",
+            "GET /likes/categories/{category_id}/name/view",
+            "PATCH /categories/{category_id}/name",
+            "PATCH /likes/categories/{category_id}/name",
+            "POST /categories/import",
+            "POST /categories/merge",
+            "POST /categories/organize",
+            "POST /likes/categories/import",
+            "POST /likes/categories/merge",
+            "POST /likes/categories/organize",
+        },
+        "item_actions": {
+            "GET /favorites/{favorite_id}/note/edit",
+            "GET /favorites/{favorite_id}/note/view",
+            "GET /likes/{favorite_id}/note/edit",
+            "GET /likes/{favorite_id}/note/view",
+            "PATCH /favorites/{favorite_id}/note",
+            "PATCH /likes/{favorite_id}/note",
+            "POST /favorites/batch/export",
+            "POST /favorites/batch/uncollect",
+            "POST /favorites/{favorite_id}/category",
+            "POST /favorites/{favorite_id}/uncollect",
+            "POST /likes/batch/export",
+            "POST /likes/batch/unlike",
+            "POST /likes/track/open/{favorite_id}",
+            "POST /likes/{favorite_id}/category",
+            "POST /likes/{favorite_id}/unlike",
+            "POST /track/open/{favorite_id}",
+        },
+    }
+    item_action_route_order = [
+        route.path
         for route in app.routes
-    ) == 46
+        if getattr(route.endpoint, "__module__", "") == "src.web.routes.item_actions"
+    ]
+    assert item_action_route_order.index("/favorites/batch/uncollect") < item_action_route_order.index(
+        "/favorites/{favorite_id}/uncollect"
+    )
+    assert item_action_route_order.index("/likes/batch/unlike") < item_action_route_order.index(
+        "/likes/{favorite_id}/unlike"
+    )
+    assert all(
+        getattr(route.endpoint, "__module__", "") != "src.web.routes.content"
+        for route in app.routes
+    )
     stream_routes = {
         (route.path, frozenset(route.methods or ())): getattr(
             route.endpoint, "__module__", ""
@@ -91,10 +195,14 @@ def test_route_modules_are_decoupled_and_route_topology_stays_stable() -> None:
         ("/likes/{favorite_id}/stream", frozenset({"GET"})): "src.web.routes.media",
     }
 
-    content_source = (ROOT / "src" / "web" / "routes" / "content.py").read_text(
-        encoding="utf-8"
-    )
-    assert len(content_source.splitlines()) <= 1800
+    route_line_limits = {
+        "browse.py": 950,
+        "categories.py": 400,
+        "item_actions.py": 450,
+    }
+    for filename, limit in route_line_limits.items():
+        source = (ROOT / "src" / "web" / "routes" / filename).read_text(encoding="utf-8")
+        assert len(source.splitlines()) <= limit
 
 
 def test_remaining_async_functions_in_app_have_real_awaits() -> None:
@@ -566,7 +674,7 @@ def test_home_redirects_first_run_to_scan_setup_instead_of_showing_empty_shell()
 
     assert 'href="/setup"' not in index
     assert "开始设置" not in index
-    assert "_should_show_setup_before_home" in app_source
+    assert "content_state.should_show_setup_before_home" in app_source
     assert 'RedirectResponse("/setup", status_code=303)' in app_source
     assert "should_auto_start_setup_auth(status)" in app_source
 
@@ -696,7 +804,7 @@ def test_favorite_cards_render_author_avatar() -> None:
     base = read_template("base.html")
 
     assert '"author_avatar_url"' in app_source
-    assert "cached_author_avatar_url_from_raw_json(_row_get(row, \"raw_json\"))" in app_source
+    assert "cached_author_avatar_url_from_raw_json(row_get(row, \"raw_json\"))" in app_source
     assert "raw_json" in hybrid_source
     assert "raw_json: Optional[str]" in hybrid_source
     assert '"raw_json": h.raw_json' in app_source
