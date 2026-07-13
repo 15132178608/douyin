@@ -753,6 +753,8 @@ class WindowsPackagingTests(unittest.TestCase):
             workflow,
         )
         self.assertIn('python-version: "3.11"', workflow)
+        self.assertIn("runs-on: windows-latest", workflow)
+        self.assertNotIn("runs-on: ubuntu-latest", workflow)
         self.assertIn('version: "0.11.28"', workflow)
         self.assertIn("uv run --locked pytest -q", workflow)
 
