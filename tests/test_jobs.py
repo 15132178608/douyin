@@ -82,6 +82,45 @@ def test_enqueue_job_suppresses_duplicate_open_work_with_same_payload() -> None:
         assert rows[0]["payload_json"] == '{"content_kind": "favorites", "max_pages": 5}'
 
 
+def test_enqueue_job_joins_explicit_outer_transaction_without_committing() -> None:
+    with isolated_jobs_db() as conn:
+        original_get_connection = jobs.get_connection
+
+        def unexpected_get_connection():
+            raise AssertionError("explicit connection should bypass jobs.get_connection")
+
+        jobs.get_connection = unexpected_get_connection
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            first_id = jobs.enqueue_job(
+                "index",
+                user_id="alice",
+                payload={"content_kind": "favorites", "force": True},
+                connection=conn,
+            )
+            second_id = jobs.enqueue_job(
+                "index",
+                user_id="alice",
+                payload={"force": True, "content_kind": "favorites"},
+                connection=conn,
+            )
+
+            assert conn.in_transaction is True
+            assert second_id == first_id
+            assert conn.execute(
+                "SELECT COUNT(*) AS c FROM job_queue"
+            ).fetchone()["c"] == 1
+        finally:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            jobs.get_connection = original_get_connection
+
+        assert conn.in_transaction is False
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM job_queue"
+        ).fetchone()["c"] == 0
+
+
 def test_enqueue_job_suppresses_concurrent_duplicate_work(tmp_path: Path) -> None:
     db_path = tmp_path / "jobs-concurrency.db"
     original_path = settings.db_path
@@ -722,6 +761,7 @@ if __name__ == "__main__":
     tests = [
         test_enqueue_and_claim_job_are_user_scoped,
         test_enqueue_job_suppresses_duplicate_open_work_with_same_payload,
+        test_enqueue_job_joins_explicit_outer_transaction_without_committing,
         test_enqueue_job_allows_new_work_after_terminal_state,
         test_finish_and_fail_job_persist_terminal_state,
         test_fail_job_requeues_until_max_attempts_with_backoff,

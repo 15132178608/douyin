@@ -109,8 +109,9 @@ def enqueue_job(
     payload: dict[str, Any] | None = None,
     max_attempts: int = 3,
     suppress_duplicate: bool = True,
+    connection: sqlite3.Connection | None = None,
 ) -> int:
-    conn = get_connection()
+    conn = connection if connection is not None else get_connection()
     uid = normalize_user_id(user_id)
     payload_json = _canonical_payload_json(payload)
     owns_transaction = False

@@ -315,15 +315,17 @@ def test_card_layout_keeps_note_below_and_removes_inline_category_picker() -> No
     assert "white-space: nowrap" in card_meta_rule
 
 
-def test_uncollect_routes_enqueue_jobs_without_import_time_worker_pool() -> None:
+def test_remove_routes_use_transactional_queue_service_without_process_lock() -> None:
     app_source = read_web_source()
 
-    assert "_uncollect_lock" in app_source
+    assert "_uncollect_lock" not in app_source
     assert "start_background_workers" in app_source
-    assert "with _uncollect_lock" in app_source
-    assert "row[\"is_removed\"]" in app_source
+    assert "BEGIN IMMEDIATE" in app_source
+    assert "AND is_removed = 0" in app_source
     assert "jobs.enqueue_job(" in app_source
-    assert '"content_kind": "favorites"' in app_source
+    assert "suppress_duplicate=False" in app_source
+    assert "connection=conn" in app_source
+    assert "queue_item_removals(" in app_source
     assert "_uncollect_worker" not in app_source
     assert "shutdown_uncollect_workers" not in app_source
 
@@ -862,7 +864,7 @@ if __name__ == "__main__":
         test_uncollect_button_has_busy_state_and_duplicate_submit_guard,
         test_batch_selection_has_persistent_state_and_bulk_actions,
         test_card_layout_keeps_note_below_and_removes_inline_category_picker,
-        test_uncollect_routes_enqueue_jobs_without_import_time_worker_pool,
+        test_remove_routes_use_transactional_queue_service_without_process_lock,
         test_web_startup_does_not_warm_uncollect_bridge_or_lock_profile,
         test_topbar_does_not_show_or_poll_uncollect_bridge_status,
         test_navigation_separates_modules_from_views,
