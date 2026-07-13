@@ -364,6 +364,85 @@ def test_status_command_prints_service_audit_guidance() -> None:
     assert "Next step: uv run python -m src.cli stop" in result.output
 
 
+def test_serve_host_override_rejects_insecure_public_bind_before_side_effects() -> None:
+    with patch.object(cli_module.settings, "web_host", "127.0.0.1"):
+        with patch.object(cli_module.settings, "web_auth_required", True):
+            with patch.object(cli_module.settings, "session_cookie_secure", False):
+                with patch.object(cli_module.db_module, "init_schema") as init_schema:
+                    with patch.object(
+                        cli_module.server_runtime,
+                        "should_start_server",
+                        return_value={"ok": True},
+                    ) as should_start_server:
+                        with patch.object(cli_module.server_runtime, "write_server_state") as write_state:
+                            with patch.object(
+                                cli_module.server_runtime,
+                                "read_server_state",
+                                return_value=None,
+                            ):
+                                with patch.object(cli_module.server_runtime, "clear_server_state") as clear_state:
+                                    with patch("uvicorn.run") as uvicorn_run:
+                                        result = CliRunner().invoke(
+                                            cli_module.cli,
+                                            ["serve", "--host", "0.0.0.0"],
+                                        )
+
+    error_text = f"{result.output}\n{result.exception or ''}"
+    assert result.exit_code != 0
+    assert "SESSION_COOKIE_SECURE=true" in error_text
+    init_schema.assert_not_called()
+    should_start_server.assert_not_called()
+    write_state.assert_not_called()
+    clear_state.assert_not_called()
+    uvicorn_run.assert_not_called()
+
+
+def test_serve_loopback_override_is_shared_with_app_lifespan_validation() -> None:
+    observed: dict[str, object] = {}
+
+    def validate_inside_uvicorn(*_args, host: str, port: int, **_kwargs) -> None:
+        from src.web.security import validate_web_security_config
+
+        observed["host"] = host
+        observed["port"] = port
+        observed["settings_host"] = cli_module.settings.web_host
+        validate_web_security_config()
+
+    state = type("State", (), {"pid": 1234})()
+    with patch.object(cli_module.settings, "web_host", "0.0.0.0"):
+        with patch.object(cli_module.settings, "web_auth_required", True):
+            with patch.object(cli_module.settings, "session_cookie_secure", False):
+                with patch.object(cli_module.db_module, "init_schema") as init_schema:
+                    with patch.object(
+                        cli_module.server_runtime,
+                        "should_start_server",
+                        return_value={"ok": True},
+                    ):
+                        with patch.object(
+                            cli_module.server_runtime,
+                            "write_server_state",
+                            return_value=state,
+                        ):
+                            with patch.object(
+                                cli_module.server_runtime,
+                                "read_server_state",
+                                return_value=None,
+                            ):
+                                with patch("uvicorn.run", side_effect=validate_inside_uvicorn):
+                                    result = CliRunner().invoke(
+                                        cli_module.cli,
+                                        ["serve", "--host", "127.0.0.1", "--port", "8765"],
+                                    )
+
+    assert result.exit_code == 0, result.output
+    init_schema.assert_called_once_with()
+    assert observed == {
+        "host": "127.0.0.1",
+        "port": 8765,
+        "settings_host": "127.0.0.1",
+    }
+
+
 def test_windows_terminator_uses_force_and_raises_on_taskkill_failure() -> None:
     calls: list[list[str]] = []
 
@@ -425,6 +504,8 @@ if __name__ == "__main__":
         test_service_audit_identifies_record_port_mismatch,
         test_service_audit_identifies_clear_port_without_state,
         test_status_command_prints_service_audit_guidance,
+        test_serve_host_override_rejects_insecure_public_bind_before_side_effects,
+        test_serve_loopback_override_is_shared_with_app_lifespan_validation,
         test_windows_terminator_uses_force_and_raises_on_taskkill_failure,
         test_windows_process_checker_tolerates_non_utf8_tasklist_output,
         test_windows_process_checker_handles_missing_stdout_without_crashing,

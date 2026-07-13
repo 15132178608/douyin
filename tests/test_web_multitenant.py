@@ -327,7 +327,7 @@ def test_secure_session_cookie_is_used_for_login_and_logout() -> None:
         assert "httponly" in logout_cookie
 
 
-def test_public_authenticated_bind_rejects_insecure_session_cookie() -> None:
+def test_effective_public_bind_rejects_insecure_session_cookie() -> None:
     original_host = settings.web_host
     original_auth_required = settings.web_auth_required
     original_secure = settings.session_cookie_secure
@@ -341,8 +341,20 @@ def test_public_authenticated_bind_rejects_insecure_session_cookie() -> None:
             assert "SESSION_COOKIE_SECURE=true" in str(exc)
         else:
             raise AssertionError("public authenticated bind should require secure cookies")
+
+        settings.web_host = "127.0.0.1"
+        try:
+            web_security.validate_web_security_config(host="0.0.0.0")
+        except RuntimeError as exc:
+            assert "SESSION_COOKIE_SECURE=true" in str(exc)
+        else:
+            raise AssertionError("effective CLI bind should override WEB_HOST for validation")
+
+        for loopback_host in ("localhost", "127.0.0.2", "::1", "[::1]"):
+            web_security.validate_web_security_config(host=loopback_host)
+
         settings.session_cookie_secure = True
-        web_security.validate_web_security_config()
+        web_security.validate_web_security_config(host="0.0.0.0")
     finally:
         settings.web_host = original_host
         settings.web_auth_required = original_auth_required
