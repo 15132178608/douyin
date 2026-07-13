@@ -1139,11 +1139,22 @@ def categorize_cmd(algo: str, force_k: int | None, rebuild: bool, kind: str,
               help="端口；默认读 .env 的 WEB_PORT（未配置则 8000）")
 def serve_cmd(host: str | None, port: int | None) -> None:
     """[M3] 启动 Web UI（搜索 + 时间轴）。"""
+    h = host or settings.web_host
+    p = port or settings.web_port
+    from src.web.security import validate_web_security_config
+
+    try:
+        validate_web_security_config(host=h)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    # Uvicorn imports the FastAPI app in this process. Keep its lifespan
+    # validation aligned with the CLI's effective bind rather than the raw
+    # WEB_HOST value that may have been overridden above.
+    settings.web_host = h
+
     import uvicorn
 
     db_module.init_schema()
-    h = host or settings.web_host
-    p = port or settings.web_port
     decision = server_runtime.should_start_server()
     if not decision["ok"]:
         click.echo(decision["message"])

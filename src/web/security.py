@@ -73,11 +73,29 @@ def login_client_ip(request: Request) -> str:
         return raw[:128] or "unknown"
 
 
-def validate_web_security_config() -> None:
-    """Refuse an obviously public authenticated bind with insecure cookies."""
-    host = str(settings.web_host or "").strip().lower()
-    local_hosts = {"127.0.0.1", "localhost", "::1"}
-    if settings.web_auth_required and host not in local_hosts and not settings.session_cookie_secure:
+def _is_loopback_host(host: str) -> bool:
+    normalized = str(host or "").strip().lower()
+    if normalized == "localhost":
+        return True
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_web_security_config(*, host: str | None = None) -> None:
+    """Refuse an authenticated public bind with insecure cookies.
+
+    ``host`` is the effective server bind when a caller overrides WEB_HOST.
+    """
+    effective_host = settings.web_host if host is None else host
+    if (
+        settings.web_auth_required
+        and not _is_loopback_host(effective_host)
+        and not settings.session_cookie_secure
+    ):
         raise RuntimeError(
             "WEB_AUTH_REQUIRED on a non-loopback host requires SESSION_COOKIE_SECURE=true "
             "and HTTPS termination."
