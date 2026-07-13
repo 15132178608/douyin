@@ -766,33 +766,7 @@ function Repair-StaleServerState {
     Write-ControlSummary
     Write-Header "Repair stale service state"
     Write-Host "Start Menu entry: Douyin Recall Repair State"
-
-    $state = Read-ServerState
-    $recordedPid = Get-StatePid -State $state
-    if ($null -eq $recordedPid) {
-        $recordedPid = Read-ServerPidFile
-    }
-
-    if ($null -ne $recordedPid -and (Test-PidRunning -ProcessId $recordedPid)) {
-        Write-Host "Recorded service process is still running (pid=$recordedPid). State files were not cleaned. Use Douyin Recall Stop Service first."
-        return
-    }
-
-    $removed = $false
-    if (Test-Path $ServerStatePath) {
-        Remove-Item -LiteralPath $ServerStatePath -Force
-        Write-Host "Removed stale service record: $ServerStatePath"
-        $removed = $true
-    }
-    if (Test-Path $ServerPidPath) {
-        Remove-Item -LiteralPath $ServerPidPath -Force
-        Write-Host "Removed stale PID file: $ServerPidPath"
-        $removed = $true
-    }
-
-    if (-not $removed) {
-        Write-Host "No server.json or server.pid file needed cleanup."
-    }
+    Invoke-RecallCommand @('repair-state')
 }
 
 function Show-ControlMenu {

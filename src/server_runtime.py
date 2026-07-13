@@ -1,6 +1,7 @@
 """Local Web server lifecycle state helpers."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import ctypes
@@ -8,10 +9,11 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import sys
 import time
-from typing import Callable
+from typing import Callable, Iterator
 
 from src.config import PROJECT_ROOT
 
@@ -19,6 +21,116 @@ from src.config import PROJECT_ROOT
 DEFAULT_RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
 PID_FILENAME = "server.pid"
 STATE_FILENAME = "server.json"
+DATABASE_RUNTIME_LOCK_FILENAME = "database-runtime.lock"
+
+
+class DatabaseRuntimeLockUnavailable(RuntimeError):
+    """Raised when another process owns the live-database runtime lease."""
+
+
+def _database_runtime_lock_path(runtime_dir: Path | None = None) -> Path:
+    return _runtime_dir(runtime_dir) / DATABASE_RUNTIME_LOCK_FILENAME
+
+
+@contextmanager
+def database_runtime_lock(
+    *,
+    runtime_dir: Path | None = None,
+) -> Iterator[Path]:
+    """Hold a cross-process lease for using or replacing the live database.
+
+    The lock file is intentionally persistent; the operating-system byte lock,
+    not file existence, represents ownership and is released automatically if a
+    process exits. Web lifespan holds the lease while serving, and destructive
+    CLI restore holds it from validation through database cutover.
+    """
+    path = _database_runtime_lock_path(runtime_dir)
+    handle = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a+b")
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+    except OSError as exc:
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        raise DatabaseRuntimeLockUnavailable(
+            f"无法打开数据库运行锁 {path}: {exc}"
+        ) from exc
+
+    try:
+        handle.seek(0)
+        if sys.platform.startswith("win"):
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        try:
+            handle.close()
+        except OSError:
+            pass
+        raise DatabaseRuntimeLockUnavailable(
+            "活动 Web 服务或另一个数据库维护进程正在使用当前数据库。"
+        ) from exc
+
+    try:
+        yield path
+    finally:
+        try:
+            handle.seek(0)
+            if sys.platform.startswith("win"):
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            # Closing the handle also releases OS-owned locks. Cleanup failure
+            # must not turn an already committed database restore into a false
+            # CLI failure that invites the user to retry.
+            pass
+        finally:
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+
+def is_web_listener_active(
+    *,
+    host: str,
+    port: int,
+    timeout_seconds: float = 0.2,
+) -> bool:
+    """Return whether the configured Web endpoint accepts TCP connections."""
+    normalized_host = str(host or "127.0.0.1").strip().strip("[]")
+    if normalized_host == "0.0.0.0":
+        probe_hosts = ("127.0.0.1",)
+    elif normalized_host in {"::", "0:0:0:0:0:0:0:0"}:
+        probe_hosts = ("::1",)
+    else:
+        probe_hosts = (normalized_host,)
+    for probe_host in probe_hosts:
+        try:
+            with socket.create_connection(
+                (probe_host, int(port)),
+                timeout=max(0.01, float(timeout_seconds)),
+            ):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 @dataclass(frozen=True)
@@ -254,33 +366,60 @@ def should_start_server(
     process_checker: Callable[[int], bool] | None = None,
     port_owner_checker: Callable[[int], int | None] | None = None,
 ) -> dict:
-    status = get_server_status(runtime_dir=runtime_dir, process_checker=process_checker)
-    if status["state"] == "running":
-        owner_checker = port_owner_checker or (get_port_owner_pid if sys.platform.startswith("win") else None)
-        if owner_checker is not None:
-            owner_pid = owner_checker(int(status["port"]))
-            if owner_pid is None:
-                clear_server_state(runtime_dir)
+    try:
+        lock_context = database_runtime_lock(runtime_dir=runtime_dir)
+        with lock_context:
+            status = get_server_status(
+                runtime_dir=runtime_dir,
+                process_checker=process_checker,
+            )
+            if status["state"] == "running":
+                owner_checker = port_owner_checker or (
+                    get_port_owner_pid if sys.platform.startswith("win") else None
+                )
+                if owner_checker is not None:
+                    owner_pid = owner_checker(int(status["port"]))
+                    if owner_pid is None:
+                        clear_server_state(runtime_dir)
+                        return {
+                            "ok": True,
+                            "status": status,
+                            "message": (
+                                "没有发现端口监听，已清理 PID 记录："
+                                f"pid={status['pid']} port={status['port']}"
+                            ),
+                        }
+                    if owner_pid != int(status["pid"]):
+                        clear_server_state(runtime_dir)
+                        return {
+                            "ok": True,
+                            "status": status,
+                            "message": (
+                                "PID 记录和端口监听进程不匹配，已清理记录："
+                                f"pid={status['pid']} port_owner={owner_pid}"
+                            ),
+                        }
                 return {
-                    "ok": True,
+                    "ok": False,
                     "status": status,
-                    "message": f"没有发现端口监听，已清理 PID 记录：pid={status['pid']} port={status['port']}",
+                    "message": f"本地 Web 服务已在运行：{status['url']}",
                 }
-            if owner_pid != int(status["pid"]):
+            if status["state"] == "stale":
                 clear_server_state(runtime_dir)
-                return {
-                    "ok": True,
-                    "status": status,
-                    "message": f"PID 记录和端口监听进程不匹配，已清理记录：pid={status['pid']} port_owner={owner_pid}",
-                }
+            return {"ok": True, "status": status, "message": "可以启动本地 Web 服务。"}
+    except DatabaseRuntimeLockUnavailable:
+        status = get_server_status(
+            runtime_dir=runtime_dir,
+            process_checker=process_checker,
+        )
         return {
             "ok": False,
             "status": status,
-            "message": f"本地 Web 服务已在运行：{status['url']}",
+            "message": (
+                "数据库运行锁正由 Web 服务或维护进程持有；"
+                "服务可能仍在启动、运行或执行数据库恢复。"
+            ),
         }
-    if status["state"] == "stale":
-        clear_server_state(runtime_dir)
-    return {"ok": True, "status": status, "message": "可以启动本地 Web 服务。"}
 
 
 def terminate_process(pid: int) -> None:
@@ -351,6 +490,130 @@ def wait_until_server_stopped(
     return False
 
 
+def _server_state_from_status(status: dict) -> ServerState | None:
+    """Rebuild the exact state snapshot represented by a status response."""
+    if status.get("pid") is None:
+        return None
+    return ServerState(
+        pid=int(status["pid"]),
+        host=str(status.get("host") or "127.0.0.1"),
+        port=int(status.get("port") or 8000),
+        started_at=str(status.get("started_at") or ""),
+    )
+
+
+def _clear_server_state_if_unchanged(
+    expected_state: ServerState,
+    *,
+    runtime_dir: Path | None = None,
+) -> str:
+    """Clear one observed state only while exclusively owning the runtime dir.
+
+    A concurrent startup may replace the state after a stop/repair command has
+    inspected it.  Returning an outcome lets the caller preserve that winner's
+    state instead of unlinking it based on an obsolete snapshot.
+    """
+    try:
+        with database_runtime_lock(runtime_dir=runtime_dir):
+            current_state = read_server_state(runtime_dir)
+            if current_state != expected_state:
+                return "changed"
+            clear_server_state(runtime_dir)
+            return "cleared"
+    except DatabaseRuntimeLockUnavailable:
+        return "locked"
+
+
+def repair_stale_server_state(
+    *,
+    runtime_dir: Path | None = None,
+    process_checker: Callable[[int], bool] | None = None,
+) -> dict:
+    """Clear one stale service record without racing a concurrent startup."""
+    checker = process_checker or is_process_running
+    try:
+        with database_runtime_lock(runtime_dir=runtime_dir):
+            status = get_server_status(
+                runtime_dir=runtime_dir,
+                process_checker=checker,
+            )
+            if status["state"] == "stopped":
+                state_path = _state_path(runtime_dir)
+                pid_path = _pid_path(runtime_dir)
+                artifacts_exist = any(
+                    path.exists() and path.is_file()
+                    for path in (state_path, pid_path)
+                )
+                if not artifacts_exist:
+                    return {
+                        "repaired": False,
+                        "status": status,
+                        "message": "没有需要清理的服务状态记录。",
+                    }
+
+                artifact_pid = None
+                if pid_path.exists() and pid_path.is_file():
+                    try:
+                        artifact_pid = int(pid_path.read_text(encoding="utf-8").strip())
+                    except (OSError, ValueError):
+                        artifact_pid = None
+                if artifact_pid is not None and checker(artifact_pid):
+                    return {
+                        "repaired": False,
+                        "status": status,
+                        "message": (
+                            f"PID 文件记录的进程仍在运行（pid={artifact_pid}），"
+                            "即使 server.json 无法解析也不会清理。请先停止并重试。"
+                        ),
+                    }
+
+                clear_server_state(runtime_dir)
+                return {
+                    "repaired": True,
+                    "status": status,
+                    "message": "已清理无法解析的陈旧服务状态文件。",
+                }
+
+            if status["state"] == "running":
+                return {
+                    "repaired": False,
+                    "status": status,
+                    "message": (
+                        f"记录的服务进程仍在运行（pid={status['pid']}），"
+                        "已保留服务状态。请先使用 Douyin Recall Stop Service。"
+                    ),
+                }
+
+            expected_state = _server_state_from_status(status)
+            current_state = read_server_state(runtime_dir)
+            if expected_state is None or current_state != expected_state:
+                return {
+                    "repaired": False,
+                    "status": status,
+                    "message": "服务状态已发生变化，已保留当前实例的状态。",
+                }
+
+            clear_server_state(runtime_dir)
+            return {
+                "repaired": True,
+                "status": status,
+                "message": f"已清理陈旧服务状态：pid={status['pid']}",
+            }
+    except DatabaseRuntimeLockUnavailable:
+        status = get_server_status(
+            runtime_dir=runtime_dir,
+            process_checker=checker,
+        )
+        return {
+            "repaired": False,
+            "status": status,
+            "message": (
+                "数据库运行锁正被占用；服务可能正在启动、运行或执行数据库恢复，"
+                "已保留服务状态。"
+            ),
+        }
+
+
 def stop_recorded_server(
     *,
     runtime_dir: Path | None = None,
@@ -367,23 +630,65 @@ def stop_recorded_server(
     status = get_server_status(runtime_dir=runtime_dir, process_checker=checker)
     if status["state"] == "stopped":
         return {"stopped": False, "status": status, "message": "本地 Web 服务未运行。"}
+    expected_state = _server_state_from_status(status)
+    if expected_state is None:
+        return {"stopped": False, "status": status, "message": "本地 Web 服务未运行。"}
     if status["state"] == "stale":
-        clear_server_state(runtime_dir)
-        return {"stopped": False, "status": status, "message": "已清理陈旧 PID 记录。"}
+        cleanup = _clear_server_state_if_unchanged(
+            expected_state,
+            runtime_dir=runtime_dir,
+        )
+        if cleanup == "cleared":
+            message = "已清理陈旧 PID 记录。"
+        elif cleanup == "locked":
+            message = "数据库运行锁正被占用；服务可能正在启动或运行，已保留 PID 记录。"
+        else:
+            message = "服务状态已发生变化，已保留当前 PID 记录。"
+        return {"stopped": False, "status": status, "message": message}
     owner_pid = owner_checker(int(status["port"]))
     if owner_pid is None:
-        clear_server_state(runtime_dir)
+        cleanup = _clear_server_state_if_unchanged(
+            expected_state,
+            runtime_dir=runtime_dir,
+        )
+        if cleanup == "locked":
+            message = (
+                "数据库运行锁正被占用；服务可能仍在启动，"
+                f"已保留 PID 记录：pid={status['pid']} port={status['port']}"
+            )
+        elif cleanup == "changed":
+            message = "服务状态已发生变化，已保留当前 PID 记录。"
+        else:
+            message = (
+                "没有发现端口监听，已清理 PID 记录："
+                f"pid={status['pid']} port={status['port']}"
+            )
         return {
             "stopped": False,
             "status": status,
-            "message": f"没有发现端口监听，已清理 PID 记录：pid={status['pid']} port={status['port']}",
+            "message": message,
         }
     if owner_pid is not None and owner_pid != int(status["pid"]):
-        clear_server_state(runtime_dir)
+        cleanup = _clear_server_state_if_unchanged(
+            expected_state,
+            runtime_dir=runtime_dir,
+        )
+        if cleanup == "locked":
+            message = (
+                "数据库运行锁正被占用；服务可能正在启动或运行，"
+                f"已保留 PID 记录：pid={status['pid']} port_owner={owner_pid}"
+            )
+        elif cleanup == "changed":
+            message = "服务状态已发生变化，已保留当前 PID 记录。"
+        else:
+            message = (
+                "PID 记录和端口监听进程不匹配，已清理记录："
+                f"pid={status['pid']} port_owner={owner_pid}"
+            )
         return {
             "stopped": False,
             "status": status,
-            "message": f"PID 记录和端口监听进程不匹配，已清理记录：pid={status['pid']} port_owner={owner_pid}",
+            "message": message,
         }
     try:
         stop_one(int(status["pid"]))
@@ -408,5 +713,20 @@ def stop_recorded_server(
             "status": status,
             "message": f"未确认停止，已保留 PID 记录：pid={status['pid']} port={status['port']}",
         }
-    clear_server_state(runtime_dir)
-    return {"stopped": True, "status": status, "message": f"已请求停止本地 Web 服务：pid={status['pid']}"}
+    cleanup = _clear_server_state_if_unchanged(
+        expected_state,
+        runtime_dir=runtime_dir,
+    )
+    if cleanup == "cleared":
+        message = f"已请求停止本地 Web 服务：pid={status['pid']}"
+    elif cleanup == "locked":
+        message = (
+            f"旧服务 pid={status['pid']} 已停止；另一个实例正在启动或运行，"
+            "已保留当前服务状态。"
+        )
+    else:
+        message = (
+            f"旧服务 pid={status['pid']} 已停止；服务状态已由其他实例更新，"
+            "已保留当前服务状态。"
+        )
+    return {"stopped": True, "status": status, "message": message}

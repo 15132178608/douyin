@@ -68,12 +68,13 @@ def _database_check(db_path: Path | None = None) -> dict:
         "exists": path.exists(),
         "required_tables": sorted(maintenance.REQUIRED_RESTORE_TABLES),
         "missing_tables": [],
+        "foreign_key_check": [],
     }
     if not path.exists():
         return _check("missing", False, "数据库文件不存在，请先初始化或完成首次设置。", details)
     conn: sqlite3.Connection | None = None
     try:
-        conn = sqlite3.connect(str(path))
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
         integrity = conn.execute("PRAGMA integrity_check").fetchone()
         details["integrity_check"] = integrity[0] if integrity else None
         tables = {
@@ -87,6 +88,21 @@ def _database_check(db_path: Path | None = None) -> dict:
             return _check("error", False, "数据库完整性检查失败。", details)
         if missing:
             return _check("error", False, "数据库缺少必要表。", details)
+        try:
+            details["foreign_key_check"] = [
+                {
+                    "table": row[0],
+                    "rowid": row[1],
+                    "parent": row[2],
+                    "foreign_key_id": row[3],
+                }
+                for row in conn.execute("PRAGMA foreign_key_check").fetchall()
+            ]
+        except sqlite3.Error as exc:
+            details["foreign_key_check_error"] = str(exc)
+            return _check("error", False, "数据库外键结构检查失败。", details)
+        if details["foreign_key_check"]:
+            return _check("error", False, "数据库存在外键约束违规。", details)
         return _check("ok", True, "数据库可读取，必要表完整。", details)
     except sqlite3.Error as exc:
         details["error"] = str(exc)

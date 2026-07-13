@@ -280,16 +280,21 @@ def delete_user_data(user_id: str) -> None:
         conn.execute("BEGIN")
         try:
             for table in (
-                "favorites",
-                "likes",
                 "recall_log",
                 "like_recall_log",
-                "crawl_runs",
-                "like_crawl_runs",
                 "uncollect_log",
                 "unlike_log",
+                "favorites_vec",
+                "favorites_fts",
+                "likes_vec",
+                "likes_fts",
+                "favorites",
+                "likes",
+                "crawl_runs",
+                "like_crawl_runs",
                 "categories",
                 "like_categories",
+                "search_reindex_state",
                 "job_queue",
                 "web_sessions",
             ):

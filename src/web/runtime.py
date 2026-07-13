@@ -13,6 +13,8 @@ from src.web import douyin_auth
 
 _job_worker_stop = threading.Event()
 _job_worker_thread: threading.Thread | None = None
+_job_worker_lifecycle_lock = threading.Lock()
+_job_worker_shutdown_requested = False
 
 
 def _maybe_prewarm_first_run_auth() -> None:
@@ -28,36 +30,65 @@ def _maybe_prewarm_first_run_auth() -> None:
         logger.warning("Could not prewarm first-run Douyin auth: {}", exc)
 
 
-def start_background_workers() -> None:
-    global _job_worker_thread
-    if _job_worker_thread is None or not _job_worker_thread.is_alive():
-        reindex_job_ids = jobs.enqueue_pending_search_reindexes()
-        if reindex_job_ids:
-            logger.info(
-                "Queued {} durable search index recovery job(s) before worker startup.",
-                len(reindex_job_ids),
+def start_background_workers(*, reset_shutdown: bool = False) -> None:
+    global _job_worker_shutdown_requested, _job_worker_thread
+    with _job_worker_lifecycle_lock:
+        if reset_shutdown:
+            _job_worker_shutdown_requested = False
+        elif _job_worker_shutdown_requested:
+            return
+        if _job_worker_thread is None or not _job_worker_thread.is_alive():
+            reindex_job_ids = jobs.enqueue_pending_search_reindexes()
+            if reindex_job_ids:
+                logger.info(
+                    "Queued {} durable search index recovery job(s) before worker startup.",
+                    len(reindex_job_ids),
+                )
+            recovered = jobs.recover_stale_running_jobs(stale_after_seconds=0)
+            if recovered:
+                logger.info("Recovered {} interrupted background job(s) before worker startup.", recovered)
+            _job_worker_stop.clear()
+            _job_worker_thread = threading.Thread(
+                target=jobs.run_forever,
+                kwargs={"stop_event": _job_worker_stop, "poll_interval": 1.0},
+                name="recall-job-worker",
+                daemon=True,
             )
-        recovered = jobs.recover_stale_running_jobs(stale_after_seconds=0)
-        if recovered:
-            logger.info("Recovered {} interrupted background job(s) before worker startup.", recovered)
-        _job_worker_stop.clear()
-        _job_worker_thread = threading.Thread(
-            target=jobs.run_forever,
-            kwargs={"stop_event": _job_worker_stop, "poll_interval": 1.0},
-            name="recall-job-worker",
-            daemon=True,
-        )
-        _job_worker_thread.start()
-    _maybe_prewarm_first_run_auth()
+            _job_worker_thread.start()
+        # Keep prewarm in the lifecycle critical section.  Otherwise an older
+        # start call can pause here, let final shutdown complete, and then launch
+        # a new auth daemon after shutdown has already returned.
+        _maybe_prewarm_first_run_auth()
 
 
-def stop_background_workers() -> None:
+def stop_background_workers(*, timeout: float = 5.0) -> None:
+    """Stop the job worker or fail without forgetting a still-running thread."""
     global _job_worker_thread
-    _job_worker_stop.set()
-    if _job_worker_thread is not None:
-        _job_worker_thread.join(timeout=5)
-    _job_worker_thread = None
+    with _job_worker_lifecycle_lock:
+        _job_worker_stop.set()
+        worker = _job_worker_thread
+        if worker is None:
+            return
+        worker.join(timeout=max(0.0, float(timeout)))
+        if worker.is_alive():
+            # No database cutover has happened yet. Cancel the stop request so
+            # the existing worker resumes after its current long-running job.
+            _job_worker_stop.clear()
+            raise RuntimeError(
+                "后台任务 worker 未在限定时间内停止；已保留线程引用，"
+                "不能安全执行数据库维护。"
+            )
+        _job_worker_thread = None
 
 
 def shutdown_workers() -> None:
-    stop_background_workers()
+    """Wait for final worker exit before the process releases its database lease."""
+    global _job_worker_shutdown_requested, _job_worker_thread
+    with _job_worker_lifecycle_lock:
+        _job_worker_shutdown_requested = True
+        _job_worker_stop.set()
+        worker = _job_worker_thread
+        if worker is None:
+            return
+        worker.join()
+        _job_worker_thread = None

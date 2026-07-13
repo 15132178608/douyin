@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import subprocess
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -525,6 +527,59 @@ def test_validate_sqlite_backup_rejects_non_database_file() -> None:
         assert report["errors"]
 
 
+def test_validate_and_restore_sqlite_backup_include_committed_wal_rows() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        backup_path = root / "recall-backup-wal.db"
+        target_path = root / "recall.db"
+        safety_dir = root / "exports"
+        create_test_db(backup_path, favorite_title="base")
+        create_test_db(target_path, favorite_title="current")
+        writer = sqlite3.connect(backup_path)
+        try:
+            assert writer.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+            writer.execute("PRAGMA wal_autocheckpoint = 0")
+            writer.execute(
+                """
+                INSERT INTO favorites(
+                    user_id, id, title, first_seen_at, last_seen_at, is_removed
+                ) VALUES (
+                    'default', 'wal-only', 'committed in WAL',
+                    '2026-07-05', '2026-07-05', 0
+                )
+                """
+            )
+            writer.commit()
+            assert Path(str(backup_path) + "-wal").stat().st_size > 0
+
+            validation = maintenance.validate_sqlite_backup(backup_path)
+            result = maintenance.restore_sqlite_backup(
+                backup_path,
+                db_path=target_path,
+                backup_dir=safety_dir,
+            )
+
+            restored = sqlite3.connect(target_path)
+            try:
+                restored_count = restored.execute("SELECT COUNT(*) FROM favorites").fetchone()[0]
+                restored_title = restored.execute(
+                    "SELECT title FROM favorites WHERE id = 'wal-only'"
+                ).fetchone()[0]
+                violations = restored.execute("PRAGMA foreign_key_check").fetchall()
+            finally:
+                restored.close()
+        finally:
+            writer.close()
+
+        assert validation["ok"] is True
+        assert validation["counts"]["favorites"] == 2
+        assert validation["sidecars"]["-wal"]["size_bytes"] > 0
+        assert result.restored_path == target_path
+        assert restored_count == 2
+        assert restored_title == "committed in WAL"
+        assert violations == []
+
+
 def test_list_recovery_backups_includes_manual_and_preinstall_backups() -> None:
     with TemporaryDirectory() as tmp:
         backup_dir = Path(tmp)
@@ -589,10 +644,13 @@ def test_restore_sqlite_backup_replaces_target_and_creates_safety_backup() -> No
             close_connection=lambda: close_calls.append("closed"),
         )
 
+        assert Path(str(current_db) + "-wal").exists() is False
+        assert Path(str(current_db) + "-shm").exists() is False
         restored = sqlite3.connect(current_db)
         safety = sqlite3.connect(result.safety_backup_path)
         try:
             restored_title = restored.execute("SELECT title FROM favorites WHERE id = 'fav-1'").fetchone()[0]
+            restored_journal_mode = restored.execute("PRAGMA journal_mode").fetchone()[0]
             safety_title = safety.execute("SELECT title FROM favorites WHERE id = 'fav-1'").fetchone()[0]
         finally:
             restored.close()
@@ -600,8 +658,661 @@ def test_restore_sqlite_backup_replaces_target_and_creates_safety_backup() -> No
         assert result.restored_path == current_db
         assert result.safety_backup_path.exists()
         assert restored_title == "restored"
+        assert restored_journal_mode == "delete"
         assert safety_title == "current"
         assert close_calls == ["closed"]
+
+
+def test_restore_captures_write_committed_by_close_callback_in_safety_backup() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-late-write.db"
+        target_db = root / "recall.db"
+        safety_dir = root / "exports"
+        create_test_db(source_db, favorite_title="restored")
+        create_test_db(target_db, favorite_title="current")
+
+        def close_with_late_commit() -> None:
+            conn = sqlite3.connect(target_db)
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO favorites(
+                        user_id, id, title, first_seen_at, last_seen_at, is_removed
+                    ) VALUES (
+                        'default', 'late-target-write', 'late',
+                        '2026-07-05', '2026-07-05', 0
+                    )
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        result = maintenance.restore_sqlite_backup(
+            source_db,
+            db_path=target_db,
+            backup_dir=safety_dir,
+            close_connection=close_with_late_commit,
+        )
+
+        assert result.safety_backup_path is not None
+        safety = sqlite3.connect(result.safety_backup_path)
+        restored = sqlite3.connect(target_db)
+        try:
+            assert safety.execute(
+                "SELECT COUNT(*) FROM favorites WHERE id = 'late-target-write'"
+            ).fetchone()[0] == 1
+            assert restored.execute(
+                "SELECT COUNT(*) FROM favorites WHERE id = 'late-target-write'"
+            ).fetchone()[0] == 0
+        finally:
+            safety.close()
+            restored.close()
+
+
+def test_restore_migratable_target_safety_validation_bypasses_live_connection_gate() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-current.db"
+        target_db = root / "recall.db"
+        safety_dir = root / "exports"
+        create_test_db(source_db, favorite_title="restored")
+        create_test_db(target_db, favorite_title="migratable current")
+        target = sqlite3.connect(target_db)
+        try:
+            target.execute("ALTER TABLE favorites DROP COLUMN category_id")
+            target.commit()
+        finally:
+            target.close()
+
+        original_wait = db._CONNECTION_GATE.wait
+
+        def fail_if_bound_connection_waits(*_args, **_kwargs):
+            raise AssertionError("isolated migration connection waited on the live DB gate")
+
+        db._CONNECTION_GATE.wait = fail_if_bound_connection_waits
+        try:
+            result = maintenance.restore_sqlite_backup(
+                source_db,
+                db_path=target_db,
+                backup_dir=safety_dir,
+            )
+        finally:
+            db._CONNECTION_GATE.wait = original_wait
+
+        assert result.safety_backup_path is not None
+        assert result.safety_backup_path.suffix == ".db"
+        safety_validation = maintenance.validate_sqlite_backup(result.safety_backup_path)
+        assert safety_validation["ok"] is True
+        assert safety_validation["schema_migration_required"] is True
+        restored = sqlite3.connect(target_db)
+        try:
+            assert restored.execute(
+                "SELECT title FROM favorites WHERE id = 'fav-1'"
+            ).fetchone()[0] == "restored"
+        finally:
+            restored.close()
+
+
+def test_restore_valid_source_over_corrupt_target_preserves_forensic_copy() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-valid.db"
+        target_db = root / "recall.db"
+        safety_dir = root / "exports"
+        create_test_db(source_db, favorite_title="restored")
+        target_db.write_bytes(b"not a sqlite database")
+
+        result = maintenance.restore_sqlite_backup(
+            source_db,
+            db_path=target_db,
+            backup_dir=safety_dir,
+        )
+
+        assert result.safety_backup_path is not None
+        assert result.safety_backup_path.suffix == ".corrupt"
+        assert result.safety_backup_path.read_bytes() == b"not a sqlite database"
+        restored = sqlite3.connect(target_db)
+        try:
+            assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert restored.execute(
+                "SELECT title FROM favorites WHERE id = 'fav-1'"
+            ).fetchone()[0] == "restored"
+        finally:
+            restored.close()
+        assert list(safety_dir.glob("pre-restore-recall-*.db")) == []
+
+
+def test_restore_to_missing_target_does_not_create_empty_safety_backup() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-new-target.db"
+        target_db = root / "missing" / "recall.db"
+        safety_dir = root / "exports"
+        create_test_db(source_db, favorite_title="restored")
+
+        result = maintenance.restore_sqlite_backup(
+            source_db,
+            db_path=target_db,
+            backup_dir=safety_dir,
+        )
+
+        assert result.safety_backup_path is None
+        assert target_db.exists()
+        assert safety_dir.exists() is False
+
+
+def test_restore_to_missing_target_removes_orphan_journal_before_cutover() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-orphan-journal.db"
+        target_db = root / "missing" / "recall.db"
+        target_db.parent.mkdir(parents=True)
+        orphan_journal = Path(str(target_db) + "-journal")
+        create_test_db(source_db, favorite_title="restored")
+        create_test_db(target_db, favorite_title="old target")
+        crash_writer = r"""
+import os
+import sqlite3
+import sys
+
+conn = sqlite3.connect(sys.argv[1], isolation_level=None)
+conn.execute("PRAGMA journal_mode = DELETE")
+conn.execute("PRAGMA synchronous = FULL")
+conn.execute("PRAGMA cache_size = 1")
+conn.execute("BEGIN IMMEDIATE")
+conn.execute("UPDATE favorites SET title = 'dirty' WHERE id = 'fav-1'")
+for _ in range(1000):
+    conn.execute(
+        "INSERT INTO job_queue("
+        "user_id, kind, payload_json, status, created_at, next_run_at"
+        ") VALUES ("
+        "'default', 'x', '{}', 'queued', '2026-01-01', '2026-01-01'"
+        ")"
+    )
+os._exit(0)
+"""
+        subprocess.run(
+            [sys.executable, "-c", crash_writer, str(target_db)],
+            check=True,
+        )
+        assert orphan_journal.exists()
+        assert orphan_journal.stat().st_size > 512
+        target_db.unlink()
+
+        result = maintenance.restore_sqlite_backup(
+            source_db,
+            db_path=target_db,
+            backup_dir=root / "exports",
+        )
+
+        assert result.safety_backup_path is None
+        assert orphan_journal.exists() is False
+        assert list(target_db.parent.glob(".recall.db.restore-sidecar-*")) == []
+        restored = sqlite3.connect(target_db)
+        try:
+            assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert restored.execute(
+                "SELECT title FROM favorites WHERE id = 'fav-1'"
+            ).fetchone()[0] == "restored"
+        finally:
+            restored.close()
+
+
+def test_restore_zero_byte_target_creates_forensic_not_protected_backup() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-valid.db"
+        target_db = root / "recall.db"
+        safety_dir = root / "exports"
+        create_test_db(source_db, favorite_title="restored")
+        target_db.write_bytes(b"")
+
+        result = maintenance.restore_sqlite_backup(
+            source_db,
+            db_path=target_db,
+            backup_dir=safety_dir,
+        )
+
+        assert result.safety_backup_path is not None
+        assert result.safety_backup_path.suffix == ".corrupt"
+        assert result.safety_backup_path.read_bytes() == b""
+        assert list(safety_dir.glob("pre-restore-recall-*.db")) == []
+        restored = sqlite3.connect(target_db)
+        try:
+            assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            restored.close()
+
+
+def test_restore_rejects_orphan_before_touching_target() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-orphan.db"
+        target_db = root / "recall.db"
+        safety_dir = root / "exports"
+        create_test_db(source_db, favorite_title="bad source")
+        create_test_db(target_db, favorite_title="current")
+        source = sqlite3.connect(source_db, isolation_level=None)
+        try:
+            source.execute("PRAGMA foreign_keys = OFF")
+            source.execute(
+                """
+                INSERT INTO recall_log(user_id, favorite_id, recalled_at)
+                VALUES ('default', 'missing-item', '2026-07-05')
+                """
+            )
+        finally:
+            source.close()
+        close_calls: list[str] = []
+
+        try:
+            maintenance.restore_sqlite_backup(
+                source_db,
+                db_path=target_db,
+                backup_dir=safety_dir,
+                close_connection=lambda: close_calls.append("closed"),
+            )
+        except ValueError as exc:
+            assert "foreign_key_check" in str(exc)
+        else:
+            raise AssertionError("orphan backup must be rejected")
+
+        current = sqlite3.connect(target_db)
+        try:
+            title = current.execute("SELECT title FROM favorites WHERE id = 'fav-1'").fetchone()[0]
+            assert current.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            current.close()
+        assert title == "current"
+        assert close_calls == []
+        assert safety_dir.exists() is False
+
+
+def test_restore_atomic_replace_failure_keeps_target_and_cleans_stage() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-replace-failure.db"
+        target_db = root / "recall.db"
+        safety_dir = root / "exports"
+        create_test_db(source_db, favorite_title="replacement")
+        create_test_db(target_db, favorite_title="current")
+        original_replace = maintenance.os.replace
+        maintenance.os.replace = lambda _source, _target: (_ for _ in ()).throw(
+            PermissionError("simulated replace failure")
+        )
+        try:
+            try:
+                maintenance.restore_sqlite_backup(
+                    source_db,
+                    db_path=target_db,
+                    backup_dir=safety_dir,
+                )
+            except PermissionError as exc:
+                assert "simulated replace failure" in str(exc)
+            else:
+                raise AssertionError("replace failure must escape")
+        finally:
+            maintenance.os.replace = original_replace
+
+        current = sqlite3.connect(target_db)
+        try:
+            title = current.execute("SELECT title FROM favorites WHERE id = 'fav-1'").fetchone()[0]
+            assert current.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            current.close()
+        safety_backups = list(safety_dir.glob("pre-restore-recall-*.db"))
+        assert title == "current"
+        assert len(safety_backups) == 1
+        assert list(root.glob(".recall.db.restore-*.db")) == []
+
+
+def test_restore_replace_failure_rolls_quarantined_sidecar_back() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-replace-failure.db"
+        target_db = root / "recall.db"
+        safety_dir = root / "exports"
+        sidecar = Path(str(target_db) + "-journal")
+        create_test_db(source_db, favorite_title="replacement")
+        target_db.write_bytes(b"not a sqlite database")
+        sidecar.write_bytes(b"stale journal")
+        original_replace = maintenance.os.replace
+
+        def fail_main_replace(source, destination):
+            if Path(destination) == target_db and ".restore-" in Path(source).name:
+                raise PermissionError("simulated main-file replace failure")
+            return original_replace(source, destination)
+
+        maintenance.os.replace = fail_main_replace
+        try:
+            try:
+                maintenance.restore_sqlite_backup(
+                    source_db,
+                    db_path=target_db,
+                    backup_dir=safety_dir,
+                )
+            except PermissionError as exc:
+                assert "main-file replace failure" in str(exc)
+            else:
+                raise AssertionError("main-file replace failure must escape")
+        finally:
+            maintenance.os.replace = original_replace
+
+        assert target_db.read_bytes() == b"not a sqlite database"
+        assert sidecar.read_bytes() == b"stale journal"
+        assert list(root.glob(".recall.db.restore-sidecar-*")) == []
+
+
+def test_restore_preserves_both_errors_and_forensic_backup_when_sidecar_rollback_fails() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-double-failure.db"
+        target_db = root / "recall.db"
+        safety_dir = root / "exports"
+        sidecar = Path(str(target_db) + "-journal")
+        create_test_db(source_db, favorite_title="replacement")
+        target_db.write_bytes(b"not a sqlite database")
+        sidecar.write_bytes(b"stale journal")
+        original_replace = maintenance.os.replace
+
+        def fail_main_and_rollback(source, destination):
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if destination_path == target_db and ".restore-" in source_path.name:
+                raise PermissionError("simulated main-file replace failure")
+            if ".restore-sidecar-" in source_path.name and destination_path == sidecar:
+                raise PermissionError("simulated sidecar rollback failure")
+            return original_replace(source, destination)
+
+        maintenance.os.replace = fail_main_and_rollback
+        try:
+            try:
+                maintenance.restore_sqlite_backup(
+                    source_db,
+                    db_path=target_db,
+                    backup_dir=safety_dir,
+                )
+            except ExceptionGroup as exc:
+                combined = exc
+            else:
+                raise AssertionError("double filesystem failure must escape")
+        finally:
+            maintenance.os.replace = original_replace
+
+        assert "主文件替换失败" in str(combined)
+        assert len(combined.exceptions) == 2
+        assert "main-file replace failure" in str(combined.exceptions[0])
+        assert "sidecar rollback failure" in str(combined.exceptions[1])
+        forensic = list(safety_dir.glob("pre-restore-recall-*.corrupt"))
+        assert len(forensic) == 1
+        assert forensic[0].read_bytes() == b"not a sqlite database"
+        assert Path(str(forensic[0]) + "-journal").read_bytes() == b"stale journal"
+        assert target_db.read_bytes() == b"not a sqlite database"
+        assert sidecar.exists() is False
+        assert len(list(root.glob(".recall.db.restore-sidecar-*-journal"))) == 1
+
+
+def test_restore_reports_forensic_path_when_sidecar_move_and_rollback_both_fail() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-isolation-double-failure.db"
+        target_db = root / "recall.db"
+        safety_dir = root / "exports"
+        wal_sidecar = Path(str(target_db) + "-wal")
+        journal_sidecar = Path(str(target_db) + "-journal")
+        create_test_db(source_db, favorite_title="replacement")
+        target_db.write_bytes(b"not a sqlite database")
+        wal_sidecar.write_bytes(b"stale wal")
+        journal_sidecar.write_bytes(b"stale journal")
+        original_replace = maintenance.os.replace
+
+        def fail_second_move_and_first_rollback(source, destination):
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if source_path == journal_sidecar and ".restore-sidecar-" in destination_path.name:
+                raise PermissionError("simulated sidecar move failure")
+            if ".restore-sidecar-" in source_path.name and destination_path == wal_sidecar:
+                raise PermissionError("simulated sidecar rollback failure")
+            return original_replace(source, destination)
+
+        maintenance.os.replace = fail_second_move_and_first_rollback
+        try:
+            try:
+                maintenance.restore_sqlite_backup(
+                    source_db,
+                    db_path=target_db,
+                    backup_dir=safety_dir,
+                )
+            except ExceptionGroup as exc:
+                combined = exc
+            else:
+                raise AssertionError("sidecar isolation double failure must escape")
+        finally:
+            maintenance.os.replace = original_replace
+
+        forensic = list(safety_dir.glob("pre-restore-recall-*.corrupt"))
+        assert len(forensic) == 1
+        assert "sidecar 隔离失败" in str(combined)
+        assert "安全备份/取证副本" in str(combined)
+        assert str(forensic[0]) in str(combined)
+        assert len(combined.exceptions) == 2
+        assert "sidecar move failure" in str(combined.exceptions[0])
+        assert "sidecar rollback failure" in str(combined.exceptions[1])
+        assert forensic[0].read_bytes() == b"not a sqlite database"
+        assert Path(str(forensic[0]) + "-wal").read_bytes() == b"stale wal"
+        assert Path(str(forensic[0]) + "-journal").read_bytes() == b"stale journal"
+        assert target_db.read_bytes() == b"not a sqlite database"
+        assert wal_sidecar.exists() is False
+        assert journal_sidecar.read_bytes() == b"stale journal"
+        assert len(list(root.glob(".recall.db.restore-sidecar-*-wal"))) == 1
+
+
+def test_restore_reports_cleanup_warning_after_committed_replacement() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-cleanup-warning.db"
+        target_db = root / "recall.db"
+        safety_dir = root / "exports"
+        sidecar = Path(str(target_db) + "-journal")
+        create_test_db(source_db, favorite_title="replacement")
+        target_db.write_bytes(b"not a sqlite database")
+        sidecar.write_bytes(b"stale journal")
+        original_unlink = Path.unlink
+
+        def fail_quarantine_cleanup(path, *args, **kwargs):
+            if ".restore-sidecar-" in path.name:
+                raise PermissionError("simulated quarantine cleanup failure")
+            return original_unlink(path, *args, **kwargs)
+
+        Path.unlink = fail_quarantine_cleanup
+        try:
+            result = maintenance.restore_sqlite_backup(
+                source_db,
+                db_path=target_db,
+                backup_dir=safety_dir,
+            )
+        finally:
+            Path.unlink = original_unlink
+
+        assert result.cleanup_warnings
+        assert "恢复已完成" in result.cleanup_warnings[0]
+        assert sidecar.exists() is False
+        quarantined = list(root.glob(".recall.db.restore-sidecar-*-journal"))
+        assert len(quarantined) == 1
+        restored = sqlite3.connect(target_db)
+        try:
+            assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert restored.execute(
+                "SELECT title FROM favorites WHERE id = 'fav-1'"
+            ).fetchone()[0] == "replacement"
+        finally:
+            restored.close()
+
+
+def test_restore_stage_cleanup_failure_does_not_report_committed_restore_as_failed() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-stage-cleanup.db"
+        target_db = root / "recall.db"
+        create_test_db(source_db, favorite_title="replacement")
+        create_test_db(target_db, favorite_title="current")
+        original_replace = maintenance.os.replace
+        original_unlink = Path.unlink
+
+        def replace_with_stage_sidecar(source, destination):
+            source_path = Path(source)
+            if Path(destination) == target_db and ".restore-" in source_path.name:
+                Path(str(source_path) + "-journal").write_bytes(b"staged cleanup residue")
+            return original_replace(source, destination)
+
+        def fail_stage_cleanup(path, *args, **kwargs):
+            if ".restore-" in path.name and path.name.endswith(".db-journal"):
+                raise PermissionError("simulated stage cleanup failure")
+            return original_unlink(path, *args, **kwargs)
+
+        maintenance.os.replace = replace_with_stage_sidecar
+        Path.unlink = fail_stage_cleanup
+        try:
+            result = maintenance.restore_sqlite_backup(
+                source_db,
+                db_path=target_db,
+                backup_dir=root / "exports",
+            )
+        finally:
+            maintenance.os.replace = original_replace
+            Path.unlink = original_unlink
+
+        assert result.cleanup_warnings
+        assert any("恢复临时文件" in warning for warning in result.cleanup_warnings)
+        assert len(list(root.glob(".recall.db.restore-*.db-journal"))) == 1
+        restored = sqlite3.connect(target_db)
+        try:
+            assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            assert restored.execute(
+                "SELECT title FROM favorites WHERE id = 'fav-1'"
+            ).fetchone()[0] == "replacement"
+        finally:
+            restored.close()
+
+
+def test_validate_and_restore_reject_database_missing_required_content_column() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-missing-column.db"
+        target_db = root / "recall.db"
+        safety_dir = root / "exports"
+        create_test_db(source_db, favorite_title="bad source")
+        create_test_db(target_db, favorite_title="current")
+        source = sqlite3.connect(source_db)
+        try:
+            source.execute("ALTER TABLE favorites DROP COLUMN description")
+            source.commit()
+        finally:
+            source.close()
+
+        validation = maintenance.validate_sqlite_backup(source_db)
+        try:
+            maintenance.restore_sqlite_backup(
+                source_db,
+                db_path=target_db,
+                backup_dir=safety_dir,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("backup missing an application column must be rejected")
+
+        assert validation["ok"] is False
+        assert validation["schema_migration_required"] is True
+        assert validation["migration_validation"]["schema_current"] is False
+        current = sqlite3.connect(target_db)
+        try:
+            assert current.execute(
+                "SELECT title FROM favorites WHERE id = 'fav-1'"
+            ).fetchone()[0] == "current"
+        finally:
+            current.close()
+        assert safety_dir.exists() is False
+
+
+def test_validate_rejects_missing_auth_and_reindex_state_columns() -> None:
+    cases = (
+        ("web_sessions", "expires_at", None),
+        ("search_reindex_state", "completed_at", "idx_search_reindex_pending"),
+    )
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for table, column, dependent_index in cases:
+            case_root = root / table
+            case_root.mkdir()
+            source_db = case_root / "invalid.db"
+            target_db = case_root / "current.db"
+            create_test_db(source_db, favorite_title=f"invalid {table}")
+            create_test_db(target_db, favorite_title="current")
+            source = sqlite3.connect(source_db)
+            try:
+                if dependent_index:
+                    source.execute(f"DROP INDEX {dependent_index}")
+                source.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+                source.commit()
+            finally:
+                source.close()
+
+            validation = maintenance.validate_sqlite_backup(source_db)
+            try:
+                maintenance.restore_sqlite_backup(
+                    source_db,
+                    db_path=target_db,
+                    backup_dir=case_root / "exports",
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"{table}.{column} omission must be rejected")
+
+            assert validation["ok"] is False
+            assert validation["schema_migration_required"] is True
+            assert validation["migration_validation"]["schema_current"] is False
+            current = sqlite3.connect(target_db)
+            try:
+                assert current.execute(
+                    "SELECT title FROM favorites WHERE id = 'fav-1'"
+                ).fetchone()[0] == "current"
+            finally:
+                current.close()
+
+
+def test_validate_rejects_login_rate_limit_table_without_composite_primary_key() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "invalid-rate-limit.db"
+        create_test_db(source_db, favorite_title="invalid rate limits")
+        source = sqlite3.connect(source_db)
+        try:
+            source.execute("DROP TABLE login_rate_limits")
+            source.execute(
+                """
+                CREATE TABLE login_rate_limits (
+                    scope TEXT NOT NULL,
+                    subject_hash TEXT NOT NULL,
+                    window_started_at TIMESTAMP NOT NULL,
+                    failed_count INTEGER NOT NULL DEFAULT 0,
+                    blocked_until TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL
+                )
+                """
+            )
+            source.commit()
+        finally:
+            source.close()
+
+        validation = maintenance.validate_sqlite_backup(source_db)
+
+        assert validation["ok"] is False
+        assert validation["schema_migration_required"] is True
+        assert validation["migration_validation"]["schema_current"] is False
 
 
 def test_validate_delivery_manifest_backup_checks_sha_and_counts() -> None:
@@ -636,6 +1347,228 @@ def test_validate_delivery_manifest_backup_rejects_sha_mismatch() -> None:
 
         assert report["ok"] is False
         assert any("SHA256" in error for error in report["errors"])
+
+
+def test_validate_delivery_manifest_backup_requires_sha_and_valid_counts() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        backup_db = root / "pre-release-recall-invalid-manifest.db"
+        manifest_path = root / "delivery-manifest-invalid.json"
+        create_test_db(backup_db, favorite_title="manifest backup")
+        write_delivery_manifest(manifest_path, backup_db)
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        backup = payload["evidence"]["pre_release_backup"]["backup"]
+        backup.pop("sha256")
+        backup["source_counts"] = {"users": "not-an-integer"}
+        manifest_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        report = maintenance.validate_delivery_manifest_backup(manifest_path)
+
+        assert report["ok"] is False
+        assert any("sha256" in error.lower() for error in report["errors"])
+        assert any("数量无效" in error for error in report["errors"])
+
+
+def test_validate_delivery_manifest_backup_requires_all_core_count_keys() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        backup_db = root / "pre-release-recall-missing-count.db"
+        manifest_path = root / "delivery-manifest-missing-count.json"
+        create_test_db(backup_db, favorite_title="manifest backup")
+        write_delivery_manifest(
+            manifest_path,
+            backup_db,
+            counts={"users": 1, "favorites": 1},
+        )
+
+        report = maintenance.validate_delivery_manifest_backup(manifest_path)
+
+        assert report["ok"] is False
+        assert any("缺少关键表数量：likes" in error for error in report["errors"])
+
+
+def test_validate_delivery_manifest_backup_rejects_nonempty_wal_sidecar() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        backup_db = root / "pre-release-recall-wal.db"
+        manifest_path = root / "delivery-manifest-wal.json"
+        create_test_db(backup_db, favorite_title="manifest backup")
+        writer = sqlite3.connect(backup_db)
+        try:
+            assert writer.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+            writer.execute("PRAGMA wal_autocheckpoint = 0")
+            writer.execute(
+                """
+                INSERT INTO favorites(
+                    user_id, id, title, first_seen_at, last_seen_at, is_removed
+                ) VALUES (
+                    'default', 'wal-manifest-item', 'WAL item',
+                    '2026-07-05', '2026-07-05', 0
+                )
+                """
+            )
+            writer.commit()
+            write_delivery_manifest(
+                manifest_path,
+                backup_db,
+                counts={"users": 1, "favorites": 2, "likes": 0},
+            )
+
+            report = maintenance.validate_delivery_manifest_backup(manifest_path)
+        finally:
+            writer.close()
+
+        assert report["ok"] is False
+        assert any("sidecar" in error and "-wal" in error for error in report["errors"])
+
+
+def test_restore_from_delivery_manifest_rejects_source_changed_after_validation() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        backup_db = root / "pre-release-recall-raced.db"
+        current_db = root / "current.db"
+        safety_dir = root / "safety"
+        manifest_path = root / "delivery-manifest-raced.json"
+        create_test_db(backup_db, favorite_title="manifest restored")
+        create_test_db(current_db, favorite_title="current")
+
+        setup = sqlite3.connect(backup_db)
+        try:
+            assert setup.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+        finally:
+            setup.close()
+        write_delivery_manifest(manifest_path, backup_db)
+
+        original_restore = maintenance.restore_sqlite_backup
+
+        def restore_after_concurrent_write(*args, **kwargs):
+            writer = sqlite3.connect(backup_db)
+            try:
+                writer.execute("PRAGMA wal_autocheckpoint = 0")
+                writer.execute(
+                    """
+                    INSERT INTO favorites(
+                        user_id, id, title, first_seen_at, last_seen_at, is_removed
+                    ) VALUES (
+                        'default', 'post-validation-item', 'Unverified item',
+                        '2026-07-06', '2026-07-06', 0
+                    )
+                    """
+                )
+                writer.commit()
+                return original_restore(*args, **kwargs)
+            finally:
+                writer.close()
+
+        maintenance.restore_sqlite_backup = restore_after_concurrent_write
+        try:
+            report = maintenance.restore_from_delivery_manifest(
+                manifest_path,
+                db_path=current_db,
+                backup_dir=safety_dir,
+                apply=True,
+            )
+        finally:
+            maintenance.restore_sqlite_backup = original_restore
+
+        current = sqlite3.connect(current_db)
+        try:
+            assert current.execute(
+                "SELECT title FROM favorites WHERE id = 'fav-1'"
+            ).fetchone()[0] == "current"
+            assert current.execute(
+                "SELECT COUNT(*) FROM favorites WHERE id = 'post-validation-item'"
+            ).fetchone()[0] == 0
+        finally:
+            current.close()
+        assert report["ok"] is False
+        assert report["restored"] is False
+        assert any(
+            marker in " ".join(report["errors"]).lower()
+            for marker in ("sidecar", "sha256", "self-contained")
+        )
+        assert safety_dir.exists() is False
+
+
+def test_restore_from_delivery_manifest_expands_unique_exception_group_leaves() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        backup_db = root / "pre-release-recall-group.db"
+        manifest_path = root / "delivery-manifest-group.json"
+        safety_path = root / "safety" / "pre-restore-recall-test.corrupt"
+        quarantine_path = root / ".recall.db.restore-sidecar-token-journal"
+        original_sidecar = root / "recall.db-journal"
+        move_error = "simulated sidecar move failure"
+        rollback_error = (
+            f"{quarantine_path} -> {original_sidecar}: "
+            "simulated sidecar rollback failure"
+        )
+        failure = ExceptionGroup(
+            f"数据库恢复失败；安全备份/取证副本：{safety_path}",
+            [
+                PermissionError(move_error),
+                ExceptionGroup(
+                    "nested sidecar failures",
+                    [RuntimeError(rollback_error), PermissionError(move_error)],
+                ),
+            ],
+        )
+        create_test_db(backup_db, favorite_title="manifest backup")
+        write_delivery_manifest(manifest_path, backup_db)
+        original_restore = maintenance.restore_sqlite_backup
+
+        def raise_group(*_args, **_kwargs):
+            raise failure
+
+        maintenance.restore_sqlite_backup = raise_group
+        try:
+            report = maintenance.restore_from_delivery_manifest(
+                manifest_path,
+                db_path=root / "recall.db",
+                backup_dir=root / "safety",
+                apply=True,
+            )
+        finally:
+            maintenance.restore_sqlite_backup = original_restore
+
+        assert report["ok"] is False
+        assert report["restored"] is False
+        assert report["restore"] is None
+        assert report["errors"][0] == str(failure)
+        assert str(safety_path) in report["errors"][0]
+        assert report["errors"].count(move_error) == 1
+        assert report["errors"].count(rollback_error) == 1
+        assert report["errors"] == [str(failure), move_error, rollback_error]
+
+
+def test_restore_from_delivery_manifest_keeps_plain_exception_as_single_error() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        backup_db = root / "pre-release-recall-plain-error.db"
+        manifest_path = root / "delivery-manifest-plain-error.json"
+        create_test_db(backup_db, favorite_title="manifest backup")
+        write_delivery_manifest(manifest_path, backup_db)
+        original_restore = maintenance.restore_sqlite_backup
+
+        def raise_plain(*_args, **_kwargs):
+            raise ValueError("plain restore failure")
+
+        maintenance.restore_sqlite_backup = raise_plain
+        try:
+            report = maintenance.restore_from_delivery_manifest(
+                manifest_path,
+                db_path=root / "recall.db",
+                apply=True,
+            )
+        finally:
+            maintenance.restore_sqlite_backup = original_restore
+
+        assert report["ok"] is False
+        assert report["restored"] is False
+        assert report["errors"] == ["plain restore failure"]
 
 
 def test_restore_from_delivery_manifest_dry_run_does_not_replace_target() -> None:
@@ -695,6 +1628,42 @@ def test_restore_from_delivery_manifest_apply_restores_after_validation() -> Non
         assert Path(report["restore"]["safety_backup_path"]).exists()
 
 
+def test_restore_from_delivery_manifest_accepts_clean_wal_mode_main_file() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        backup_db = root / "pre-release-recall-clean-wal.db"
+        current_db = root / "current.db"
+        safety_dir = root / "safety"
+        manifest_path = root / "delivery-manifest-clean-wal.json"
+        create_test_db(backup_db, favorite_title="clean WAL manifest")
+        create_test_db(current_db, favorite_title="current")
+        setup = sqlite3.connect(backup_db)
+        try:
+            assert setup.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+        finally:
+            setup.close()
+        assert not Path(str(backup_db) + "-wal").exists()
+        write_delivery_manifest(manifest_path, backup_db)
+
+        report = maintenance.restore_from_delivery_manifest(
+            manifest_path,
+            db_path=current_db,
+            backup_dir=safety_dir,
+            apply=True,
+        )
+
+        restored = sqlite3.connect(current_db)
+        try:
+            title = restored.execute(
+                "SELECT title FROM favorites WHERE id = 'fav-1'"
+            ).fetchone()[0]
+        finally:
+            restored.close()
+        assert report["ok"] is True
+        assert report["restored"] is True
+        assert title == "clean WAL manifest"
+
+
 if __name__ == "__main__":
     tests = [
         test_status_reports_last_runs_backups_and_attention_items,
@@ -716,6 +1685,8 @@ if __name__ == "__main__":
         test_restore_sqlite_backup_replaces_target_and_creates_safety_backup,
         test_validate_delivery_manifest_backup_checks_sha_and_counts,
         test_validate_delivery_manifest_backup_rejects_sha_mismatch,
+        test_restore_from_delivery_manifest_expands_unique_exception_group_leaves,
+        test_restore_from_delivery_manifest_keeps_plain_exception_as_single_error,
         test_restore_from_delivery_manifest_dry_run_does_not_replace_target,
         test_restore_from_delivery_manifest_apply_restores_after_validation,
     ]

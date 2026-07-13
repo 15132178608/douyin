@@ -35,6 +35,8 @@ $DownloadRoot = "D:\codexDownload\douyinclaude-runtime"
 $UvDownloadDir = Join-Path $DownloadRoot "uv"
 $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
 $PlaywrightBrowsersDir = Join-Path $DownloadRoot "ms-playwright"
+$HuggingFaceCacheDir = Join-Path $DownloadRoot "huggingface"
+$SentenceTransformersCacheDir = Join-Path $HuggingFaceCacheDir "sentence-transformers"
 $UvInstallScriptUrl = "https://astral.sh/uv/install.ps1"
 $script:CurrentStartupStep = ""
 $script:CurrentStartupStepKey = ""
@@ -770,9 +772,13 @@ try {
     New-Item -ItemType Directory -Path $DownloadRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $UvCacheDir -Force | Out-Null
     New-Item -ItemType Directory -Path $PlaywrightBrowsersDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $HuggingFaceCacheDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $SentenceTransformersCacheDir -Force | Out-Null
     $env:UV_CACHE_DIR = $UvCacheDir
     $env:UV_LINK_MODE = "copy"
     $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightBrowsersDir
+    $env:HF_HOME = $HuggingFaceCacheDir
+    $env:SENTENCE_TRANSFORMERS_HOME = $SentenceTransformersCacheDir
     Write-StartLog "Startup requested from $AppRoot"
 
     Write-StartupProgress -Message "检查本地配置文件" -Key "config"

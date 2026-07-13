@@ -445,6 +445,15 @@ def test_list_douyin_accounts_returns_bound_enabled_users() -> None:
 
 def test_delete_user_data_removes_owned_rows_only() -> None:
     with isolated_accounts_db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(
+            """
+            CREATE TABLE favorites_vec (id TEXT PRIMARY KEY, user_id TEXT NOT NULL);
+            CREATE TABLE likes_vec (id TEXT PRIMARY KEY, user_id TEXT NOT NULL);
+            CREATE TABLE favorites_fts (id TEXT, user_id TEXT, title TEXT);
+            CREATE TABLE likes_fts (id TEXT, user_id TEXT, title TEXT);
+            """
+        )
         for user_id in ("alice", "bob"):
             conn.execute(
                 "INSERT INTO users (id, display_name, created_at) VALUES (?, ?, '2026-05-26 00:00:00')",
@@ -457,13 +466,96 @@ def test_delete_user_data_removes_owned_rows_only() -> None:
                 """,
                 (user_id, user_id),
             )
+            conn.execute(
+                """
+                INSERT INTO likes (user_id, id, title, first_seen_at, last_seen_at)
+                VALUES (?, 'shared', ?, '2026-05-26', '2026-05-26')
+                """,
+                (user_id, user_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO recall_log (user_id, favorite_id, recalled_at)
+                VALUES (?, 'shared', '2026-05-27')
+                """,
+                (user_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO like_recall_log (user_id, like_id, recalled_at)
+                VALUES (?, 'shared', '2026-05-27')
+                """,
+                (user_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO uncollect_log (user_id, favorite_id, initiated_at, status)
+                VALUES (?, 'shared', '2026-05-27', 'pending')
+                """,
+                (user_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO unlike_log (user_id, like_id, initiated_at, status)
+                VALUES (?, 'shared', '2026-05-27', 'pending')
+                """,
+                (user_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO search_reindex_state (
+                    user_id, content_kind, required_at, reason, completed_at
+                ) VALUES (?, 'favorites', '2026-05-27', 'test', NULL)
+                """,
+                (user_id,),
+            )
+            conn.execute(
+                "INSERT INTO favorites_vec (id, user_id) VALUES (?, ?)",
+                (f"{user_id}:shared", user_id),
+            )
+            conn.execute(
+                "INSERT INTO likes_vec (id, user_id) VALUES (?, ?)",
+                (f"{user_id}:shared", user_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO favorites_fts (id, user_id, title)
+                VALUES (?, ?, ?)
+                """,
+                (f"{user_id}:shared", user_id, user_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO likes_fts (id, user_id, title)
+                VALUES (?, ?, ?)
+                """,
+                (f"{user_id}:shared", user_id, user_id),
+            )
 
         accounts.delete_user_data("alice")
 
         rows = conn.execute("SELECT user_id, id FROM favorites ORDER BY user_id").fetchall()
+        like_rows = conn.execute("SELECT user_id, id FROM likes ORDER BY user_id").fetchall()
         alice = conn.execute("SELECT disabled_at FROM users WHERE id = 'alice'").fetchone()
         bob = conn.execute("SELECT disabled_at FROM users WHERE id = 'bob'").fetchone()
         assert [(r["user_id"], r["id"]) for r in rows] == [("bob", "shared")]
+        assert [(r["user_id"], r["id"]) for r in like_rows] == [("bob", "shared")]
+        for table in (
+            "recall_log",
+            "like_recall_log",
+            "uncollect_log",
+            "unlike_log",
+            "favorites_vec",
+            "favorites_fts",
+            "likes_vec",
+            "likes_fts",
+            "search_reindex_state",
+        ):
+            assert [
+                row["user_id"]
+                for row in conn.execute(f"SELECT user_id FROM {table} ORDER BY user_id").fetchall()
+            ] == ["bob"]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert alice["disabled_at"] is not None
         assert bob["disabled_at"] is None
 
