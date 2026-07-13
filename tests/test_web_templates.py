@@ -475,13 +475,16 @@ def test_category_page_starts_background_organize_without_cli_instructions() -> 
 
 def test_cli_exposes_server_lifecycle_commands_and_serve_guard() -> None:
     cli_source = (ROOT / "src" / "cli.py").read_text(encoding="utf-8")
+    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
 
     assert 'from src import server_runtime' in cli_source
     assert '@cli.command("status")' in cli_source
     assert '@cli.command("stop")' in cli_source
     assert "should_start_server" in cli_source
-    assert "write_server_state" in cli_source
-    assert "clear_server_state" in cli_source
+    assert "write_server_state" not in cli_source
+    assert "clear_server_state" not in cli_source
+    assert "write_server_state" in app_source
+    assert "clear_server_state" in app_source
     assert "stop_recorded_server" in cli_source
 
 

@@ -398,8 +398,12 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("recorded PID and port owner mismatch", control)
         self.assertIn("Do not stop pid=", control)
         self.assertIn("Repair suggestion", control)
-        self.assertIn("Remove-Item -LiteralPath $ServerStatePath -Force", control)
-        self.assertIn("Remove-Item -LiteralPath $ServerPidPath -Force", control)
+        repair = control[
+            control.index("function Repair-StaleServerState"):
+            control.index("function Show-ControlMenu")
+        ]
+        self.assertIn("Invoke-RecallCommand @('repair-state')", repair)
+        self.assertNotIn("Remove-Item", repair)
         self.assertIn("Remove-Item -LiteralPath $ProbePath -Force", control)
         self.assertNotIn("Remove-Item -Recurse", control)
         self.assertNotIn("rm -rf", control)

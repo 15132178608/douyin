@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import FastAPI
 
+from src import server_runtime
+from src.config import settings
 from src.db import init_schema
 import src.web.routes.auth as auth_routes
 import src.web.routes.browse as browse_routes
@@ -20,15 +23,42 @@ from src.web import runtime
 from src.web.security import validate_web_security_config
 
 
+async def _run_sync_before_unlock(sync_func) -> None:
+    """Delay cancellation until protected synchronous database work is finished."""
+    sync_task = asyncio.create_task(asyncio.to_thread(sync_func))
+    cancellation: asyncio.CancelledError | None = None
+    while not sync_task.done():
+        try:
+            await asyncio.shield(sync_task)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    sync_task.result()
+    if cancellation is not None:
+        raise cancellation
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    validate_web_security_config()
-    await asyncio.to_thread(init_schema)
-    runtime.start_background_workers()
-    try:
-        yield
-    finally:
-        await asyncio.to_thread(runtime.shutdown_workers)
+    with server_runtime.database_runtime_lock():
+        validate_web_security_config()
+        await _run_sync_before_unlock(init_schema)
+        runtime.start_background_workers(reset_shutdown=True)
+        state = None
+        try:
+            state = server_runtime.write_server_state(
+                pid=os.getpid(),
+                host=settings.web_host,
+                port=settings.web_port,
+            )
+            yield
+        finally:
+            try:
+                await _run_sync_before_unlock(runtime.shutdown_workers)
+            finally:
+                if state is not None:
+                    current = server_runtime.read_server_state()
+                    if current is not None and current.pid == state.pid:
+                        server_runtime.clear_server_state()
 
 
 app = FastAPI(title="douyin-recall", lifespan=lifespan)

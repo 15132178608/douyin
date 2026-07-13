@@ -14,7 +14,6 @@
 """
 from __future__ import annotations
 
-import os
 import sys
 import json
 from pathlib import Path
@@ -700,37 +699,63 @@ def rollback_from_manifest_cmd(
     """从 delivery manifest 校验并回滚到发布前备份。"""
     from src import maintenance
 
+    def reject_live_restore(error: str) -> None:
+        if json_output:
+            click.echo(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "mode": "apply",
+                        "restored": False,
+                        "errors": [error],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            raise click.exceptions.Exit(1)
+        raise click.ClickException(error)
+
     target_path = Path(db_path) if db_path is not None else Path(settings.db_path)
     restores_live_database = target_path.resolve() == Path(settings.db_path).resolve()
     if apply_changes and restores_live_database:
-        service_status = server_runtime.get_server_status()
-        if service_status.get("running"):
-            error = (
-                "本地 Web 服务仍在运行；请先执行 recall stop，确认服务停止后再应用恢复。"
-            )
-            if json_output:
-                click.echo(
-                    json.dumps(
-                        {
-                            "ok": False,
-                            "mode": "apply",
-                            "restored": False,
-                            "errors": [error],
-                        },
-                        ensure_ascii=False,
-                        indent=2,
+        try:
+            with server_runtime.database_runtime_lock():
+                service_status = server_runtime.get_server_status()
+                if service_status.get("running"):
+                    reject_live_restore(
+                        "本地 Web 服务仍在运行；请先执行 recall stop，"
+                        "确认服务停止后再应用恢复。"
                     )
+                if server_runtime.is_web_listener_active(
+                    host=settings.web_host,
+                    port=settings.web_port,
+                ):
+                    reject_live_restore(
+                        f"配置的 Web 端口 {settings.web_port} 仍有监听；"
+                        "无法确认当前数据库已脱离活动服务。请先停止并确认本地 Web 服务，"
+                        "再应用恢复。"
+                    )
+                report = maintenance.restore_from_delivery_manifest(
+                    manifest_path,
+                    apply=True,
+                    db_path=db_path,
+                    backup_dir=backup_dir,
+                    close_connection=db_module.close_connection,
                 )
-                raise click.exceptions.Exit(1)
-            raise click.ClickException(error)
-
-    report = maintenance.restore_from_delivery_manifest(
-        manifest_path,
-        apply=apply_changes,
-        db_path=db_path,
-        backup_dir=backup_dir,
-        close_connection=db_module.close_connection,
-    )
+        except server_runtime.DatabaseRuntimeLockUnavailable as exc:
+            reject_live_restore(
+                "当前数据库正被活动 Web 服务或另一个数据库维护进程使用；"
+                f"请先执行 recall stop 并稍后重试。详情：{exc}"
+            )
+    else:
+        report = maintenance.restore_from_delivery_manifest(
+            manifest_path,
+            apply=apply_changes,
+            db_path=db_path,
+            backup_dir=backup_dir,
+            close_connection=db_module.close_connection,
+        )
     if json_output:
         click.echo(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         if not report["ok"]:
@@ -1175,29 +1200,23 @@ def serve_cmd(host: str | None, port: int | None) -> None:
         raise click.ClickException(str(exc)) from exc
     # Uvicorn imports the FastAPI app in this process. Keep its lifespan
     # validation aligned with the CLI's effective bind rather than the raw
-    # WEB_HOST value that may have been overridden above.
+    # WEB_HOST / WEB_PORT values that may have been overridden above.
     settings.web_host = h
+    settings.web_port = p
 
     import uvicorn
 
-    db_module.init_schema()
     decision = server_runtime.should_start_server()
     if not decision["ok"]:
         click.echo(decision["message"])
         click.echo("  如需停止：uv run python -m src.cli stop")
         return
-    state = server_runtime.write_server_state(pid=os.getpid(), host=h, port=p)
     click.echo(f"\n启动 Web UI: http://{h}:{p}")
     click.echo(f"  · 服务状态文件: {server_runtime.DEFAULT_RUNTIME_DIR / server_runtime.PID_FILENAME}")
     click.echo("  · 浏览器打开上面这个地址")
     click.echo("  · 第一次搜索时会加载 bge-m3 模型（~20 秒）")
     click.echo("  · Ctrl+C 停止，或另开终端运行 `uv run python -m src.cli stop`\n")
-    try:
-        uvicorn.run("src.web.app:app", host=h, port=p, log_level="info")
-    finally:
-        current = server_runtime.read_server_state()
-        if current and current.pid == state.pid:
-            server_runtime.clear_server_state()
+    uvicorn.run("src.web.app:app", host=h, port=p, log_level="info")
 
 
 @cli.command("status")
@@ -1217,6 +1236,13 @@ def status_cmd() -> None:
     if audit.get("port_owner_pid") is not None:
         click.echo(f"Port owner PID: {audit['port_owner_pid']}")
     click.echo(f"Next step: {audit['next_step']}")
+
+
+@cli.command("repair-state")
+def repair_state_cmd() -> None:
+    """安全清理陈旧的本地 Web 服务状态。"""
+    result = server_runtime.repair_stale_server_state()
+    click.echo(result["message"])
 
 
 @cli.command("stop")

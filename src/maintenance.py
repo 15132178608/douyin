@@ -1533,6 +1533,31 @@ def validate_delivery_manifest_backup(manifest_path: Path | str) -> dict:
     }
 
 
+def _restore_exception_messages(exc: Exception) -> list[str]:
+    """Keep a group summary plus unique leaf diagnostics for restore reports."""
+    if not isinstance(exc, ExceptionGroup):
+        return [str(exc)]
+
+    messages: list[str] = []
+    seen: set[str] = set()
+
+    def add(message: str) -> None:
+        if message not in seen:
+            seen.add(message)
+            messages.append(message)
+
+    def add_leaves(group: ExceptionGroup) -> None:
+        for child in group.exceptions:
+            if isinstance(child, ExceptionGroup):
+                add_leaves(child)
+            else:
+                add(str(child))
+
+    add(str(exc))
+    add_leaves(exc)
+    return messages
+
+
 def restore_from_delivery_manifest(
     manifest_path: Path | str,
     *,
@@ -1568,7 +1593,7 @@ def restore_from_delivery_manifest(
         )
     except Exception as exc:
         report["ok"] = False
-        report["errors"].append(str(exc))
+        report["errors"].extend(_restore_exception_messages(exc))
         return report
 
     report["restored"] = True
@@ -1687,7 +1712,15 @@ def restore_sqlite_backup(
                 )
                 if target_was_valid_sqlite:
                     _consolidate_sqlite_file(target_path)
-            quarantined_sidecars = _quarantine_sqlite_sidecars(target_path)
+            try:
+                quarantined_sidecars = _quarantine_sqlite_sidecars(target_path)
+            except ExceptionGroup as isolation_error:
+                safety_hint = str(safety_path) if safety_path is not None else "未创建"
+                raise ExceptionGroup(
+                    "数据库 sidecar 隔离失败，且已移动文件也无法回滚；"
+                    f"安全备份/取证副本：{safety_hint}",
+                    list(isolation_error.exceptions),
+                ) from isolation_error
             try:
                 os.replace(prepared_path, target_path)
             except Exception as replace_error:

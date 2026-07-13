@@ -4,7 +4,9 @@
 
 - Legacy content audit tables now migrate atomically to tenant-safe composite foreign keys without losing IDs, fields, row counts, or `sqlite_sequence` state.
 - Backup validation rehearses known legacy migrations on an isolated SQLite snapshot, rejects real orphan data, includes committed WAL frames, and restores through a validated atomic replacement with worker quiescence and pre-cutover sidecar quarantine.
-- Manifest rollback now locks and rechecks the hashed source, requires core table counts, blocks live-service CLI restores, and reports post-commit runtime or cleanup failures without falsely claiming the database restore failed.
+- Manifest rollback now locks and rechecks the hashed source, requires core table counts, coordinates active-database restores with the Web lifespan through a cross-process runtime lease, and reports post-commit runtime or cleanup failures without falsely claiming the database restore failed.
+- Server stop and Windows Repair State cleanup now use that same runtime lease, re-read the complete state snapshot before deletion, and preserve a starting or replacement instance instead of removing its service record. Worker prewarm is also serialized with final shutdown.
+- Restore double-failure diagnostics retain both filesystem errors and point directly to the safety or forensic copy when sidecar isolation cannot be rolled back.
 - Database doctor and backup checks now include foreign-key health, while user removal clears content, audit rows, search partitions, recovery markers, jobs, and sessions in dependency-safe order.
 - Windows startup keeps Hugging Face and sentence-transformer model caches under the configured D-drive runtime cache, avoiding unexpected multi-gigabyte writes to the user profile.
 - The v0.1.22-to-v0.1.23 installer upgrade gate now seeds the historical log-FK schema and verifies migration, automatic search recovery, backup preservation, and uninstall data retention.

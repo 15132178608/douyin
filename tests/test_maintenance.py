@@ -1054,6 +1054,61 @@ def test_restore_preserves_both_errors_and_forensic_backup_when_sidecar_rollback
         assert len(list(root.glob(".recall.db.restore-sidecar-*-journal"))) == 1
 
 
+def test_restore_reports_forensic_path_when_sidecar_move_and_rollback_both_fail() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source_db = root / "recall-backup-isolation-double-failure.db"
+        target_db = root / "recall.db"
+        safety_dir = root / "exports"
+        wal_sidecar = Path(str(target_db) + "-wal")
+        journal_sidecar = Path(str(target_db) + "-journal")
+        create_test_db(source_db, favorite_title="replacement")
+        target_db.write_bytes(b"not a sqlite database")
+        wal_sidecar.write_bytes(b"stale wal")
+        journal_sidecar.write_bytes(b"stale journal")
+        original_replace = maintenance.os.replace
+
+        def fail_second_move_and_first_rollback(source, destination):
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if source_path == journal_sidecar and ".restore-sidecar-" in destination_path.name:
+                raise PermissionError("simulated sidecar move failure")
+            if ".restore-sidecar-" in source_path.name and destination_path == wal_sidecar:
+                raise PermissionError("simulated sidecar rollback failure")
+            return original_replace(source, destination)
+
+        maintenance.os.replace = fail_second_move_and_first_rollback
+        try:
+            try:
+                maintenance.restore_sqlite_backup(
+                    source_db,
+                    db_path=target_db,
+                    backup_dir=safety_dir,
+                )
+            except ExceptionGroup as exc:
+                combined = exc
+            else:
+                raise AssertionError("sidecar isolation double failure must escape")
+        finally:
+            maintenance.os.replace = original_replace
+
+        forensic = list(safety_dir.glob("pre-restore-recall-*.corrupt"))
+        assert len(forensic) == 1
+        assert "sidecar 隔离失败" in str(combined)
+        assert "安全备份/取证副本" in str(combined)
+        assert str(forensic[0]) in str(combined)
+        assert len(combined.exceptions) == 2
+        assert "sidecar move failure" in str(combined.exceptions[0])
+        assert "sidecar rollback failure" in str(combined.exceptions[1])
+        assert forensic[0].read_bytes() == b"not a sqlite database"
+        assert Path(str(forensic[0]) + "-wal").read_bytes() == b"stale wal"
+        assert Path(str(forensic[0]) + "-journal").read_bytes() == b"stale journal"
+        assert target_db.read_bytes() == b"not a sqlite database"
+        assert wal_sidecar.exists() is False
+        assert journal_sidecar.read_bytes() == b"stale journal"
+        assert len(list(root.glob(".recall.db.restore-sidecar-*-wal"))) == 1
+
+
 def test_restore_reports_cleanup_warning_after_committed_replacement() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1438,6 +1493,84 @@ def test_restore_from_delivery_manifest_rejects_source_changed_after_validation(
         assert safety_dir.exists() is False
 
 
+def test_restore_from_delivery_manifest_expands_unique_exception_group_leaves() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        backup_db = root / "pre-release-recall-group.db"
+        manifest_path = root / "delivery-manifest-group.json"
+        safety_path = root / "safety" / "pre-restore-recall-test.corrupt"
+        quarantine_path = root / ".recall.db.restore-sidecar-token-journal"
+        original_sidecar = root / "recall.db-journal"
+        move_error = "simulated sidecar move failure"
+        rollback_error = (
+            f"{quarantine_path} -> {original_sidecar}: "
+            "simulated sidecar rollback failure"
+        )
+        failure = ExceptionGroup(
+            f"数据库恢复失败；安全备份/取证副本：{safety_path}",
+            [
+                PermissionError(move_error),
+                ExceptionGroup(
+                    "nested sidecar failures",
+                    [RuntimeError(rollback_error), PermissionError(move_error)],
+                ),
+            ],
+        )
+        create_test_db(backup_db, favorite_title="manifest backup")
+        write_delivery_manifest(manifest_path, backup_db)
+        original_restore = maintenance.restore_sqlite_backup
+
+        def raise_group(*_args, **_kwargs):
+            raise failure
+
+        maintenance.restore_sqlite_backup = raise_group
+        try:
+            report = maintenance.restore_from_delivery_manifest(
+                manifest_path,
+                db_path=root / "recall.db",
+                backup_dir=root / "safety",
+                apply=True,
+            )
+        finally:
+            maintenance.restore_sqlite_backup = original_restore
+
+        assert report["ok"] is False
+        assert report["restored"] is False
+        assert report["restore"] is None
+        assert report["errors"][0] == str(failure)
+        assert str(safety_path) in report["errors"][0]
+        assert report["errors"].count(move_error) == 1
+        assert report["errors"].count(rollback_error) == 1
+        assert report["errors"] == [str(failure), move_error, rollback_error]
+
+
+def test_restore_from_delivery_manifest_keeps_plain_exception_as_single_error() -> None:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        backup_db = root / "pre-release-recall-plain-error.db"
+        manifest_path = root / "delivery-manifest-plain-error.json"
+        create_test_db(backup_db, favorite_title="manifest backup")
+        write_delivery_manifest(manifest_path, backup_db)
+        original_restore = maintenance.restore_sqlite_backup
+
+        def raise_plain(*_args, **_kwargs):
+            raise ValueError("plain restore failure")
+
+        maintenance.restore_sqlite_backup = raise_plain
+        try:
+            report = maintenance.restore_from_delivery_manifest(
+                manifest_path,
+                db_path=root / "recall.db",
+                apply=True,
+            )
+        finally:
+            maintenance.restore_sqlite_backup = original_restore
+
+        assert report["ok"] is False
+        assert report["restored"] is False
+        assert report["errors"] == ["plain restore failure"]
+
+
 def test_restore_from_delivery_manifest_dry_run_does_not_replace_target() -> None:
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1552,6 +1685,8 @@ if __name__ == "__main__":
         test_restore_sqlite_backup_replaces_target_and_creates_safety_backup,
         test_validate_delivery_manifest_backup_checks_sha_and_counts,
         test_validate_delivery_manifest_backup_rejects_sha_mismatch,
+        test_restore_from_delivery_manifest_expands_unique_exception_group_leaves,
+        test_restore_from_delivery_manifest_keeps_plain_exception_as_single_error,
         test_restore_from_delivery_manifest_dry_run_does_not_replace_target,
         test_restore_from_delivery_manifest_apply_restores_after_validation,
     ]
