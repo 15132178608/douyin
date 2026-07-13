@@ -406,6 +406,12 @@
       transform: rotate(42deg) scale(1);
     }
     .card a { text-decoration: none; color: inherit; }
+    .card > a {
+      display: flex;
+      flex: 0 0 auto;
+      min-height: 0;
+      flex-direction: column;
+    }
     .card-cover {
       width: 100%; aspect-ratio: 3 / 4;
       background: #0a0a0f center / cover no-repeat;
@@ -425,12 +431,20 @@
     }
     .card:hover .card-cover::after { opacity: 1; }
 
-    /* body 收紧：13px title + 11px author + 10px meta */
-    .card-body { padding: 10px 12px 6px; }
+    /* body 固定节奏：标题两行、作者一行、日期一行，避免备注位上下跳。 */
+    .card-body {
+      padding: 10px 12px 6px;
+      flex: 0 0 104px;
+      display: flex;
+      height: 104px;
+      flex-direction: column;
+      box-sizing: border-box;
+    }
     .card-title {
       font-size: 13px; font-weight: 500;
       line-height: 1.4;
       color: var(--text-primary);
+      min-height: 2.8em;
       max-height: 2.8em;
       overflow: hidden;
       display: -webkit-box;
@@ -441,6 +455,7 @@
       margin-top: 6px;
       font-size: 11px; color: var(--text-secondary);
       display: flex; align-items: center; gap: 6px;
+      min-height: 18px;
       min-width: 0;
     }
     .card-author-avatar {
@@ -459,9 +474,14 @@
       min-width: 0;
     }
     .card-meta {
-      margin-top: 5px;
+      margin-top: auto;
+      padding-top: 5px;
       font-size: 10px; color: var(--text-tertiary);
       font-variant-numeric: tabular-nums;
+      min-height: 18px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .load-more-sentinel {
       display: none;
@@ -563,27 +583,43 @@
       color: var(--text-tertiary);
     }
 
-    /* 卡片备注 — 有备注时常驻；"加备注"按钮 hover 才浮现 */
-    .card-note-section { padding: 0 12px 12px; }
+    /* 卡片备注：固定占位，避免同一行卡片底部忽高忽低。 */
+    .card-note-section {
+      padding: 0 12px 12px;
+      flex: 0 0 54px;
+      min-height: 54px;
+      margin-top: auto;
+      box-sizing: border-box;
+    }
     .card-note {
       display: flex; align-items: flex-start; gap: 6px;
       padding: 8px 10px;
+      min-height: 36px;
       background: rgba(255, 214, 10, 0.08);
       border-left: 3px solid var(--accent-yellow);
       font-size: 11px;
       color: #ffe675;
       border-radius: var(--radius-sm);
     }
-    .card-note-text { flex: 1; line-height: 1.5; }
+    .card-note-text {
+      flex: 1;
+      line-height: 1.5;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
     .note-edit-btn {
       background: transparent; border: none; cursor: pointer;
       color: var(--text-tertiary); font-size: 10px; padding: 0 4px;
       transition: color 0.15s;
     }
     .note-edit-btn:hover { color: var(--brand-cyan); }
-    /* 「为啥要存它？」按钮放在卡片下方，不覆盖视频封面。 */
     .note-add-btn {
       width: 100%;
+      min-height: 36px;
+      display: flex;
+      align-items: center;
       padding: 7px 10px;
       background: rgba(255, 255, 255, 0.035);
       border: 1px dashed var(--border-subtle);
@@ -1339,6 +1375,7 @@
     .dot-idle { background: var(--text-tertiary); }
     .dot-starting { background: var(--accent-yellow); animation: pulse 1.2s ease-in-out infinite; }
     .dot-qr { background: var(--brand-cyan); animation: pulse 1.2s ease-in-out infinite; }
+    .dot-scan-pending { background: var(--brand-cyan); }
     .dot-success { background: var(--accent-success); }
     .dot-failed { background: var(--accent-danger); }
     .status-msg {
@@ -2045,7 +2082,6 @@
       <a href="{{ notes_url }}" class="view-link {% if page == 'notes' %}active{% endif %}">备注</a>
       <a href="{{ memories_url }}" class="view-link {% if page == 'memories' %}active{% endif %}">回忆角</a>
       <a href="{{ duplicates_url }}" class="view-link {% if page == 'duplicates' %}active{% endif %}">重合</a>
-      <a href="/maintenance" class="view-link {% if page == 'maintenance' %}active{% endif %}">维护</a>
     </div>
   </div>
 </nav>

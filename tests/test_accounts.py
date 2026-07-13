@@ -7,10 +7,14 @@ Run:
 from __future__ import annotations
 
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from pathlib import Path
 
 from src import db
 from src import accounts
+from src.config import settings
 
 
 @contextmanager
@@ -68,6 +72,62 @@ def test_invite_code_cannot_be_reused_after_single_claim() -> None:
             raise AssertionError("reused invite should fail")
 
 
+def test_invite_claim_rolls_back_user_and_usage_when_session_creation_fails() -> None:
+    with isolated_accounts_db() as conn:
+        accounts.ensure_default_user()
+        code = accounts.create_invite(created_by_user_id="default", code="ROLLBACK-CODE")
+        original_create_session = accounts.create_session
+        accounts.create_session = lambda _user_id, days=None: (_ for _ in ()).throw(
+            RuntimeError("session insert failed")
+        )
+        try:
+            try:
+                accounts.claim_invite(code, display_name="Alice")
+            except RuntimeError as exc:
+                assert "session insert failed" in str(exc)
+            else:
+                raise AssertionError("claim should fail when session creation fails")
+        finally:
+            accounts.create_session = original_create_session
+
+        assert conn.execute("SELECT used_count FROM invite_codes").fetchone()["used_count"] == 0
+        assert conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 1
+        assert conn.execute("SELECT COUNT(*) AS c FROM web_sessions").fetchone()["c"] == 0
+
+
+def test_single_use_invite_is_atomic_across_concurrent_connections(tmp_path: Path) -> None:
+    db_path = tmp_path / "accounts-concurrency.db"
+    original_path = settings.db_path
+    db.close_connection()
+    settings.db_path = db_path
+    try:
+        db.init_schema()
+        accounts.ensure_default_user()
+        code = accounts.create_invite(created_by_user_id="default", code="ATOMIC-CODE")
+        barrier = threading.Barrier(2)
+
+        def claim(name: str) -> tuple[str, str]:
+            barrier.wait(timeout=5)
+            try:
+                user, _token = accounts.claim_invite(code, display_name=name)
+                return "success", user["id"]
+            except accounts.InviteError as exc:
+                return "error", str(exc)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(claim, ("Alice", "Bob")))
+
+        assert [status for status, _ in results].count("success") == 1
+        assert [status for status, _ in results].count("error") == 1
+        conn = db.get_connection()
+        assert conn.execute("SELECT used_count FROM invite_codes").fetchone()["used_count"] == 1
+        assert conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 2
+        assert conn.execute("SELECT COUNT(*) AS c FROM web_sessions").fetchone()["c"] == 1
+    finally:
+        db.close_connection()
+        settings.db_path = original_path
+
+
 def test_user_profile_paths_are_isolated() -> None:
     alice = accounts.profile_path_for_user("alice")
     bob = accounts.profile_path_for_user("bob")
@@ -97,6 +157,75 @@ def test_update_douyin_profile_stores_display_fields() -> None:
         assert user["douyin_avatar_url"] == "https://example.com/me.jpeg"
         row = conn.execute("SELECT display_name FROM users WHERE id = 'default'").fetchone()
         assert row["display_name"] == "本地默认用户"
+
+
+def test_clear_douyin_profile_removes_account_fields_without_deleting_items() -> None:
+    with isolated_accounts_db() as conn:
+        accounts.ensure_default_user()
+        accounts.update_douyin_profile(
+            "default",
+            {
+                "nickname": "抖音小号",
+                "unique_id": "douyin_123",
+                "sec_uid": "SEC_SELF",
+                "avatar_url": "https://example.com/me.jpeg",
+            },
+        )
+        conn.execute(
+            """
+            INSERT INTO favorites (user_id, id, title, first_seen_at, last_seen_at)
+            VALUES ('default', 'fav-1', '本地收藏', '2026-05-26', '2026-05-26')
+            """
+        )
+
+        user = accounts.clear_douyin_profile("default")
+
+        assert user["douyin_nickname"] is None
+        assert user["douyin_unique_id"] is None
+        assert user["douyin_sec_uid"] is None
+        assert user["douyin_avatar_url"] is None
+        assert user["douyin_profile_updated_at"] is None
+        assert conn.execute("SELECT COUNT(*) AS c FROM favorites").fetchone()["c"] == 1
+
+
+def test_list_douyin_accounts_returns_bound_enabled_users() -> None:
+    with isolated_accounts_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO users (
+                id, display_name, douyin_nickname, douyin_unique_id,
+                douyin_avatar_url, created_at
+            ) VALUES (
+                'alice', 'Alice', 'Alice抖音', 'alice_dy',
+                'https://example.com/alice.jpg', '2026-05-26 00:00:00'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO users (
+                id, display_name, douyin_nickname, created_at
+            ) VALUES (
+                'bob', 'Bob', NULL, '2026-05-26 00:00:00'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO users (
+                id, display_name, douyin_nickname, disabled_at, created_at
+            ) VALUES (
+                'disabled', 'Disabled', 'Disabled抖音',
+                '2026-05-27 00:00:00', '2026-05-26 00:00:00'
+            )
+            """
+        )
+
+        rows = accounts.list_douyin_accounts()
+
+        assert [row["id"] for row in rows] == ["alice"]
+        assert rows[0]["douyin_nickname"] == "Alice抖音"
+        assert rows[0]["douyin_unique_id"] == "alice_dy"
 
 
 def test_delete_user_data_removes_owned_rows_only() -> None:
@@ -130,6 +259,8 @@ if __name__ == "__main__":
         test_invite_code_cannot_be_reused_after_single_claim,
         test_user_profile_paths_are_isolated,
         test_update_douyin_profile_stores_display_fields,
+        test_clear_douyin_profile_removes_account_fields_without_deleting_items,
+        test_list_douyin_accounts_returns_bound_enabled_users,
         test_delete_user_data_removes_owned_rows_only,
     ]
     failed = 0

@@ -156,7 +156,7 @@ def apply_crawl_for_kind(
                         video_url         = COALESCE(?, video_url),
                         video_tags        = COALESCE(?, video_tags),
                         raw_json          = COALESCE(?, raw_json),
-                        video_created_at  = COALESCE(?, video_created_at),
+                        video_created_at  = COALESCE(video_created_at, ?),
                         digg_count        = COALESCE(?, digg_count),
                         is_removed        = 0
                     WHERE id = ?

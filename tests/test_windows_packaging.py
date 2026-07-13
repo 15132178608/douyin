@@ -11,6 +11,18 @@ SCRIPTS = ROOT / "scripts"
 WORKFLOW = ROOT / ".github" / "workflows" / "windows-installer.yml"
 RELEASE_NOTES_DIR = ROOT / "docs" / "releases"
 WINDOWS_TROUBLESHOOTING = ROOT / "docs" / "windows-troubleshooting.md"
+RELEASE_TOOL_MODULES = [
+    "installed_smoke",
+    "release_gate",
+    "acceptance_matrix",
+    "delivery_evidence",
+    "final_release_check",
+    "preflight_summary",
+    "query_performance",
+    "performance_benchmark",
+    "backup_drill",
+    "database_safety",
+]
 
 
 def read(name: str) -> str:
@@ -39,6 +51,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("PrivilegesRequired=lowest", script)
         self.assertIn("DefaultDirName={localappdata}\\Programs\\DouyinRecall", script)
         self.assertIn("data\\*", script)
+        self.assertIn("dist\\*", script)
         self.assertIn(".env", script)
         self.assertIn(".venv\\*", script)
         self.assertIn("AGENTS.md", script)
@@ -156,12 +169,25 @@ class WindowsPackagingTests(unittest.TestCase):
 
         self.assertIn("$RuntimePreparedPath", launcher)
         self.assertIn("$VenvPython", launcher)
+        self.assertIn("[System.Security.Cryptography.SHA256]::Create()", launcher)
+        self.assertNotIn("Get-FileHash", launcher)
         self.assertIn("function Test-RuntimePrepared", launcher)
         self.assertIn("function Write-RuntimePreparedMarker", launcher)
         self.assertIn("function Start-RecallServiceProcess", launcher)
         self.assertIn("运行环境已准备，跳过 uv sync 和 Playwright 安装", launcher)
+        self.assertIn("function Stop-StaleDouyinRecallServiceOnPort", launcher)
+        self.assertIn("$LauncherPath", launcher)
+        self.assertIn("LastWriteTimeUtc", launcher)
+        self.assertIn("started_at", launcher)
+        self.assertIn("Recorded Douyin Recall service predates this launcher", launcher)
+        self.assertIn("Stop-StaleDouyinRecallServiceOnPort -Port $port", launcher)
+        self.assertIn("Stop-Process -Id $owner.ProcessId -Force", launcher)
         self.assertIn("Douyin Recall is already running; opening browser without runtime preparation", launcher)
         self.assertIn("Start-RecallServiceProcess -UsePreparedRuntime", launcher)
+        self.assertLess(
+            launcher.index("if (Test-WebReady -Url $url -TimeoutSec 1)"),
+            launcher.index("Stop-StaleDouyinRecallServiceOnPort -Port $port"),
+        )
         self.assertLess(
             launcher.index("Douyin Recall is already running; opening browser without runtime preparation"),
             launcher.index("准备 Python 运行环境：uv sync"),
@@ -237,7 +263,7 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_control_script_exposes_local_operations_without_hidden_runtime_paths(self) -> None:
         control = read("control-douyin-recall.ps1")
 
-        self.assertIn('[ValidateSet("menu", "start", "prepare", "stop", "status", "maintenance", "auth", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore", "verify-backup")]', control)
+        self.assertIn('[ValidateSet("menu", "start", "prepare", "stop", "status", "maintenance", "auth", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore", "verify-backup", "rollback-check")]', control)
         self.assertIn("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8", control)
         self.assertIn("$OutputEncoding = [System.Text.Encoding]::UTF8", control)
         self.assertIn('$env:PYTHONUTF8 = "1"', control)
@@ -258,6 +284,8 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Invoke-RecallCommand @('update')", control)
         self.assertIn("Invoke-RecallCommand @('export', '--format', 'sqlite', '--output', $ExportsDir)", control)
         self.assertIn("Invoke-RecallCommand @('verify-backup', '--output', $ExportsDir)", control)
+        self.assertIn("Invoke-RecallCommand @('rollback-from-manifest', '--manifest', $ManifestPath, '--json')", control)
+        self.assertNotIn("'rollback-from-manifest', '--apply'", control)
         self.assertIn("/maintenance", control)
         self.assertIn("-OpenPath \"/auth\"", control)
         self.assertIn("start-douyin-recall.ps1", control)
@@ -381,16 +409,20 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("function Open-BackupsDirectory", control)
         self.assertIn("function Open-RestoreCenter", control)
         self.assertIn("function Verify-LatestBackup", control)
+        self.assertIn("function Test-ManifestRollback", control)
+        self.assertIn("function Find-LatestDeliveryManifest", control)
         self.assertIn("function Open-AccountRecovery", control)
         self.assertIn("Create SQLite backup", control)
         self.assertIn("Open backups directory", control)
         self.assertIn("Open restore center", control)
         self.assertIn("Verify latest backup", control)
+        self.assertIn("Verify delivery manifest rollback", control)
         self.assertIn("Open account recovery", control)
         self.assertIn("Douyin Recall Backup Now", control)
         self.assertIn("Douyin Recall Backups", control)
         self.assertIn("Douyin Recall Restore Center", control)
         self.assertIn("Douyin Recall Verify Backup", control)
+        self.assertIn("Douyin Recall Rollback Check", control)
         self.assertIn("Douyin Recall Account Recovery", control)
         self.assertIn("Backups directory:", control)
         self.assertIn("New-Item -ItemType Directory -Path $ExportsDir -Force", control)
@@ -399,6 +431,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn('"backups" { Open-BackupsDirectory }', control)
         self.assertIn('"restore" { Open-RestoreCenter }', control)
         self.assertIn('"verify-backup" { Verify-LatestBackup; Wait-BeforeExit }', control)
+        self.assertIn('"rollback-check" { Test-ManifestRollback; Wait-BeforeExit }', control)
         self.assertIn('"auth" { Open-AccountRecovery }', control)
         self.assertIn("-OpenPath \"/maintenance\"", control)
         self.assertNotIn("Remove-Item -Recurse", control)
@@ -443,6 +476,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Douyin Recall Backups", script)
         self.assertIn("Douyin Recall Restore Center", script)
         self.assertIn("Douyin Recall Verify Backup", script)
+        self.assertIn("Douyin Recall Rollback Check", script)
         self.assertIn("Douyin Recall Account Recovery", script)
         self.assertIn('-Action ""status""', script)
         self.assertIn('-Action ""prepare""', script)
@@ -456,6 +490,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn('-Action ""backups""', script)
         self.assertIn('-Action ""restore""', script)
         self.assertIn('-Action ""verify-backup""', script)
+        self.assertIn('-Action ""rollback-check""', script)
         self.assertIn('-Action ""auth""', script)
 
     def test_inno_installer_uses_simplified_chinese_ui(self) -> None:
@@ -521,6 +556,28 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertEqual(2, len(launcher_entries))
         for entry in launcher_entries:
             self.assertIn('IconFilename: "{app}\\packaging\\windows\\DouyinRecall.ico"', entry)
+
+    def test_release_check_modules_are_outside_wheel_package(self) -> None:
+        project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('packages = ["src"]', project)
+        for module in RELEASE_TOOL_MODULES:
+            self.assertFalse((ROOT / "src" / f"{module}.py").exists(), f"{module} must not be packaged under src")
+            self.assertTrue((ROOT / "relcheck" / f"{module}.py").exists(), f"{module} should live under relcheck")
+
+        script_imports = {
+            "installed_smoke.py": "from relcheck.installed_smoke import",
+            "release_gate.py": "from relcheck.release_gate import",
+            "acceptance_matrix.py": "from relcheck.acceptance_matrix import",
+            "validate_delivery_evidence.py": "from relcheck.delivery_evidence import",
+            "final_release_check.py": "from relcheck.final_release_check import",
+            "preflight_summary.py": "from relcheck.preflight_summary import",
+            "query_performance_audit.py": "from relcheck.query_performance import",
+            "benchmark_web_pages.py": "from relcheck.performance_benchmark import",
+            "backup_restore_drill.py": "from relcheck.backup_drill import",
+            "database_safety_audit.py": "from relcheck.database_safety import",
+        }
+        for script_name, expected_import in script_imports.items():
+            self.assertIn(expected_import, read_script(script_name))
 
     def test_finish_launch_uses_wscript_hidden_launcher_to_avoid_console_flash(self) -> None:
         script = read("DouyinRecall.iss")
@@ -596,7 +653,41 @@ class WindowsPackagingTests(unittest.TestCase):
             script.index("Restore-InnoRegistration -Snapshot $originalRegistration"),
         )
 
-    def test_workflow_publishes_setup_exe_to_github_release_on_version_tags(self) -> None:
+    def test_upgrade_qa_covers_real_installers_migration_reindex_and_uninstall(self) -> None:
+        script = read_script("qa-upgrade-build.ps1")
+
+        self.assertIn("$OldInstallerPath", script)
+        self.assertIn("$NewInstallerPath", script)
+        self.assertIn('ExpectedVersion "0.1.20"', script)
+        self.assertIn('ExpectedVersion "0.1.21"', script)
+        self.assertGreaterEqual(script.count('"/NOICONS"'), 1)
+        self.assertGreaterEqual(script.count("-AppRoot $appRoot"), 2)
+        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.21\\upgrade-qa", script)
+        self.assertIn("$env:TEMP = $tempRoot", script)
+        self.assertIn("$env:TMP = $tempRoot", script)
+        self.assertIn("$env:HF_HOME = $hfCacheRoot", script)
+        self.assertIn("$env:SENTENCE_TRANSFORMERS_HOME", script)
+        self.assertIn("CREATE VIRTUAL TABLE favorites_vec USING vec0", script)
+        self.assertIn("CREATE VIRTUAL TABLE favorites_fts USING fts5", script)
+        self.assertIn('"user_id" not in columns(backup, "favorites_fts")', script)
+        self.assertIn('"pre-install-recall-*.db"', script)
+        self.assertIn("runtime.start_background_workers()", script)
+        self.assertIn("pending_before_worker == expected_pending", script)
+        self.assertIn("class FakeEncoder", script)
+        self.assertIn('"fake_encoder": True', script)
+        self.assertIn('hybrid.search_for_kind(', script)
+        self.assertIn('successful_jobs == 4', script)
+        self.assertIn("Run isolated uninstaller", script)
+        self.assertIn('uninstaller removed user database', script)
+        self.assertIn("Restore-InnoRegistration -Snapshot $originalRegistration", script)
+        self.assertLess(
+            script.index("$originalRegistration = Save-InnoRegistration"),
+            script.index("-InstallerPath $OldInstallerPath"),
+        )
+        self.assertNotIn("Remove-Item -Recurse", script)
+        self.assertNotIn("rm -rf", script)
+
+    def test_workflow_creates_draft_release_for_exact_binary_qa_on_version_tags(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn("tags:", workflow)
@@ -605,6 +696,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("contents: write", workflow)
         self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
         self.assertIn('"release", "create"', workflow)
+        self.assertIn('"--draft"', workflow)
         self.assertIn("& gh @releaseArgs", workflow)
         self.assertIn("docs/releases/${env:GITHUB_REF_NAME}.md", workflow)
         self.assertIn("--notes-file", workflow)
@@ -638,7 +730,9 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Douyin Recall Backups", notes)
         self.assertIn("Douyin Recall Restore Center", notes)
         self.assertIn("Douyin Recall Verify Backup", notes)
+        self.assertIn("Douyin Recall Rollback Check", notes)
         self.assertIn("recall verify-backup", notes)
+        self.assertIn("rollback-from-manifest", notes)
         self.assertIn("Douyin Recall Account Recovery", notes)
         self.assertIn("/auth", notes)
         self.assertIn("pre-install-recall-", notes)
@@ -674,7 +768,9 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Douyin Recall Backups", doc)
         self.assertIn("Douyin Recall Restore Center", doc)
         self.assertIn("Douyin Recall Verify Backup", doc)
+        self.assertIn("Douyin Recall Rollback Check", doc)
         self.assertIn("uv run python -m src.cli verify-backup", doc)
+        self.assertIn("uv run python -m src.cli rollback-from-manifest", doc)
         self.assertIn("Douyin Recall Account Recovery", doc)
         self.assertIn("/auth", doc)
         self.assertIn("pre-install-recall-", doc)

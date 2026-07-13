@@ -6,18 +6,24 @@ Run:
 """
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from src import category_import
 from src.categorize import cluster
 from src import jobs
 from src import onboarding
 from src.db import SCHEMA_SQL
 from src.embedding import indexer
 from src.web import app as web_app
+from src.web import helpers as web_helpers
+from src.web.routes import content as content_routes
 
 
 @contextmanager
@@ -32,31 +38,34 @@ def isolated_web_db():
     conn.executescript(SCHEMA_SQL)
     conn.execute("ALTER TABLE favorites ADD COLUMN category_id INTEGER")
     conn.execute("ALTER TABLE likes ADD COLUMN category_id INTEGER")
-    conn.execute("CREATE TABLE favorites_vec (id TEXT PRIMARY KEY, embedding BLOB)")
-    conn.execute("CREATE TABLE likes_vec (id TEXT PRIMARY KEY, embedding BLOB)")
+    conn.execute("CREATE TABLE favorites_vec (id TEXT PRIMARY KEY, user_id TEXT, embedding BLOB)")
+    conn.execute("CREATE TABLE likes_vec (id TEXT PRIMARY KEY, user_id TEXT, embedding BLOB)")
 
-    original_web_get_connection = web_app.get_connection
+    original_web_get_connection = web_helpers._db_get_connection
     original_cluster_get_connection = cluster.get_connection
     original_jobs_get_connection = jobs.get_connection
     original_onboarding_get_connection = onboarding.get_connection
     original_index_one = indexer.index_one
+    original_find_category_import_candidates = content_routes.category_import.find_category_import_candidates
 
     def get_connection():
         return conn
 
-    web_app.get_connection = get_connection
+    web_helpers._db_get_connection = get_connection
     cluster.get_connection = get_connection
     jobs.get_connection = get_connection
     onboarding.get_connection = get_connection
     indexer.index_one = lambda *args, **kwargs: None
+    content_routes.category_import.find_category_import_candidates = lambda **kwargs: []
     try:
         yield conn
     finally:
-        web_app.get_connection = original_web_get_connection
+        web_helpers._db_get_connection = original_web_get_connection
         cluster.get_connection = original_cluster_get_connection
         jobs.get_connection = original_jobs_get_connection
         onboarding.get_connection = original_onboarding_get_connection
         indexer.index_one = original_index_one
+        content_routes.category_import.find_category_import_candidates = original_find_category_import_candidates
         conn.close()
 
 
@@ -191,7 +200,7 @@ def test_likes_home_uses_video_publish_time_when_like_time_missing() -> None:
 
 def test_likes_home_supports_mobile_load_more_and_desktop_pagination() -> None:
     with isolated_web_db() as conn:
-        page_size = web_app.HOME_PAGE_SIZE
+        page_size = content_routes.HOME_PAGE_SIZE
         for index in range(page_size + 2):
             insert_item_for_paging(conn, "likes", index)
         client = TestClient(web_app.app)
@@ -268,7 +277,7 @@ def test_likes_home_renders_numbered_pagination_with_first_and_last_links() -> N
 
 def test_favorites_home_supports_mobile_load_more_and_desktop_pagination() -> None:
     with isolated_web_db() as conn:
-        page_size = web_app.HOME_PAGE_SIZE
+        page_size = content_routes.HOME_PAGE_SIZE
         for index in range(page_size + 1):
             insert_item_for_paging(conn, "favorites", index)
         client = TestClient(web_app.app)
@@ -312,7 +321,146 @@ def test_empty_likes_home_uses_user_facing_sync_state_instead_of_cli_hint() -> N
         assert "recall crawl-likes" not in response.text
         assert "recall crawl" not in response.text
         assert 'hx-get="/likes/empty-status"' in response.text
-        assert "去维护中心" in response.text
+        assert "去维护中心" not in response.text
+
+
+def test_categories_empty_state_enqueues_index_and_categorize_without_cli_hint() -> None:
+    with isolated_web_db() as conn:
+        insert_item(conn, "favorites", "fav-1", "favorite only", "fav author")
+        client = TestClient(web_app.app)
+
+        response = client.post(
+            "/categories/organize",
+            headers={"HX-Request": "true"},
+        )
+
+        assert response.status_code == 200
+        assert "开始整理分类" in response.text
+        assert "recall index" not in response.text
+        assert "recall categorize" not in response.text
+        queued = [
+            (row["kind"], json.loads(row["payload_json"]))
+            for row in conn.execute("SELECT kind, payload_json FROM job_queue ORDER BY id").fetchall()
+        ]
+        assert queued == [
+            ("index", {"content_kind": "favorites"}),
+            ("categorize", {"content_kind": "favorites", "algo": "kmeans"}),
+        ]
+
+
+def test_categories_empty_state_offers_import_when_old_database_has_matching_categories() -> None:
+    with isolated_web_db() as conn:
+        insert_item(conn, "favorites", "fav-1", "favorite only", "fav author")
+        original_find = content_routes.category_import.find_category_import_candidates
+        content_routes.category_import.find_category_import_candidates = lambda **kwargs: [
+            category_import.CategoryImportCandidate(
+                path=Path(r"D:\old\DouyinRecall\data\recall.db"),
+                category_count=3,
+                match_count=12,
+                source_item_count=15,
+                content_kind="favorites",
+                updated_at=0,
+            )
+        ]
+        try:
+            client = TestClient(web_app.app)
+            response = client.get("/categories")
+        finally:
+            content_routes.category_import.find_category_import_candidates = original_find
+
+        assert response.status_code == 200
+        assert "发现已有分类" in response.text
+        assert "导入已有分类" in response.text
+        assert 'hx-post="/categories/import"' in response.text
+        assert "recall.db" in response.text
+        assert 'name="source_token"' in response.text
+        assert 'name="source_path"' not in response.text
+        assert "D:\\old\\DouyinRecall\\data\\recall.db" not in response.text
+        assert "D:\\" not in response.text
+
+
+def test_category_import_route_resolves_server_side_candidate_token_without_exposing_path() -> None:
+    with isolated_web_db() as conn:
+        insert_item(conn, "favorites", "fav-1", "favorite only", "fav author")
+        source_path = Path(r"D:\old\DouyinRecall\data\recall.db")
+        calls = []
+        original_find = content_routes.category_import.find_category_import_candidates
+        original_import = content_routes.category_import.import_categories_from_database
+        content_routes.category_import.find_category_import_candidates = lambda **kwargs: [
+            category_import.CategoryImportCandidate(
+                path=source_path,
+                category_count=3,
+                match_count=12,
+                source_item_count=15,
+                content_kind="favorites",
+                updated_at=0,
+            )
+        ]
+
+        def fake_import(resolved_path, **kwargs):
+            calls.append((Path(resolved_path), kwargs["content_kind"], kwargs["user_id"]))
+            return category_import.CategoryImportResult(
+                True,
+                "imported",
+                category_count=3,
+                assigned_item_count=12,
+                source_path=Path(resolved_path),
+            )
+
+        content_routes.category_import.import_categories_from_database = fake_import
+        try:
+            client = TestClient(web_app.app)
+            page = client.get("/categories")
+            match = re.search(r'name="source_token" value="([^"]+)"', page.text)
+            assert match is not None
+            response = client.post(
+                "/categories/import",
+                data={"source_token": match.group(1)},
+                headers={"HX-Request": "true"},
+            )
+        finally:
+            content_routes.category_import.find_category_import_candidates = original_find
+            content_routes.category_import.import_categories_from_database = original_import
+
+        assert page.status_code == 200
+        assert response.status_code == 200
+        assert calls == [(source_path, "favorites", "default")]
+        assert "已导入 3 个分类，匹配 12 条收藏" in response.text
+
+
+def test_category_import_route_imports_selected_database_and_returns_status() -> None:
+    with isolated_web_db() as conn:
+        insert_item(conn, "favorites", "fav-1", "favorite only", "fav author")
+        calls = []
+        original_import = content_routes.category_import.import_categories_from_database
+        original_find = content_routes.category_import.find_category_import_candidates
+
+        def fake_import(source_path, **kwargs):
+            calls.append((Path(source_path), kwargs["content_kind"], kwargs["user_id"]))
+            return category_import.CategoryImportResult(
+                True,
+                "imported",
+                category_count=2,
+                assigned_item_count=9,
+                source_path=Path(source_path),
+            )
+
+        content_routes.category_import.import_categories_from_database = fake_import
+        content_routes.category_import.find_category_import_candidates = lambda **kwargs: []
+        try:
+            client = TestClient(web_app.app)
+            response = client.post(
+                "/categories/import",
+                data={"source_path": r"D:\old\DouyinRecall\data\recall.db"},
+                headers={"HX-Request": "true"},
+            )
+        finally:
+            content_routes.category_import.import_categories_from_database = original_import
+            content_routes.category_import.find_category_import_candidates = original_find
+
+        assert response.status_code == 200
+        assert calls == [(Path(r"D:\old\DouyinRecall\data\recall.db"), "favorites", "default")]
+        assert "已导入 2 个分类，匹配 9 条收藏" in response.text
 
 
 def test_empty_likes_sync_state_shows_progress_eta_and_waiting_motion() -> None:
@@ -341,7 +489,7 @@ def test_likes_home_shows_index_progress_without_hiding_local_items() -> None:
         insert_item(conn, "favorites", "fav-1", "favorite only", "fav author")
         insert_item(conn, "likes", "like-1", "liked first", "like author")
         insert_item(conn, "likes", "like-2", "liked second", "like author")
-        conn.execute("INSERT INTO likes_vec (id) VALUES ('default:like-1')")
+        conn.execute("INSERT INTO likes_vec (id, user_id) VALUES ('default:like-1', 'default')")
         job_id = jobs.enqueue_job("index", user_id="default", payload={"content_kind": "likes"})
         started_at = datetime.now(timezone.utc) - timedelta(seconds=20)
         conn.execute(

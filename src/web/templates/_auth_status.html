@@ -1,77 +1,63 @@
 {# Rendered both on initial page load (via include) and by the /auth/status polling endpoint.
-   Parent container: <div id="auth-status-area"> in auth.html.
-   When starting or qr_ready, the outer div polls /auth/status every 3 s and replaces
-   the contents of #auth-status-area. #}
-<div {% if auth_status in ('starting', 'qr_ready') %}
-     hx-get="/auth/status"
-     hx-trigger="every 3s"
-     hx-target="#auth-status-area"
-     hx-swap="innerHTML"
-     {% endif %}>
-
-  {# already-bound banner #}
-  {% if profile_exists and auth_status == 'idle' %}
-  <div class="bound-banner">
-    <span>✓</span>
-    <span>检测到本地登录资料；如果刷新账号资料或同步提示过期，请重新绑定。</span>
+   Parent container: <div id="auth-status-area"> in auth.html. #}
+{% if auth_status in ('starting', 'qr_ready', 'scan_pending', 'confirmed', 'success', 'failed') %}
+<div data-auth-poll="{{ 'true' if auth_status in ('starting', 'qr_ready', 'scan_pending', 'confirmed') else '' }}">
+  <div class="account-action-row">
+    <div class="account-action-copy">
+      <h2 class="account-action-title">
+        {% if auth_status == 'failed' %}添加账号失败{% else %}正在添加账号{% endif %}
+      </h2>
+      <p class="account-action-detail">
+        <span class="status-row">
+          <span class="status-dot
+            {%- if auth_status == 'starting' %} dot-starting
+            {%- elif auth_status == 'qr_ready' %} dot-scan-pending
+            {%- elif auth_status == 'scan_pending' %} dot-scan-pending
+            {%- elif auth_status == 'confirmed' %} dot-scan-pending
+            {%- elif auth_status == 'success' %} dot-success
+            {%- elif auth_status == 'failed' %} dot-failed
+            {%- else %} dot-idle
+            {%- endif %}"></span>
+          {%- if auth_status == 'starting' -%}
+            正在生成二维码...
+          {%- elif auth_status == 'qr_ready' -%}
+            等待手机扫码...
+          {%- elif auth_status == 'scan_pending' -%}
+            手机已扫码，等待你在抖音 App 确认登录...
+          {%- elif auth_status == 'confirmed' -%}
+            确认完成，正在保存账号...
+          {%- elif auth_status == 'success' -%}
+            添加成功，正在进入首页。
+          {%- elif auth_status == 'failed' -%}
+            {{ auth_message or "登录态已过期，二维码或登录状态不可用，请重新添加。" }}
+          {%- endif -%}
+        </span>
+      </p>
+    </div>
+    <div class="account-action-controls">
+      {% if auth_status == 'failed' %}
+      <form action="/auth/add" method="post" data-auth-start>
+        <button class="btn btn-primary" type="submit">重新添加</button>
+      </form>
+      {% elif auth_status == 'success' %}
+      <span data-auth-success="true" hidden></span>
+      <a href="/" class="btn btn-primary">返回首页</a>
+      {% else %}
+      <button class="btn btn-secondary" type="button" disabled>
+        {%- if auth_status == 'starting' -%}生成中{%- else -%}处理中{%- endif -%}
+      </button>
+      {% endif %}
+    </div>
   </div>
-  {% endif %}
 
-  {# status dot + message #}
-  <div class="status-row">
-    <span class="status-dot
-      {%- if auth_status == 'starting' %} dot-starting
-      {%- elif auth_status == 'qr_ready' %} dot-qr
-      {%- elif auth_status == 'success' %} dot-success
-      {%- elif auth_status == 'failed' %} dot-failed
-      {%- else %} dot-idle
-      {%- endif %}"></span>
-    <span class="status-msg">
-      {%- if auth_status == 'idle' -%}
-        {%- if profile_exists -%}已有本地登录资料，可重新扫码{%- else -%}尚未绑定，点击下方按钮开始{%- endif -%}
-      {%- else -%}
-        {{ auth_message }}
-      {%- endif -%}
-    </span>
-  </div>
-
-  {# QR image block — only shown when qr_ready #}
   {% if qr_ready %}
   <div class="qr-wrap">
     <img src="/auth/qr-image" alt="抖音扫码二维码" class="qr-img">
-    <p class="qr-hint">打开抖音 App → 右上角相机 → 扫描上方二维码，然后点「确认登录」</p>
+    <p class="qr-hint">
+      <strong>打开抖音 App 扫一扫</strong>
+      扫描左侧二维码后，在手机上点「确认登录」。
+    </p>
   </div>
   {% endif %}
-
-  {# action buttons #}
-  {% if auth_status in ('idle', 'failed') %}
-  <button class="btn btn-primary"
-          hx-post="/auth/start"
-          hx-target="#auth-status-area"
-          hx-swap="innerHTML">
-    {%- if auth_status == 'failed' -%}重试绑定
-    {%- elif profile_exists -%}重新绑定
-    {%- else -%}开始绑定
-    {%- endif -%}
-  </button>
-
-  {% elif auth_status == 'success' %}
-  <span data-auth-success="true" hidden></span>
-  <a href="/jobs" class="btn btn-primary"
-     style="display:block;text-align:center;text-decoration:none;margin-bottom:12px;">
-    查看自动同步进度
-  </a>
-  <button class="btn btn-secondary"
-          hx-post="/auth/start"
-          hx-target="#auth-status-area"
-          hx-swap="innerHTML">
-    重新绑定
-  </button>
-
-  {% elif auth_status in ('starting', 'qr_ready') %}
-  <button class="btn btn-secondary" disabled>
-    {%- if auth_status == 'starting' -%}正在生成二维码...{%- else -%}等待手机扫码...{%- endif -%}
-  </button>
-  {% endif %}
-
 </div>
+{% endif %}

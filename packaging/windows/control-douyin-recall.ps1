@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("menu", "start", "prepare", "stop", "status", "maintenance", "auth", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore", "verify-backup")]
+    [ValidateSet("menu", "start", "prepare", "stop", "status", "maintenance", "auth", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore", "verify-backup", "rollback-check")]
     [string]$Action = "menu"
 )
 
@@ -15,12 +15,14 @@ catch {
 }
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
+$env:UV_NO_DEV = "1"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
 $DataRoot = Join-Path $AppRoot "data"
 $LogsDir = Join-Path $DataRoot "logs"
 $ExportsDir = Join-Path $AppRoot "data\exports"
+$ReleaseChecksDir = Join-Path $AppRoot "data\release-checks"
 $EnvPath = Join-Path $AppRoot ".env"
 $ProjectPath = Join-Path $AppRoot "pyproject.toml"
 $ServerStatePath = Join-Path $AppRoot "data\runtime\server.json"
@@ -553,7 +555,7 @@ function Prepare-Runtime {
         $uv = Find-OrInstall-Uv
 
         Invoke-PrepareStep -Name "Python dependencies" -CommandText "uv sync" -LongRunning -Command {
-            & $uv "sync"
+            & $uv "sync" "--no-dev"
         }
         Invoke-PrepareStep -Name "Browser runtime" -CommandText "playwright install chromium" -LongRunning -Command {
             & $uv "run" "playwright" "install" "chromium"
@@ -676,6 +678,30 @@ function Verify-LatestBackup {
     Invoke-RecallCommand @('verify-backup', '--output', $ExportsDir)
 }
 
+function Find-LatestDeliveryManifest {
+    if (-not (Test-Path $ReleaseChecksDir)) {
+        throw "No release checks directory found: $ReleaseChecksDir"
+    }
+
+    $manifest = Get-ChildItem -Path $ReleaseChecksDir -Filter "delivery-manifest-*.json" -File |
+        Sort-Object LastWriteTime, Name -Descending |
+        Select-Object -First 1
+    if ($null -eq $manifest) {
+        throw "No delivery-manifest-*.json found in $ReleaseChecksDir"
+    }
+    return $manifest.FullName
+}
+
+function Test-ManifestRollback {
+    Initialize-RuntimeEnvironment
+    Write-Header "Verify delivery manifest rollback"
+    Write-Host "Start Menu entry: Douyin Recall Rollback Check"
+    $ManifestPath = Find-LatestDeliveryManifest
+    Write-Host "Delivery manifest: $ManifestPath"
+    Write-Host "This is a dry-run check only. It does not restore the database."
+    Invoke-RecallCommand @('rollback-from-manifest', '--manifest', $ManifestPath, '--json')
+}
+
 function Invoke-HealthCheck {
     Write-ControlSummary
     Write-Header "Health check"
@@ -790,6 +816,7 @@ function Show-ControlMenu {
         Write-Host "13. Open restore center"
         Write-Host "14. Verify latest backup"
         Write-Host "15. Open account recovery"
+        Write-Host "16. Verify rollback manifest"
         Write-Host "0. Exit"
         $choice = Read-Host "Choose"
 
@@ -809,6 +836,7 @@ function Show-ControlMenu {
             "13" { Open-RestoreCenter; return }
             "14" { Verify-LatestBackup; Wait-BeforeExit; return }
             "15" { Open-AccountRecovery; return }
+            "16" { Test-ManifestRollback; Wait-BeforeExit; return }
             "0" { return }
             default { Write-Host "Invalid choice. Try again." -ForegroundColor Yellow }
         }
@@ -833,6 +861,7 @@ try {
         "backups" { Open-BackupsDirectory }
         "restore" { Open-RestoreCenter }
         "verify-backup" { Verify-LatestBackup; Wait-BeforeExit }
+        "rollback-check" { Test-ManifestRollback; Wait-BeforeExit }
     }
 }
 catch {

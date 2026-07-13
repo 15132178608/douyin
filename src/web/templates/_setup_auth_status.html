@@ -1,10 +1,8 @@
 <div class="setup-auth-status"
-     {% if auth_status == 'starting' %}
-     hx-get="/setup/auth-status"
-     hx-trigger="every 500ms"
-     hx-target="#setup-auth-status-area"
-     hx-swap="innerHTML"
-     {% endif %}>
+     data-setup-auth-state="{{ auth_status }}"
+     data-setup-qr-version="{{ qr_version or '' }}"
+     data-setup-message-key="{{ (auth_message or '')[:80] }}"
+     data-setup-poll="{{ 'true' if auth_status in ('starting', 'qr_ready', 'scan_pending', 'confirmed') else 'false' }}">
   {% if qr_ready %}
   <div class="qr-wrap setup-qr-wrap">
     <img src="/auth/qr-image?v={{ qr_version }}" alt="抖音扫码二维码" class="qr-img">
@@ -13,33 +11,21 @@
   <div id="setup-scan-state">
     {% include "_setup_scan_state.html" %}
   </div>
-  <div id="setup-scan-poller"
-       hidden
-       hx-get="/setup/scan-state?qr={{ qr_version }}"
-       hx-trigger="every 1s"
-       hx-target="#setup-auth-status-area"
-       hx-swap="innerHTML"></div>
+  {% elif auth_status == 'scan_pending' %}
+  <div class="status-row setup-status-row">
+    <span class="status-dot dot-scan-pending"></span>
+    <span class="status-msg">{{ auth_message or "手机已扫码，等待你在抖音 App 确认登录..." }}</span>
+  </div>
   {% elif auth_status in ('confirmed', 'success') %}
   {% include "_setup_success_motion.html" %}
-  {% if auth_status == 'confirmed' %}
-  <div id="setup-scan-poller"
-       hidden
-       hx-get="/setup/scan-state?state=confirmed"
-       hx-trigger="every 1s"
-       hx-target="#setup-auth-status-area"
-       hx-swap="innerHTML"></div>
-  {% endif %}
   {% elif auth_status == 'failed' %}
   <div class="status-row setup-status-row">
     <span class="status-dot dot-failed"></span>
-    <span class="status-msg">{{ auth_message or "二维码生成失败，请重试。" }}</span>
+    <span class="status-msg">{{ auth_message or "手机取消了登录或二维码已失效，请重新生成。" }}</span>
   </div>
-  <button class="btn-primary setup-retry-btn"
-          hx-post="/setup/auth-start"
-          hx-target="#setup-auth-status-area"
-          hx-swap="innerHTML">
-    重新生成二维码
-  </button>
+  <form action="/setup/auth-start" method="post" data-setup-auth-start>
+    <button class="btn-primary setup-retry-btn" type="submit">重新生成二维码</button>
+  </form>
   {% else %}
   <div class="setup-loading">
     <span class="status-dot dot-starting"></span>

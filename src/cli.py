@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 from pathlib import Path
 
 import click
@@ -596,6 +597,145 @@ def verify_backup_cmd(output_dir: Path, backup_path: Path | None) -> None:
     _safe_echo(f"likes: {counts['likes']}")
 
 
+def _echo_backup_retention_items(title: str, items: list[dict]) -> None:
+    _safe_echo(f"{title} {len(items)} 个：")
+    if not items:
+        _safe_echo("  - 无")
+        return
+    for item in items:
+        path = str(item.get("path", ""))
+        name = item.get("name") or Path(path).name or "未知文件"
+        suffix = f"  {item['error']}" if item.get("error") else ""
+        _safe_echo(f"  - {name}  {path}{suffix}")
+
+
+@cli.command("prune-backups")
+@click.option("--output", "output_dir", default=PROJECT_ROOT / "data" / "exports",
+              type=click.Path(file_okay=False, path_type=Path),
+              show_default=True, help="备份目录；默认清理 data/exports 中的普通 SQLite 备份")
+@click.option("--keep", "keep_latest", default=None, type=click.IntRange(min=1),
+              help="保留最近多少个普通备份；默认使用维护中心策略")
+@click.option("--apply", "apply_changes", is_flag=True, default=False,
+              help="实际删除旧普通备份；不传则只预览，不会删除文件")
+@click.option("--json", "json_output", is_flag=True, default=False,
+              help="输出机器可读 JSON，供脚本和发布报告复用")
+def prune_backups_cmd(
+    output_dir: Path,
+    keep_latest: int | None,
+    apply_changes: bool,
+    json_output: bool,
+) -> None:
+    """按保留策略清理旧 SQLite 备份；默认 dry-run。"""
+    from src import maintenance
+
+    keep = keep_latest or maintenance.DEFAULT_BACKUP_RETENTION_KEEP
+    report = (
+        maintenance.enforce_backup_retention(output_dir, keep_latest=keep)
+        if apply_changes
+        else maintenance.describe_backup_retention(output_dir, keep_latest=keep)
+    )
+    mode = "apply" if apply_changes else "dry_run"
+    payload = {
+        "ok": bool(report.get("ok", True)),
+        "mode": mode,
+        "output_dir": str(Path(output_dir)),
+        "report": report,
+    }
+    if json_output:
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        if not payload["ok"]:
+            sys.exit(1)
+        return
+
+    _safe_echo("SQLite 备份保留策略")
+    _safe_echo(f"目录: {Path(output_dir)}")
+    if apply_changes:
+        _safe_echo("模式: apply（执行删除旧普通备份）")
+    else:
+        _safe_echo("模式: dry-run（预览，不会删除文件）")
+    _safe_echo(f"保留最近 {report['keep_latest']} 个普通备份")
+    _safe_echo(f"删除方式: {report['delete_method']}（逐个明确文件）")
+    _safe_echo(f"普通备份: {report['ordinary_count']} 个；保护备份: {report['protected_count']} 个")
+
+    if apply_changes:
+        deleted = report.get("deleted", [])
+        if deleted:
+            _safe_echo(f"已删除 {len(deleted)} 个旧普通备份")
+            _echo_backup_retention_items("已删除旧普通备份", deleted)
+        else:
+            _safe_echo("没有需要删除的旧普通备份。")
+        errors = report.get("errors", [])
+        if errors:
+            _echo_backup_retention_items("删除失败", errors)
+            raise click.ClickException(f"删除旧备份时有 {len(errors)} 个错误。")
+    else:
+        candidates = report.get("delete_candidates", [])
+        if candidates:
+            _echo_backup_retention_items("将删除旧普通备份", candidates)
+        else:
+            _safe_echo("没有需要删除的旧普通备份。")
+
+    _echo_backup_retention_items("受保护备份", report.get("protected", []))
+
+
+@cli.command("rollback-from-manifest")
+@click.option("--manifest", "manifest_path", required=True,
+              type=click.Path(dir_okay=False, path_type=Path),
+              help="delivery-manifest-*.json 路径")
+@click.option("--apply", "apply_changes", is_flag=True, default=False,
+              help="实际恢复数据库；不传则只做 dry-run 校验")
+@click.option("--db-path", default=None, type=click.Path(dir_okay=False, path_type=Path),
+              help="恢复目标数据库；默认 data/recall.db")
+@click.option("--backup-dir", default=None, type=click.Path(file_okay=False, path_type=Path),
+              help="恢复前安全备份目录；默认 data/exports")
+@click.option("--json", "json_output", is_flag=True, default=False,
+              help="输出机器可读 JSON")
+def rollback_from_manifest_cmd(
+    manifest_path: Path,
+    apply_changes: bool,
+    db_path: Path | None,
+    backup_dir: Path | None,
+    json_output: bool,
+) -> None:
+    """从 delivery manifest 校验并回滚到发布前备份。"""
+    from src import maintenance
+
+    report = maintenance.restore_from_delivery_manifest(
+        manifest_path,
+        apply=apply_changes,
+        db_path=db_path,
+        backup_dir=backup_dir,
+        close_connection=db_module.close_connection,
+    )
+    if json_output:
+        click.echo(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        if not report["ok"]:
+            sys.exit(1)
+        return
+
+    validation = report["validation"]
+    backup = validation["backup"]
+    _safe_echo("delivery manifest 回滚校验")
+    _safe_echo(f"manifest: {validation['manifest_path']}")
+    _safe_echo(f"备份: {backup.get('path')}")
+    _safe_echo(f"SHA256: {backup.get('actual_sha256')}")
+    _safe_echo(f"模式: {'apply（执行恢复）' if apply_changes else 'dry-run（只校验，不恢复）'}")
+    if not report["ok"]:
+        for error in report["errors"]:
+            _safe_echo(error, err=True)
+        sys.exit(1)
+
+    counts = backup.get("backup_counts") or {}
+    for table, count in counts.items():
+        _safe_echo(f"{table}: {count}")
+    if report["restored"]:
+        restore = report["restore"] or {}
+        _safe_echo(f"已按 delivery manifest 恢复: {restore.get('restored_path')}")
+        _safe_echo(f"恢复前安全备份: {restore.get('safety_backup_path')}")
+    else:
+        _safe_echo("校验通过。未执行恢复；需要恢复时加 --apply。")
+
+
 @cli.command("tag")
 @click.argument("item_ids", nargs=-1)
 @click.option("--kind", type=click.Choice(["favorites", "likes"]), default="favorites",
@@ -1093,29 +1233,16 @@ def update_cmd(no_network: bool, force: bool) -> None:
 
 
 @cli.command("doctor")
-def doctor_cmd() -> None:
+@click.option("--json", "json_output", is_flag=True, default=False, help="输出稳定 JSON，供脚本和页面复用。")
+def doctor_cmd(json_output: bool) -> None:
     """检查环境是否就绪：依赖、配置、db、Playwright profile。"""
-    click.echo("=== Environment Doctor ===")
-    click.echo(f"Project root:       {PROJECT_ROOT}")
-    click.echo(f"DB path:            {settings.db_path}")
-    click.echo(f"  exists:           {settings.db_path.exists()}")
-    click.echo(f"Playwright profile: {settings.playwright_profile_path}")
-    click.echo(f"  exists:           {settings.playwright_profile_path.exists()}")
-    click.echo(f"SMTP host:          {settings.smtp_host or '(not set — M2 will fail)'}")
-    click.echo(f"Mail to:            {settings.mail_to or '(not set — M2 will fail)'}")
+    from src import doctor
 
-    # 检查关键依赖
-    deps_status = {}
-    for mod in ("sqlite_vec", "playwright", "sentence_transformers", "jieba",
-                "fastapi", "loguru", "pydantic_settings"):
-        try:
-            __import__(mod)
-            deps_status[mod] = "OK"
-        except ImportError as e:
-            deps_status[mod] = f"MISSING ({e})"
-    click.echo("Dependencies:")
-    for mod, status in deps_status.items():
-        click.echo(f"  - {mod}: {status}")
+    report = doctor.collect_doctor_report()
+    if json_output:
+        click.echo(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return
+    click.echo(doctor.render_doctor_text(report))
 
 
 if __name__ == "__main__":

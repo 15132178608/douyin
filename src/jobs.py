@@ -28,14 +28,57 @@ def _retry_delay_seconds(attempts: int) -> int:
     return min(MAX_RETRY_DELAY_SECONDS, 60 * (2 ** attempt_index))
 
 
+def _canonical_payload_json(payload: dict[str, Any] | None) -> str:
+    return json.dumps(payload or {}, ensure_ascii=False, sort_keys=True)
+
+
+def _find_open_duplicate_job_id(
+    *,
+    user_id: str,
+    kind: str,
+    payload_json: str,
+) -> int | None:
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT id, payload_json
+        FROM job_queue
+        WHERE user_id = ?
+          AND kind = ?
+          AND status IN ('pending', 'running')
+        ORDER BY id ASC
+        """,
+        (user_id, kind),
+    ).fetchall()
+    for row in rows:
+        try:
+            existing_payload_json = _canonical_payload_json(json.loads(row["payload_json"] or "{}"))
+        except json.JSONDecodeError:
+            existing_payload_json = row["payload_json"] or "{}"
+        if existing_payload_json == payload_json:
+            return int(row["id"])
+    return None
+
+
 def enqueue_job(
     kind: str,
     *,
     user_id: str = DEFAULT_USER_ID,
     payload: dict[str, Any] | None = None,
     max_attempts: int = 3,
+    suppress_duplicate: bool = True,
 ) -> int:
     conn = get_connection()
+    uid = normalize_user_id(user_id)
+    payload_json = _canonical_payload_json(payload)
+    if suppress_duplicate:
+        existing_id = _find_open_duplicate_job_id(
+            user_id=uid,
+            kind=kind,
+            payload_json=payload_json,
+        )
+        if existing_id is not None:
+            return existing_id
     cur = conn.execute(
         """
         INSERT INTO job_queue (
@@ -43,14 +86,30 @@ def enqueue_job(
         ) VALUES (?, ?, ?, 'pending', ?, ?)
         """,
         (
-            normalize_user_id(user_id),
+            uid,
             kind,
-            json.dumps(payload or {}, ensure_ascii=False),
+            payload_json,
             max(1, int(max_attempts or 1)),
             _now(),
         ),
     )
     return int(cur.lastrowid)
+
+
+def enqueue_pending_search_reindexes() -> list[int]:
+    """Materialize durable schema-recovery markers as idempotent force-index jobs."""
+    from src import db
+
+    job_ids: list[int] = []
+    for item in db.list_pending_search_reindexes():
+        job_ids.append(
+            enqueue_job(
+                "index",
+                user_id=item["user_id"],
+                payload={"content_kind": item["content_kind"], "force": True},
+            )
+        )
+    return job_ids
 
 
 def claim_next_job() -> dict | None:
@@ -144,20 +203,30 @@ def fail_job(job_id: int, error_message: str) -> None:
     )
 
 
-def recover_stale_running_jobs(*, stale_after_seconds: int = DEFAULT_STALE_RUNNING_SECONDS) -> int:
+def recover_stale_running_jobs(
+    *,
+    stale_after_seconds: int = DEFAULT_STALE_RUNNING_SECONDS,
+    user_id: str | None = None,
+) -> int:
     """Put old running jobs back in the queue so a crashed worker does not stall them forever."""
     conn = get_connection()
     now = _now()
     threshold = datetime.fromtimestamp(now.timestamp() - max(0, int(stale_after_seconds)), timezone.utc)
+    params: list[Any] = [threshold]
+    user_clause = ""
+    if user_id is not None:
+        user_clause = "AND user_id = ?"
+        params.append(normalize_user_id(user_id))
     stale_rows = conn.execute(
-        """
+        f"""
         SELECT id, attempts, max_attempts
         FROM job_queue
         WHERE status = 'running'
           AND started_at IS NOT NULL
           AND started_at <= ?
+          {user_clause}
         """,
-        (threshold,),
+        tuple(params),
     ).fetchall()
     recovered = 0
     for row in stale_rows:
@@ -191,7 +260,15 @@ def recover_stale_running_jobs(*, stale_after_seconds: int = DEFAULT_STALE_RUNNI
     return recovered
 
 
-def list_jobs(user_id: str = DEFAULT_USER_ID, *, limit: int = 50) -> list[dict]:
+def list_jobs(
+    user_id: str = DEFAULT_USER_ID,
+    *,
+    limit: int = 50,
+    recover_stale: bool = True,
+) -> list[dict]:
+    uid = normalize_user_id(user_id)
+    if recover_stale:
+        recover_stale_running_jobs(user_id=uid)
     conn = get_connection()
     rows = conn.execute(
         """
@@ -202,7 +279,7 @@ def list_jobs(user_id: str = DEFAULT_USER_ID, *, limit: int = 50) -> list[dict]:
         ORDER BY created_at DESC, id DESC
         LIMIT ?
         """,
-        (normalize_user_id(user_id), max(1, int(limit or 50))),
+        (uid, max(1, int(limit or 50))),
     ).fetchall()
     out: list[dict] = []
     for row in rows:
@@ -286,20 +363,42 @@ class DefaultJobHandlers:
             raise
 
     def index(self, user_id: str, payload: dict) -> None:
+        from src import db
         from src.embedding.indexer import index_all
 
+        content_kind = payload.get("content_kind") or "favorites"
         index_all(
             batch_size=int(payload.get("batch_size") or 32),
             force=bool(payload.get("force") or False),
-            content_kind=payload.get("content_kind") or "favorites",
+            content_kind=content_kind,
             user_id=user_id,
+        )
+        if bool(payload.get("force") or False):
+            pending = any(
+                item["user_id"] == user_id and item["content_kind"] == content_kind
+                for item in db.list_pending_search_reindexes()
+            )
+            if pending and not db.complete_search_reindex(user_id, content_kind):
+                counts = db.search_index_counts(user_id, content_kind)
+                raise RuntimeError(
+                    "search reindex verification failed: "
+                    f"active={counts['active']} vector={counts['vector']} fts={counts['fts']}"
+                )
+
+    def categorize(self, user_id: str, payload: dict) -> None:
+        from src.categorize import cluster as cluster_mod
+
+        cluster_mod.categorize_all(
+            algo=payload.get("algo") or "kmeans",
+            account_id=user_id,
+            content_kind=payload.get("content_kind") or "favorites",
         )
 
     def backup_sqlite(self, user_id: str, payload: dict) -> None:
-        from src import exporter
+        from src import maintenance
 
         output_dir = Path(payload.get("output_dir") or (PROJECT_ROOT / "data" / "exports"))
-        result = exporter.backup_sqlite(output_dir)
+        result = maintenance.create_sqlite_backup(output_dir)
         logger.info("SQLite backup created for {}: {} ({} rows)", user_id, result.path, result.count)
 
     def uncollect(self, user_id: str, payload: dict) -> None:

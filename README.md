@@ -218,7 +218,7 @@ uv run recall digest --dry-run      # 预览 HTML
 - 不要提交 `.env`、`data/`、浏览器 profile、SQLite 数据库、日志、导出文件或模型缓存。
 - `data/playwright_profile` 和 `data/users/*/playwright_profile` 会保存浏览器登录态，等同于敏感本地数据。
 - 个人本地使用请保持 `WEB_HOST=127.0.0.1`，不要把 Web 服务暴露到公网。
-- 如果你自行对外开放 Web 服务，必须设置 `WEB_AUTH_REQUIRED=true`，并只发放可信邀请码；这不是当前推荐使用方式。
+- 如果你自行对外开放 Web 服务，必须启用 HTTPS，并设置 `WEB_AUTH_REQUIRED=true`、`SESSION_COOKIE_SECURE=true`，只发放可信邀请码；非回环地址在安全 Cookie 未开启时会拒绝启动。这不是当前推荐使用方式。
 - 抓取、取消收藏和取消喜欢依赖抖音 Web 接口和浏览器登录态；接口变化、风控或平台规则变化都可能导致功能失效。
 - 建议先在本机跑通 `uv run recall doctor`、`uv run recall init-db` 和一次小规模抓取，再配置自动任务。
 
@@ -226,10 +226,11 @@ uv run recall digest --dry-run      # 预览 HTML
 
 ## 测试
 
-如果本地已经安装 pytest：
+安装开发依赖组后直接运行：
 
 ```powershell
-python -m pytest tests -q
+uv sync --group dev
+uv run --group dev pytest -q
 ```
 
 解析器测试也可以不依赖 pytest 直接运行：

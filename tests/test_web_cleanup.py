@@ -17,6 +17,7 @@ from src import jobs
 from src.categorize import cluster
 from src.db import SCHEMA_SQL
 from src.web import app as web_app
+from src.web import helpers as web_helpers
 
 
 @contextmanager
@@ -31,19 +32,19 @@ def isolated_cleanup_db():
     conn.executescript(SCHEMA_SQL)
     conn.execute("ALTER TABLE favorites ADD COLUMN category_id INTEGER")
     conn.execute("ALTER TABLE likes ADD COLUMN category_id INTEGER")
-    conn.execute("CREATE TABLE favorites_vec (id TEXT PRIMARY KEY, embedding BLOB)")
-    conn.execute("CREATE TABLE likes_vec (id TEXT PRIMARY KEY, embedding BLOB)")
+    conn.execute("CREATE TABLE favorites_vec (id TEXT PRIMARY KEY, user_id TEXT, embedding BLOB)")
+    conn.execute("CREATE TABLE likes_vec (id TEXT PRIMARY KEY, user_id TEXT, embedding BLOB)")
 
-    original_web_get_connection = web_app.get_connection
+    original_web_get_connection = web_helpers._db_get_connection
     original_cluster_get_connection = cluster.get_connection
     original_jobs_get_connection = jobs.get_connection
-    web_app.get_connection = lambda: conn
+    web_helpers._db_get_connection = lambda: conn
     cluster.get_connection = lambda: conn
     jobs.get_connection = lambda: conn
     try:
         yield conn
     finally:
-        web_app.get_connection = original_web_get_connection
+        web_helpers._db_get_connection = original_web_get_connection
         cluster.get_connection = original_cluster_get_connection
         jobs.get_connection = original_jobs_get_connection
         conn.close()

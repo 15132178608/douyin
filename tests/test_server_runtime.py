@@ -6,6 +6,7 @@ Run:
 """
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -387,36 +388,20 @@ def test_windows_terminator_uses_force_and_raises_on_taskkill_failure() -> None:
     assert calls == [["taskkill", "/PID", "8888", "/T", "/F"]]
 
 
-def test_windows_process_checker_tolerates_non_utf8_tasklist_output() -> None:
-    calls: list[list[str]] = []
-
-    class Result:
-        returncode = 0
-        stdout = b'\xff\xfe"python.exe","1234","Console","1","10,000 K"\r\n'
-        stderr = b""
-
-    def fake_run(args, **kwargs):
-        calls.append(args)
-        assert kwargs["capture_output"] is True
-        assert kwargs["check"] is False
-        assert "text" not in kwargs or kwargs["text"] is False
-        return Result()
-
+def test_windows_process_checker_uses_win32_api_without_tasklist() -> None:
     with patch.object(server_runtime.sys, "platform", "win32"):
-        with patch.object(server_runtime.subprocess, "run", fake_run):
+        with patch.object(server_runtime, "_is_process_running_windows", return_value=True) as checker:
             assert server_runtime.is_process_running(1234) is True
 
-    assert calls == [["tasklist", "/FI", "PID eq 1234", "/FO", "CSV", "/NH"]]
+    checker.assert_called_once_with(1234)
+    source = inspect.getsource(server_runtime.is_process_running)
+    assert "tasklist" not in source
+    assert "_is_process_running_windows" in source
 
 
-def test_windows_process_checker_handles_missing_stdout_without_crashing() -> None:
-    class Result:
-        returncode = 1
-        stdout = None
-        stderr = b"\xff"
-
+def test_windows_process_checker_reports_false_when_win32_api_cannot_open_pid() -> None:
     with patch.object(server_runtime.sys, "platform", "win32"):
-        with patch.object(server_runtime.subprocess, "run", lambda *args, **kwargs: Result()):
+        with patch.object(server_runtime, "_is_process_running_windows", return_value=False):
             assert server_runtime.is_process_running(1234) is False
 
 

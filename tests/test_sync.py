@@ -20,6 +20,8 @@ def isolated_sync_db():
     conn = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA_SQL)
+    conn.execute("ALTER TABLE favorites ADD COLUMN category_id INTEGER")
+    conn.execute("ALTER TABLE likes ADD COLUMN category_id INTEGER")
 
     original_get_connection = sync.get_connection
     original_transaction = sync.transaction
@@ -47,15 +49,38 @@ def isolated_sync_db():
         conn.close()
 
 
-def insert_favorite(conn, favorite_id: str, *, is_removed: int = 0, title: str = "old") -> None:
+def insert_favorite(
+    conn,
+    favorite_id: str,
+    *,
+    is_removed: int = 0,
+    title: str = "old",
+    user_note: str | None = None,
+    category_id: int | None = None,
+    favorited_at: str | None = None,
+    video_created_at: str | None = None,
+) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """
         INSERT INTO favorites (
-            id, title, first_seen_at, last_seen_at, raw_json, is_removed, discovery_index
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            id, title, first_seen_at, last_seen_at, raw_json, is_removed,
+            discovery_index, user_note, category_id, favorited_at, video_created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (favorite_id, title, now, now, "{}", is_removed, 1),
+        (
+            favorite_id,
+            title,
+            now,
+            now,
+            "{}",
+            is_removed,
+            1,
+            user_note,
+            category_id,
+            favorited_at,
+            video_created_at,
+        ),
     )
 
 
@@ -173,6 +198,58 @@ def test_like_crawl_run_is_recorded_separately() -> None:
         assert favorite_run_count == 0
 
 
+def test_repeated_favorite_sync_is_idempotent_and_preserves_local_fields() -> None:
+    with isolated_sync_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO categories (
+                account_id, name, auto_name, item_count, created_at, updated_at
+            ) VALUES ('default', '本地分类', '本地分类', 1, '2026-01-01', '2026-01-01')
+            """
+        )
+        category_id = conn.execute("SELECT id FROM categories").fetchone()["id"]
+        insert_favorite(
+            conn,
+            "stable-1",
+            title="old title",
+            user_note="keep my note",
+            category_id=category_id,
+            favorited_at="2026-01-02 03:04:05",
+            video_created_at="2025-12-01 00:00:00",
+        )
+        batch = [
+            Favorite(
+                id="stable-1",
+                title="new title",
+                author="new author",
+                raw_json='{"fresh": true}',
+                video_created_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            )
+        ]
+
+        first = sync.apply_crawl(batch, is_first_crawl=False)
+        second = sync.apply_crawl(batch, is_first_crawl=False)
+
+        row = conn.execute(
+            """
+            SELECT title, author, user_note, category_id, favorited_at,
+                   video_created_at, is_removed
+            FROM favorites
+            WHERE id = 'stable-1'
+            """
+        ).fetchone()
+        assert first.new_count == 0
+        assert second.new_count == 0
+        assert conn.execute("SELECT COUNT(*) FROM favorites WHERE id = 'stable-1'").fetchone()[0] == 1
+        assert row["title"] == "new title"
+        assert row["author"] == "new author"
+        assert row["user_note"] == "keep my note"
+        assert row["category_id"] == category_id
+        assert str(row["favorited_at"]) == "2026-01-02 03:04:05"
+        assert str(row["video_created_at"]) == "2025-12-01 00:00:00"
+        assert row["is_removed"] == 0
+
+
 if __name__ == "__main__":
     tests = [
         test_removed_favorite_reappearing_is_reactivated_not_inserted,
@@ -180,6 +257,7 @@ if __name__ == "__main__":
         test_large_removed_set_can_be_confirmed_explicitly,
         test_apply_like_crawl_writes_likes_without_touching_favorites,
         test_like_crawl_run_is_recorded_separately,
+        test_repeated_favorite_sync_is_idempotent_and_preserves_local_fields,
     ]
     failed = 0
     for t in tests:

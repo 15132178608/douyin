@@ -7,6 +7,7 @@ Run:
 from __future__ import annotations
 
 from pathlib import Path
+import ast
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -14,6 +15,43 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def read_template(name: str) -> str:
     return (ROOT / "src" / "web" / "templates" / name).read_text(encoding="utf-8")
+
+
+def read_web_source() -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((ROOT / "src" / "web").glob("**/*.py"))
+    )
+
+
+def test_web_app_is_application_assembly_only() -> None:
+    app_path = ROOT / "src" / "web" / "app.py"
+    app_source = app_path.read_text(encoding="utf-8")
+
+    assert len(app_source.splitlines()) <= 300
+    assert "@app.on_event" not in app_source
+    assert "lifespan=" in app_source
+    for module in ("auth", "setup", "content", "jobs", "maintenance", "media"):
+        assert f"src.web.routes.{module}" in app_source
+        assert "app.include_router" in app_source
+    assert "import *" not in app_source
+    assert "def __getattr__" not in app_source
+
+    routes_dir = ROOT / "src" / "web" / "routes"
+    for module in ("auth", "setup", "jobs", "maintenance", "media"):
+        source = (routes_dir / f"{module}.py").read_text(encoding="utf-8")
+        assert "router.get(" in source or "router.post(" in source
+        assert ")(content." not in source
+
+
+def test_remaining_async_functions_in_app_have_real_awaits() -> None:
+    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    tree = ast.parse(app_source)
+    async_defs = [node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)]
+
+    assert len(async_defs) <= 5
+    for node in async_defs:
+        assert any(isinstance(child, ast.Await) for child in ast.walk(node)), node.name
 
 
 def test_uncollect_button_has_busy_state_and_duplicate_submit_guard() -> None:
@@ -66,7 +104,7 @@ def test_empty_content_states_are_user_facing_not_cli_instructions() -> None:
         ]
     )
     base = read_template("base.html")
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    app_source = read_web_source()
 
     assert "recall crawl" not in combined
     assert "recall crawl-likes" not in combined
@@ -75,7 +113,7 @@ def test_empty_content_states_are_user_facing_not_cli_instructions() -> None:
     assert "同步{{ content_label }}" in combined
     assert 'hx-get="{{ empty_state.sync_url }}"' in combined
     assert 'hx-post="/jobs/sync"' in combined
-    assert "去维护中心" in combined
+    assert "去维护中心" not in combined
     assert "empty-panel" in base
     assert "emptySpin" in base
     assert "def _empty_state_context" in app_source
@@ -87,33 +125,50 @@ def test_card_layout_keeps_note_below_and_removes_inline_category_picker() -> No
     base = read_template("base.html")
 
     assert "card-note-section" in card
-    assert "为啥要存它" in read_template("_note_view.html")
+    note_view = read_template("_note_view.html")
+    assert "添加备注" in note_view
+    assert "为啥要存它" not in note_view
+    assert "card-note" in note_view
+    assert "note-edit-btn" in note_view
     assert "card-category-form" not in card
     assert 'name="category_id"' not in card
     assert "right: 8px;" in base.split(".card-select", 1)[1].split("}", 1)[0]
     assert "left: 8px;" not in base.split(".card-select", 1)[1].split("}", 1)[0]
     note_add_rule = base.split(".note-add-btn", 1)[1].split("}", 1)[0]
+    note_section_rule = base.split(".card-note-section", 1)[1].split("}", 1)[0]
+    card_body_rule = base.split(".card-body", 1)[1].split("}", 1)[0]
+    card_link_rule = base.split(".card > a", 1)[1].split("}", 1)[0]
+    card_title_rule = base.split(".card-title", 1)[1].split("}", 1)[0]
+    card_meta_rule = base.split(".card-meta", 1)[1].split("}", 1)[0]
     assert "position: absolute" not in note_add_rule
     assert "top:" not in note_add_rule
     assert "opacity: 0" not in note_add_rule
+    assert "min-height:" in note_section_rule
+    assert "margin-top: auto" in note_section_rule
+    assert "display: flex" in card_body_rule
+    assert "flex: 0 0 auto" in card_link_rule
+    assert "flex: 0 0 104px" in card_body_rule
+    assert "height: 104px" in card_body_rule
+    assert "min-height: 2.8em" in card_title_rule
+    assert "white-space: nowrap" in card_meta_rule
 
 
 def test_uncollect_route_serializes_profile_access_and_skips_removed_items() -> None:
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    app_source = read_web_source()
 
     assert "_uncollect_lock" in app_source
     assert "_uncollect_worker" in app_source
-    assert "_start_background_workers" in app_source
-    assert "async with _uncollect_lock" in app_source
+    assert "start_background_workers" in app_source
+    assert "with _uncollect_lock" in app_source
     assert "row[\"is_removed\"]" in app_source
     assert "jobs.enqueue_job(" in app_source
     assert '"content_kind": "favorites"' in app_source
-    assert "_shutdown_uncollect_worker" in app_source
+    assert "shutdown_uncollect_workers" in app_source
 
 
 def test_web_startup_does_not_warm_uncollect_bridge_or_lock_profile() -> None:
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
-    startup_block = app_source.split("def _start_background_workers", 1)[1].split("@app.on_event(\"shutdown\")", 1)[0]
+    app_source = read_web_source()
+    startup_block = app_source.split("def start_background_workers", 1)[1].split("def stop_background_workers", 1)[0]
 
     assert "_uncollect_worker.warmup" not in startup_block
     assert "uncollect-bridge-warmup" not in startup_block
@@ -121,15 +176,15 @@ def test_web_startup_does_not_warm_uncollect_bridge_or_lock_profile() -> None:
 
 
 def test_web_startup_recovers_interrupted_jobs_before_worker_loop() -> None:
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
-    startup_block = app_source.split("def _start_background_workers", 1)[1].split("def _maybe_prewarm_first_run_auth", 1)[0]
+    app_source = read_web_source()
+    startup_block = app_source.split("def start_background_workers", 1)[1].split("def stop_background_workers", 1)[0]
 
     assert "jobs.recover_stale_running_jobs(stale_after_seconds=0)" in startup_block
     assert startup_block.index("jobs.recover_stale_running_jobs(stale_after_seconds=0)") < startup_block.index("jobs.run_forever")
 
 
 def test_topbar_does_not_show_or_poll_uncollect_bridge_status() -> None:
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    app_source = read_web_source()
     base = read_template("base.html")
 
     assert "/status/uncollect-bridge" not in app_source
@@ -151,26 +206,58 @@ def test_navigation_separates_modules_from_views() -> None:
     view_nav = base.split('class="view-nav"', 1)[1].split("</div>", 1)[0]
     assert "{{ jobs_url }}" not in view_nav
     assert ">任务</a>" not in view_nav
+    assert 'href="/maintenance"' not in view_nav
+    assert ">维护</a>" not in view_nav
 
 
-def test_auth_page_links_to_background_queue_with_conditional_status() -> None:
-    auth = read_template("auth.html")
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+def test_auth_page_is_focused_account_management_without_job_controls() -> None:
+    auth = read_template("auth.html") + read_template("_profile_summary.html") + read_template("_auth_status.html")
+    app_source = read_web_source()
+    auth_page_block = app_source.split('def auth_page', 1)[1].split('@router.post("/auth/start"', 1)[0]
 
-    assert "后台队列" in auth
-    assert 'href="/jobs"' in auth
-    assert "job_summary.failed" in auth
-    assert "job_summary.running" in auth
-    assert "queue-alert" in auth
-    assert "_job_queue_summary" in app_source
-    assert '"job_summary": _job_queue_summary(user_id)' in app_source
+    assert "账号管理" in auth
+    assert "account-actions-shell" in auth
+    assert "account-action-card" in auth
+    assert "添加账号" in auth
+    assert "切换账号" in auth
+    assert "退出登录" in auth
+    assert 'action="/auth/add"' in auth
+    assert 'action="/auth/switch"' in auth
+    assert "authPollTimer" in auth
+    assert "AUTH_STATUS_POLL_MS = 350" in auth
+    assert "setInterval(refreshAuthStatus, AUTH_STATUS_POLL_MS)" in auth
+    assert "setInterval(refreshAuthStatus, 1000)" not in auth
+    assert "https://unpkg.com/htmx.org" not in read_template("auth.html")
+    assert "settings-shell" not in auth
+    assert "settings-sidebar" not in auth
+    assert "settings-nav-link" not in auth
+    assert "本机数据" not in auth
+    assert "同步内容" not in auth
+    assert "登录资料" not in auth
+    assert "刷新账号资料" not in auth
+    assert 'hx-post="/auth/profile/refresh"' not in auth
+    assert "account-panel" not in auth
+    assert "同步操作" not in auth
+    assert "同步收藏" not in auth
+    assert "同步喜欢" not in auth
+    assert "索引收藏" not in auth
+    assert "索引喜欢" not in auth
+    assert "后台队列" not in auth
+    assert 'href="/jobs"' not in auth
+    assert "job_summary" not in auth
+    assert 'action="/auth/logout"' in auth
+    assert "data-auth-start" in auth
+    assert '"/auth/add"' in app_source
+    assert '"/auth/switch"' in app_source
+    assert '"/auth/logout"' in app_source
+    assert "job_summary" not in auth_page_block
 
 
 def test_maintenance_center_exposes_backup_and_full_maintenance_actions() -> None:
     jobs_template = read_template("jobs.html")
     maintenance_status = read_template("_maintenance_status.html")
     restore_preview = read_template("_restore_preview.html")
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    app_source = read_web_source()
     base = read_template("base.html")
 
     assert "维护中心" in jobs_template
@@ -184,7 +271,8 @@ def test_maintenance_center_exposes_backup_and_full_maintenance_actions() -> Non
     assert "maintenance_status.server" in maintenance_status
     assert "maintenance_status.update" in maintenance_status
     assert "DouyinRecallSetup.exe" in maintenance_status
-    assert "uv run python -m src.cli update" in maintenance_status
+    assert "uv run python -m src.cli update" not in maintenance_status
+    assert "控制入口" in maintenance_status
     assert "最近备份" in maintenance_status
     assert "抖音登录" in maintenance_status
     assert "登录态可能过期" in maintenance_status
@@ -202,7 +290,21 @@ def test_maintenance_center_exposes_backup_and_full_maintenance_actions() -> Non
     assert "restore_sqlite_backup" in app_source
     assert "create_diagnostic_bundle" in app_source
     assert "backup_sqlite" in app_source
-    assert 'href="/maintenance"' in base
+    assert 'href="/maintenance"' not in base
+
+
+def test_category_page_starts_background_organize_without_cli_instructions() -> None:
+    categories = read_template("categories.html")
+    app_source = read_web_source()
+
+    assert "recall index" not in categories
+    assert "recall categorize" not in categories
+    assert "开始整理分类" in categories
+    assert 'hx-post="{{ kind_prefix }}/categories/organize"' in categories
+    assert '"/categories/organize"' in app_source
+    assert '"/likes/categories/organize"' in app_source
+    assert '_enqueue_category_organize_jobs' in app_source
+    assert '"categorize"' in app_source
 
 
 def test_cli_exposes_server_lifecycle_commands_and_serve_guard() -> None:
@@ -241,27 +343,35 @@ def test_setup_page_contains_first_run_sections_and_reuses_existing_endpoints() 
         + read_template("_setup_scan_state.html")
         + read_template("_setup_success_motion.html")
     )
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    app_source = read_web_source()
 
     assert "扫码登录抖音" in setup
     assert "打开抖音 App 扫一扫" in setup
     assert "正在生成二维码" in setup
-    assert 'hx-trigger="every 1s"' in setup
+    assert "手机已扫码，等待你在抖音 App 确认登录" in setup
+    assert "手机取消了登录" in setup
+    assert "setupAuthPollTimer" in setup
+    assert "SETUP_AUTH_POLL_MS = 350" in setup
+    assert "setupAuthStatusKey" in setup
+    assert "if (!force && nextKey === currentKey) { return; }" in setup
+    assert 'hx-trigger="every 250ms"' not in setup
+    assert 'hx-trigger="every 500ms"' not in setup
+    assert 'hx-trigger="every 1s"' not in setup
     assert "auth_status in ('starting', 'qr_ready')" not in setup
-    assert "auth_status == 'starting'" in setup
-    assert 'hx-target="#setup-auth-status-area"' in setup
+    assert "auth_status in ('starting', 'qr_ready', 'scan_pending', 'confirmed')" in setup
+    assert 'hx-target="#setup-auth-status-area"' not in setup
     assert "启动浏览器" not in setup
     assert "后台队列" not in setup
     assert "返回首页" not in setup
     assert "自动整理进度" not in setup
-    assert 'hx-post="/setup/auth-start"' in setup
-    assert 'hx-get="/setup/auth-status"' in setup
-    assert 'hx-get="/setup/scan-state?qr={{ qr_version }}"' in setup
+    assert 'action="/setup/auth-start"' in setup
+    assert '"/setup/auth-status"' in setup
+    assert 'hx-get="/setup/scan-state?qr={{ qr_version }}"' not in setup
     assert 'hx-post="/jobs/sync"' not in setup
     assert 'hx-post="/jobs/index"' not in setup
     assert 'hx-get="/setup/status"' not in setup
-    assert "_ensure_douyin_auth_started(user_id)" in app_source
-    assert "_enqueue_first_run_jobs(user_id)" in app_source
+    assert "ensure_douyin_auth_started(user_id)" in app_source
+    assert "job_service.enqueue_first_run_jobs(user_id)" in app_source
     assert '"/setup/auth-start"' in app_source
     assert '"/setup/auth-status"' in app_source
     assert '"/setup/scan-state"' in app_source
@@ -276,17 +386,20 @@ def test_setup_scan_waiting_status_does_not_repaint_while_polling() -> None:
         + read_template("_setup_scan_state.html")
         + read_template("_setup_success_motion.html")
     )
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
-    scan_endpoint = app_source.split("async def setup_scan_state_fragment", 1)[1].split(
+    app_source = read_web_source()
+    scan_endpoint = app_source.split("def setup_scan_state_fragment", 1)[1].split(
         "\n\n@app.", 1
     )[0]
 
     assert 'id="setup-scan-state"' in setup
-    assert 'id="setup-scan-poller"' in setup
+    assert 'id="setup-scan-poller"' not in setup
+    assert "data-setup-auth-state" in setup
+    assert "data-setup-qr-version" in setup
     assert 'hx-target="#setup-scan-state"' not in setup
-    assert 'hx-target="#setup-auth-status-area"' in setup
+    assert 'hx-target="#setup-auth-status-area"' not in setup
     assert "Response(status_code=204)" in scan_endpoint
     assert 'context["auth_status"] == "qr_ready"' in scan_endpoint
+    assert 'context["auth_status"] == "scan_pending"' in scan_endpoint
     assert 'context["auth_status"] == "confirmed"' in scan_endpoint
     assert 'state == "confirmed"' in scan_endpoint
     assert '"_setup_auth_status.html"' in scan_endpoint
@@ -299,11 +412,12 @@ def test_setup_auth_shows_confirmed_state_before_background_sync_finishes() -> N
         + read_template("_setup_success_motion.html")
     )
     base = read_template("base.html")
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    app_source = read_web_source()
     auth_worker = app_source.split("def _run_douyin_auth", 1)[1].split(
-        "def _ensure_douyin_auth_started", 1
+        "def ensure_douyin_auth_started", 1
     )[0]
 
+    assert "auth_status == 'scan_pending'" in setup
     assert "auth_status in ('confirmed', 'success')" in setup
     assert "setup-success-motion" in setup
     assert "setup-success-ring" in setup
@@ -313,12 +427,27 @@ def test_setup_auth_shows_confirmed_state_before_background_sync_finishes() -> N
     assert "@keyframes setupSuccessRipple" in base
     assert "@keyframes setupSyncDot" in base
     assert "prefers-reduced-motion: reduce" in base
-    assert 'hx-get="/setup/scan-state?state=confirmed"' in setup
+    assert 'hx-get="/setup/scan-state?state=confirmed"' not in setup
     assert 'status": "confirmed"' in auth_worker
+    assert 'status": "scan_pending"' in auth_worker
+    assert "def on_scan_pending" in auth_worker
     assert "def on_login_confirmed" in auth_worker
+    assert "on_scan_pending=on_scan_pending" in auth_worker
     assert "on_login_confirmed=on_login_confirmed" in auth_worker
-    assert '"confirmed", "success", "failed"' in app_source
-    assert auth_worker.index("on_login_confirmed=on_login_confirmed") < auth_worker.index("profile = {}")
+    assert '"scan_pending", "confirmed", "success", "failed"' in app_source
+    assert auth_worker.index("on_scan_pending=on_scan_pending") < auth_worker.index("on_login_confirmed=on_login_confirmed")
+    assert auth_worker.index("on_login_confirmed=on_login_confirmed") < auth_worker.index("crawler.get_self_profile()")
+
+
+def test_setup_auth_enqueues_sync_before_profile_refresh() -> None:
+    app_source = read_web_source()
+    auth_worker = app_source.split("def _run_douyin_auth", 1)[1].split(
+        "def ensure_douyin_auth_started", 1
+    )[0]
+
+    assert "job_service.enqueue_first_run_jobs(user_id)" in auth_worker
+    assert "crawler.get_self_profile()" in auth_worker
+    assert auth_worker.index("job_service.enqueue_first_run_jobs(user_id)") < auth_worker.index("crawler.get_self_profile()")
 
 
 def test_setup_page_is_scan_first_not_a_step_by_step_wizard() -> None:
@@ -379,13 +508,13 @@ def test_mobile_setup_layout_prevents_horizontal_overflow() -> None:
 
 def test_home_redirects_first_run_to_scan_setup_instead_of_showing_empty_shell() -> None:
     index = read_template("index.html")
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    app_source = read_web_source()
 
     assert 'href="/setup"' not in index
     assert "开始设置" not in index
     assert "_should_show_setup_before_home" in app_source
     assert 'RedirectResponse("/setup", status_code=303)' in app_source
-    assert "_should_auto_start_setup_auth(status)" in app_source
+    assert "should_auto_start_setup_auth(status)" in app_source
 
 
 def test_local_browser_runtime_does_not_require_user_installed_chrome() -> None:
@@ -402,9 +531,9 @@ def test_local_browser_runtime_does_not_require_user_installed_chrome() -> None:
 
 
 def test_setup_qr_auth_does_not_show_internal_browser_window() -> None:
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    app_source = read_web_source()
     auth_block = app_source.split("def _run_douyin_auth", 1)[1].split(
-        "def _ensure_douyin_auth_started", 1
+        "def ensure_douyin_auth_started", 1
     )[0]
 
     assert "headless=False" not in auth_block
@@ -413,16 +542,16 @@ def test_setup_qr_auth_does_not_show_internal_browser_window() -> None:
 
 
 def test_local_first_run_prewarms_qr_auth_on_web_startup() -> None:
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
-    startup_block = app_source.split("def _start_background_workers", 1)[1].split(
-        "def _stop_background_workers", 1
+    app_source = read_web_source()
+    startup_block = app_source.split("def start_background_workers", 1)[1].split(
+        "def stop_background_workers", 1
     )[0]
 
     assert "_maybe_prewarm_first_run_auth()" in startup_block
     assert "def _maybe_prewarm_first_run_auth" in app_source
     assert "settings.web_auth_required" in app_source
-    assert "_should_auto_start_setup_auth(status)" in app_source
-    assert "_ensure_douyin_auth_started(user_id)" in app_source
+    assert "auth.should_auto_start_setup_auth(status)" in app_source
+    assert "auth.ensure_douyin_auth_started(user_id)" in app_source
 
 
 def test_desktop_pagination_blocks_mobile_load_more_trigger() -> None:
@@ -467,7 +596,7 @@ def test_desktop_pagination_page_size_follows_grid_columns() -> None:
 
 
 def test_card_meta_does_not_claim_platform_recall_history() -> None:
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    app_source = read_web_source()
     card = read_template("_card.html")
 
     assert "从未想起" not in card
@@ -494,7 +623,7 @@ def test_category_page_refreshes_after_back_forward_cache_uncollect() -> None:
 
 
 def test_author_page_renders_avatar_through_cache_proxy() -> None:
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    app_source = read_web_source()
     authors = read_template("authors.html")
     base = read_template("base.html")
 
@@ -507,7 +636,7 @@ def test_author_page_renders_avatar_through_cache_proxy() -> None:
 
 
 def test_favorite_cards_render_author_avatar() -> None:
-    app_source = (ROOT / "src" / "web" / "app.py").read_text(encoding="utf-8")
+    app_source = read_web_source()
     hybrid_source = (ROOT / "src" / "search" / "hybrid.py").read_text(encoding="utf-8")
     card = read_template("_card.html")
     base = read_template("base.html")
@@ -544,17 +673,22 @@ def test_video_modal_is_single_player_without_playlist_panel() -> None:
     assert "播放列表" not in base
 
 
-def test_auth_page_has_clear_profile_refresh_and_bound_fallback_state() -> None:
+def test_auth_page_has_switch_account_logout_and_bound_fallback_state() -> None:
     auth = read_template("auth.html") + read_template("_profile_summary.html") + read_template("_auth_status.html")
 
-    assert 'hx-post="/auth/profile/refresh"' in auth
-    assert 'hx-target="#profile-summary"' in auth
-    assert "刷新账号资料" in auth
+    assert 'hx-post="/auth/start"' not in auth
+    assert 'action="/auth/add"' in auth
+    assert 'action="/auth/switch"' in auth
+    assert 'action="/auth/logout"' in auth
+    assert "添加账号" in auth
+    assert "切换账号" in auth
+    assert "退出登录" in auth
+    assert "刷新账号资料" not in auth
     assert ".profile-avatar[hidden] { display: none; }" in auth
     assert "已绑定抖音账号" in auth
     assert "昵称和头像还没读取到" in auth
     assert "登录态已过期" in auth
-    assert "本地登录资料" in auth
+    assert "已有登录态" in auth
     assert "可直接同步" not in auth
     assert "back-home" in auth
     assert "本地默认用户" not in auth
@@ -570,7 +704,7 @@ if __name__ == "__main__":
         test_web_startup_does_not_warm_uncollect_bridge_or_lock_profile,
         test_topbar_does_not_show_or_poll_uncollect_bridge_status,
         test_navigation_separates_modules_from_views,
-        test_auth_page_links_to_background_queue_with_conditional_status,
+        test_auth_page_is_focused_account_management_without_job_controls,
         test_maintenance_center_exposes_backup_and_full_maintenance_actions,
         test_cli_exposes_server_lifecycle_commands_and_serve_guard,
         test_cli_exposes_diagnostic_bundle_command,
@@ -590,7 +724,7 @@ if __name__ == "__main__":
         test_favorite_cards_render_author_avatar,
         test_topbar_renders_account_chip_with_douyin_profile_fallback,
         test_video_modal_is_single_player_without_playlist_panel,
-        test_auth_page_has_clear_profile_refresh_and_bound_fallback_state,
+        test_auth_page_has_switch_account_logout_and_bound_fallback_state,
     ]
     failed = 0
     for t in tests:
