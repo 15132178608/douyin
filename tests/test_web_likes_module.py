@@ -15,7 +15,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from src import category_import
+from src import accounts, category_import
 from src.categorize import cluster
 from src import jobs
 from src import onboarding
@@ -36,12 +36,20 @@ def isolated_web_db():
     )
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA_SQL)
+    conn.execute(
+        """
+        INSERT INTO users (id, display_name, douyin_nickname, created_at)
+        VALUES ('default', '本地默认用户', '测试抖音账号', ?)
+        """,
+        (datetime.now(timezone.utc),),
+    )
     conn.execute("ALTER TABLE favorites ADD COLUMN category_id INTEGER")
     conn.execute("ALTER TABLE likes ADD COLUMN category_id INTEGER")
     conn.execute("CREATE TABLE favorites_vec (id TEXT PRIMARY KEY, user_id TEXT, embedding BLOB)")
     conn.execute("CREATE TABLE likes_vec (id TEXT PRIMARY KEY, user_id TEXT, embedding BLOB)")
 
     original_web_get_connection = web_helpers._db_get_connection
+    original_accounts_get_connection = accounts.get_connection
     original_cluster_get_connection = cluster.get_connection
     original_jobs_get_connection = jobs.get_connection
     original_onboarding_get_connection = onboarding.get_connection
@@ -52,6 +60,7 @@ def isolated_web_db():
         return conn
 
     web_helpers._db_get_connection = get_connection
+    accounts.get_connection = get_connection
     cluster.get_connection = get_connection
     jobs.get_connection = get_connection
     onboarding.get_connection = get_connection
@@ -61,6 +70,7 @@ def isolated_web_db():
         yield conn
     finally:
         web_helpers._db_get_connection = original_web_get_connection
+        accounts.get_connection = original_accounts_get_connection
         cluster.get_connection = original_cluster_get_connection
         jobs.get_connection = original_jobs_get_connection
         onboarding.get_connection = original_onboarding_get_connection

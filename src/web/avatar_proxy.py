@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import hashlib
 import ipaddress
 import os
@@ -21,37 +22,73 @@ _ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 
+@dataclass(frozen=True)
+class _AvatarTarget:
+    url: httpx.URL
+    hostname: str
+    addresses: tuple[str, ...]
+
+
+def _normalized_hostname(value: str) -> str:
+    host = value.rstrip(".").lower()
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return ""
+
+
 def _allowed_avatar_hosts() -> tuple[str, ...]:
-    return tuple(
-        item.strip().lower().lstrip(".")
-        for item in str(settings.avatar_allowed_host_suffixes or "").split(",")
-        if item.strip()
-    )
+    hosts: list[str] = []
+    for item in str(settings.avatar_allowed_host_suffixes or "").split(","):
+        hostname = _normalized_hostname(item.strip().lstrip("."))
+        if hostname:
+            hosts.append(hostname)
+    return tuple(hosts)
 
 
 def _host_is_allowed(hostname: str) -> bool:
-    host = hostname.rstrip(".").lower()
+    host = _normalized_hostname(hostname)
     return any(host == suffix or host.endswith(f".{suffix}") for suffix in _allowed_avatar_hosts())
 
 
-async def _resolve_host_addresses(hostname: str, port: int) -> set[str]:
+async def _resolve_host_addresses(hostname: str, port: int) -> tuple[str, ...]:
     rows = await asyncio.to_thread(
         socket.getaddrinfo,
         hostname,
         port,
         type=socket.SOCK_STREAM,
     )
-    return {str(row[4][0]) for row in rows}
+    return tuple(dict.fromkeys(str(row[4][0]) for row in rows))
 
 
-async def _validate_avatar_url(value: str) -> str:
+def _validated_public_address(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid avatar host") from exc
+    mapped_address = getattr(address, "ipv4_mapped", None)
+    if (
+        not address.is_global
+        or address.is_multicast
+        or address.is_reserved
+        or mapped_address is not None
+    ):
+        raise HTTPException(status_code=400, detail="invalid avatar host")
+    return str(address)
+
+
+async def _validate_avatar_url(value: str) -> _AvatarTarget:
     if len(value) > 4096:
         raise HTTPException(status_code=400, detail="invalid avatar url")
-    parsed = urlparse(value)
-    hostname = (parsed.hostname or "").rstrip(".").lower()
     try:
+        parsed = urlparse(value)
+        hostname = _normalized_hostname(parsed.hostname or "")
         port = parsed.port
     except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid avatar url") from exc
+    try:
+        request_url = httpx.URL(value)
+    except httpx.InvalidURL as exc:
         raise HTTPException(status_code=400, detail="invalid avatar url") from exc
     if (
         parsed.scheme != "https"
@@ -60,6 +97,8 @@ async def _validate_avatar_url(value: str) -> str:
         or parsed.password is not None
         or port not in {None, 443}
         or not _host_is_allowed(hostname)
+        or request_url.scheme != "https"
+        or _normalized_hostname(request_url.host) != hostname
     ):
         raise HTTPException(status_code=400, detail="invalid avatar url")
     try:
@@ -68,62 +107,79 @@ async def _validate_avatar_url(value: str) -> str:
         raise HTTPException(status_code=502, detail="avatar host unavailable") from exc
     if not addresses:
         raise HTTPException(status_code=502, detail="avatar host unavailable")
-    for address in addresses:
-        try:
-            if not ipaddress.ip_address(address).is_global:
-                raise HTTPException(status_code=400, detail="invalid avatar host")
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="invalid avatar host") from exc
-    return value
+    validated_addresses = tuple(_validated_public_address(address) for address in addresses)
+    return _AvatarTarget(
+        url=request_url,
+        hostname=hostname,
+        addresses=tuple(dict.fromkeys(validated_addresses)),
+    )
 
 
 def _new_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(timeout=15.0, follow_redirects=False)
+    return httpx.AsyncClient(
+        timeout=15.0,
+        follow_redirects=False,
+        trust_env=False,
+        limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+    )
 
 
 async def _download_avatar(remote_url: str) -> bytes:
     max_bytes = max(1, int(settings.avatar_max_bytes))
     max_redirects = max(0, int(settings.avatar_max_redirects))
     current_url = remote_url
-    async with _new_client() as client:
-        for redirect_count in range(max_redirects + 1):
-            current_url = await _validate_avatar_url(current_url)
+    for redirect_count in range(max_redirects + 1):
+        target = await _validate_avatar_url(current_url)
+        redirect_url: str | None = None
+        last_request_error: httpx.RequestError | None = None
+        for address in target.addresses:
             try:
-                async with client.stream(
-                    "GET",
-                    current_url,
-                    headers={"Accept": "image/*", "User-Agent": "DouyinRecall/1"},
-                ) as response:
-                    if response.status_code in _REDIRECT_STATUSES:
-                        location = response.headers.get("location")
-                        if not location or redirect_count >= max_redirects:
-                            raise HTTPException(status_code=502, detail="avatar redirect rejected")
-                        current_url = urljoin(current_url, location)
-                        continue
-                    try:
-                        response.raise_for_status()
-                    except httpx.HTTPStatusError as exc:
-                        raise HTTPException(status_code=502, detail="avatar fetch failed") from exc
-                    content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-                    if not content_type.startswith("image/"):
-                        raise HTTPException(status_code=415, detail="avatar response is not an image")
-                    content_length = response.headers.get("content-length")
-                    if content_length:
+                async with _new_client() as client:
+                    async with client.stream(
+                        "GET",
+                        target.url.copy_with(host=address),
+                        headers={
+                            "Accept": "image/*",
+                            "User-Agent": "DouyinRecall/1",
+                            "Host": target.hostname,
+                        },
+                        extensions={"sni_hostname": target.hostname},
+                    ) as response:
+                        if response.status_code in _REDIRECT_STATUSES:
+                            location = response.headers.get("location")
+                            if not location or redirect_count >= max_redirects:
+                                raise HTTPException(status_code=502, detail="avatar redirect rejected")
+                            redirect_url = urljoin(str(target.url), location)
+                            break
                         try:
-                            if int(content_length) > max_bytes:
+                            response.raise_for_status()
+                        except httpx.HTTPStatusError as exc:
+                            raise HTTPException(status_code=502, detail="avatar fetch failed") from exc
+                        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                        if not content_type.startswith("image/"):
+                            raise HTTPException(status_code=415, detail="avatar response is not an image")
+                        content_length = response.headers.get("content-length")
+                        if content_length:
+                            try:
+                                if int(content_length) > max_bytes:
+                                    raise HTTPException(status_code=413, detail="avatar is too large")
+                            except ValueError:
+                                pass
+                        payload = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            payload.extend(chunk)
+                            if len(payload) > max_bytes:
                                 raise HTTPException(status_code=413, detail="avatar is too large")
-                        except ValueError:
-                            pass
-                    payload = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        payload.extend(chunk)
-                        if len(payload) > max_bytes:
-                            raise HTTPException(status_code=413, detail="avatar is too large")
-                    return bytes(payload)
+                        return bytes(payload)
             except HTTPException:
                 raise
             except httpx.RequestError as exc:
-                raise HTTPException(status_code=502, detail="avatar fetch failed") from exc
+                last_request_error = exc
+        if redirect_url is not None:
+            current_url = redirect_url
+            continue
+        if last_request_error is not None:
+            raise HTTPException(status_code=502, detail="avatar fetch failed") from last_request_error
     raise HTTPException(status_code=502, detail="avatar redirect rejected")
 
 
@@ -149,9 +205,8 @@ def _write_cache_atomically(cache_path: Path, payload: bytes) -> None:
 
 async def cached_avatar_response(encoded_url: str) -> FileResponse:
     remote_url = unquote(encoded_url or "")
-    await _validate_avatar_url(remote_url)
-    parsed = urlparse(remote_url)
-    suffix = Path(parsed.path).suffix.lower()
+    target = await _validate_avatar_url(remote_url)
+    suffix = Path(target.url.path).suffix.lower()
     if suffix not in _ALLOWED_SUFFIXES:
         suffix = ".img"
     cache_dir = settings.avatar_cache_dir

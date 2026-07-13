@@ -22,6 +22,7 @@ from src import accounts
 from src import db
 from src import jobs
 from src import onboarding
+from src.categorize import cluster
 from src.config import settings
 from src.web import app as web_app
 from src.web import security as web_security
@@ -50,6 +51,7 @@ def isolated_web_accounts_db():
 
     original_web_get_connection = web_helpers._db_get_connection
     original_accounts_get_connection = accounts.get_connection
+    original_cluster_get_connection = cluster.get_connection
     original_jobs_get_connection = jobs.get_connection
     original_onboarding_get_connection = onboarding.get_connection
     original_maintenance_get_connection = maintenance_routes.maintenance.get_connection
@@ -58,6 +60,7 @@ def isolated_web_accounts_db():
 
     web_helpers._db_get_connection = lambda: conn
     accounts.get_connection = lambda: conn
+    cluster.get_connection = lambda: conn
     jobs.get_connection = lambda: conn
     onboarding.get_connection = lambda: conn
     maintenance_routes.maintenance.get_connection = lambda: conn
@@ -68,6 +71,7 @@ def isolated_web_accounts_db():
     finally:
         web_helpers._db_get_connection = original_web_get_connection
         accounts.get_connection = original_accounts_get_connection
+        cluster.get_connection = original_cluster_get_connection
         jobs.get_connection = original_jobs_get_connection
         onboarding.get_connection = original_onboarding_get_connection
         maintenance_routes.maintenance.get_connection = original_maintenance_get_connection
@@ -102,6 +106,9 @@ def test_home_page_only_shows_items_for_session_user() -> None:
     with isolated_web_accounts_db() as conn:
         insert_user_item(conn, "alice", "a1", "alice private item")
         insert_user_item(conn, "bob", "b1", "bob private item")
+        conn.execute(
+            "UPDATE users SET douyin_nickname = 'Alice 抖音账号' WHERE id = 'alice'"
+        )
         alice_token = accounts.create_session("alice")
 
         client = TestClient(web_app.app)

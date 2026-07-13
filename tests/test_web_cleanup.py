@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
-from src import jobs
+from src import accounts, jobs
 from src.categorize import cluster
 from src.db import SCHEMA_SQL
 from src.web import app as web_app
@@ -36,15 +36,18 @@ def isolated_cleanup_db():
     conn.execute("CREATE TABLE likes_vec (id TEXT PRIMARY KEY, user_id TEXT, embedding BLOB)")
 
     original_web_get_connection = web_helpers._db_get_connection
+    original_accounts_get_connection = accounts.get_connection
     original_cluster_get_connection = cluster.get_connection
     original_jobs_get_connection = jobs.get_connection
     web_helpers._db_get_connection = lambda: conn
+    accounts.get_connection = lambda: conn
     cluster.get_connection = lambda: conn
     jobs.get_connection = lambda: conn
     try:
         yield conn
     finally:
         web_helpers._db_get_connection = original_web_get_connection
+        accounts.get_connection = original_accounts_get_connection
         cluster.get_connection = original_cluster_get_connection
         jobs.get_connection = original_jobs_get_connection
         conn.close()

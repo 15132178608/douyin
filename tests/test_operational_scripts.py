@@ -783,7 +783,7 @@ def test_release_gate_runs_required_checks_and_writes_machine_and_markdown_repor
     assert any("backup_restore_drill.py" in command[-1] for command in commands)
     assert any("benchmark_web_pages.py" in command[-1] for command in commands)
     assert any("query_performance_audit.py" in command[-1] for command in commands)
-    assert any("acceptance_matrix.py" in command[-1] for command in commands)
+    assert any("acceptance_matrix.py" in part for command in commands for part in command)
     assert report["reports"]["json"].endswith(".json")
     assert report["reports"]["markdown"].endswith(".md")
     assert Path(report["reports"]["json"]).exists()
@@ -794,6 +794,59 @@ def test_release_gate_runs_required_checks_and_writes_machine_and_markdown_repor
     assert "manifest_rollback_dry_run" in markdown
     assert report["installer"]["path"].endswith("DouyinRecallSetup.exe")
     assert report["installer"]["sha256"] is None
+
+
+def test_release_gate_custom_output_dir_routes_generated_evidence_to_same_root(tmp_path: Path) -> None:
+    from relcheck import release_gate
+
+    output_dir = tmp_path / "custom-release-checks"
+
+    def runner(command, cwd, env, timeout_seconds):
+        return release_gate.CommandResult(
+            command=list(command),
+            exit_code=0,
+            elapsed_seconds=0.01,
+            stdout="ok",
+            stderr="",
+        )
+
+    report = release_gate.run_release_gate(
+        output_dir=output_dir,
+        runner=runner,
+        pre_release_backup_checker=passing_pre_release_backup,
+        performance_checker=lambda output_dir, update_baseline=False: {
+            "name": "performance_regression",
+            "ok": True,
+            "exit_code": 0,
+            "elapsed_seconds": 0.01,
+            "command": ["internal", "performance_regression"],
+            "stdout": "ok",
+            "stderr": "",
+            "artifacts": {},
+            "performance": {"regressions": []},
+        },
+        manifest_rollback_checker=passing_manifest_rollback,
+    )
+
+    installed_smoke = next(check for check in report["checks"] if check["name"] == "installed_smoke")
+    installed_command = installed_smoke["command"]
+    assert installed_command[installed_command.index("--app-root") + 1] == str(output_dir / "installed-smoke")
+    assert installed_command[installed_command.index("--output-dir") + 1] == str(output_dir)
+    assert installed_smoke["artifacts"] == {
+        "report": str(output_dir / "installed-smoke-report.json"),
+    }
+
+    acceptance_matrix = next(check for check in report["checks"] if check["name"] == "acceptance_matrix")
+    acceptance_command = acceptance_matrix["command"]
+    assert acceptance_command[acceptance_command.index("--output-dir") + 1] == str(output_dir)
+    assert acceptance_matrix["artifacts"] == {
+        "json": str(output_dir / "acceptance-matrix.json"),
+        "markdown": str(output_dir / "acceptance-matrix.md"),
+    }
+
+    manifest = json.loads(Path(report["reports"]["manifest_json"]).read_text(encoding="utf-8"))
+    assert manifest["evidence"]["installed_smoke"]["artifacts"] == installed_smoke["artifacts"]
+    assert manifest["evidence"]["acceptance_matrix"]["artifacts"] == acceptance_matrix["artifacts"]
 
 
 def test_release_gate_writes_delivery_manifest_with_release_evidence(tmp_path: Path) -> None:
