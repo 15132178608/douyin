@@ -161,6 +161,30 @@ def _write_batch(rows: list[dict], embeddings, content_kind: str = "favorites") 
             )
 
 
+def _remove_stale_index_entries(
+    content_kind: str,
+    *,
+    user_id: str,
+) -> None:
+    """Remove index rows that no longer correspond to active tenant content."""
+    kind = get_content_kind(content_kind)
+    user_id = normalize_user_id(user_id)
+    active_ids_sql = (
+        f"SELECT (? || ':' || id) FROM {kind.table} "
+        "WHERE user_id = ? AND is_removed = 0"
+    )
+    with transaction() as tx:
+        for table in (kind.vector_table, kind.fts_table):
+            tx.execute(
+                f"""
+                DELETE FROM {table}
+                WHERE user_id = ?
+                  AND id NOT IN ({active_ids_sql})
+                """,
+                (user_id, user_id, user_id),
+            )
+
+
 def index_all(
     batch_size: int = BATCH_SIZE,
     force: bool = False,
@@ -190,6 +214,8 @@ def index_all(
         ids = find_unindexed_ids(kind.key, user_id=user_id)
 
     if not ids:
+        if force:
+            _remove_stale_index_entries(kind.key, user_id=user_id)
         logger.info("没有需要索引的新条目。")
         return {"indexed": 0, "total_in_db": _count_indexed(kind.key, user_id=user_id)}
 
@@ -210,6 +236,12 @@ def index_all(
         _write_batch(rows, embeddings, kind.key)
         done += len(rows)
         logger.info("Indexed {}/{}", done, len(ids))
+
+    # Only sweep stale rows after every active item was encoded successfully.
+    # If model loading/encoding fails, previously usable search data remains in
+    # place and the durable retry can safely continue later.
+    if force:
+        _remove_stale_index_entries(kind.key, user_id=user_id)
 
     # M5 增量归类：只对增量编码的（非 force）做，且仅在已有 category 时才有意义
     if not force:

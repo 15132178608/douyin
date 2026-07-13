@@ -20,7 +20,7 @@ import sqlite_vec
 from loguru import logger
 
 from src.config import settings
-from src.tenancy import DEFAULT_USER_ID
+from src.tenancy import DEFAULT_USER_ID, normalize_user_id
 
 
 def _adapt_datetime(value: datetime) -> str:
@@ -601,19 +601,60 @@ def search_index_counts(user_id: str, content_kind: str) -> dict[str, int]:
 
 
 def complete_search_reindex(user_id: str, content_kind: str) -> bool:
-    counts = search_index_counts(user_id, content_kind)
-    if counts["active"] != counts["vector"] or counts["active"] != counts["fts"]:
-        return False
+    from src.content.kinds import get_content_kind
+
+    kind = get_content_kind(content_kind)
+    uid = normalize_user_id(user_id)
     conn = get_connection()
-    conn.execute(
-        """
-        UPDATE search_reindex_state
-        SET completed_at = ?
-        WHERE user_id = ? AND content_kind = ? AND completed_at IS NULL
-        """,
-        (datetime.now(timezone.utc), str(user_id or DEFAULT_USER_ID), content_kind),
-    )
-    return True
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        expected_ids = [
+            row["id"]
+            for row in conn.execute(
+                f"""
+                SELECT (? || ':' || id) AS id
+                FROM {kind.table}
+                WHERE user_id = ? AND is_removed = 0
+                """,
+                (uid, uid),
+            ).fetchall()
+        ]
+        vector_ids = [
+            row["id"]
+            for row in conn.execute(
+                f"SELECT id FROM {kind.vector_table} WHERE user_id = ?",
+                (uid,),
+            ).fetchall()
+        ]
+        fts_ids = [
+            row["id"]
+            for row in conn.execute(
+                f"SELECT id FROM {kind.fts_table} WHERE user_id = ?",
+                (uid,),
+            ).fetchall()
+        ]
+        expected_set = set(expected_ids)
+        exact_match = (
+            len(expected_ids) == len(vector_ids) == len(fts_ids)
+            and expected_set == set(vector_ids) == set(fts_ids)
+        )
+        if not exact_match:
+            conn.execute("ROLLBACK")
+            return False
+
+        updated = conn.execute(
+            """
+            UPDATE search_reindex_state
+            SET completed_at = ?
+            WHERE user_id = ? AND content_kind = ? AND completed_at IS NULL
+            """,
+            (datetime.now(timezone.utc), uid, content_kind),
+        )
+        conn.execute("COMMIT")
+        return updated.rowcount == 1
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def _content_table_create_sql(table: str, time_column: str) -> str:
