@@ -244,3 +244,27 @@ uv run python scripts\preflight_summary.py
 - `scripts\preflight_summary.py` 通过，发布前关键报告没有缺失或失败项
 - 安装包路径和 SHA256 已记录
 - 升级前备份、恢复前安全备份、诊断包脱敏路径都有测试或人工验收记录
+
+## GitHub Release 精确二进制验收
+
+版本标签触发的 GitHub Actions 会重新编译安装包。Inno Setup 产物包含构建时信息，因此即使源码提交相同，不同构建的 EXE 也不保证 SHA256 相同。本地安装包的验收结果不能直接覆盖标签任务生成的文件。
+
+标签工作流必须先创建 **Draft Release**，不得直接公开。发布顺序如下：
+
+1. 合并已经通过本地 Release Gate 的 PR。
+2. 在合并后的 `main` 提交上创建并推送 annotated version tag。
+3. 等待标签工作流成功，并确认 Release 仍为 Draft。
+4. 将 Draft Release 中的 `DouyinRecallSetup.exe` 下载到 `D:\codexDownload` 下独立、清晰命名的 QA 目录。
+5. 对下载的确切 EXE 重新执行静默新装、上一正式版原地升级和最终发布门禁。
+6. 记录该 EXE 的 SHA256，并与 Draft Release 的 asset digest 对照。
+7. 所有检查通过后，才把 Release 从 Draft 改为公开并标记 Latest。
+
+推荐核对命令：
+
+```powershell
+gh release view v0.1.21 --json tagName,name,isDraft,isPrerelease,assets
+gh release download v0.1.21 --pattern DouyinRecallSetup.exe --dir <qa-directory>
+Get-FileHash -Algorithm SHA256 -LiteralPath <qa-directory>\DouyinRecallSetup.exe
+```
+
+如果 Draft Release 中的安装包发生替换，先前针对该资产的验收立即失效，必须重新下载并完整复测后才能公开。

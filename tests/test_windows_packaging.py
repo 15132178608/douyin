@@ -687,7 +687,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertNotIn("Remove-Item -Recurse", script)
         self.assertNotIn("rm -rf", script)
 
-    def test_workflow_publishes_setup_exe_to_github_release_on_version_tags(self) -> None:
+    def test_workflow_creates_draft_release_for_exact_binary_qa_on_version_tags(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn("tags:", workflow)
@@ -696,6 +696,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("contents: write", workflow)
         self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
         self.assertIn('"release", "create"', workflow)
+        self.assertIn('"--draft"', workflow)
         self.assertIn("& gh @releaseArgs", workflow)
         self.assertIn("docs/releases/${env:GITHUB_REF_NAME}.md", workflow)
         self.assertIn("--notes-file", workflow)
