@@ -684,8 +684,8 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_installed_qa_restores_inno_registration_after_isolated_install(self) -> None:
         script = read_script("qa-installed-build.ps1")
 
-        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.23\\DouyinRecallSetup.exe", script)
-        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.23\\installed-qa", script)
+        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.24\\DouyinRecallSetup.exe", script)
+        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.24\\installed-qa", script)
         self.assertIn("$UninstallRegistryPath", script)
         self.assertIn("function Save-InnoRegistration", script)
         self.assertIn("function Restore-InnoRegistration", script)
@@ -703,24 +703,24 @@ class WindowsPackagingTests(unittest.TestCase):
             script.index("Restore-InnoRegistration -Snapshot $originalRegistration"),
         )
 
-    def test_upgrade_qa_covers_real_installers_migration_reindex_and_uninstall(self) -> None:
+    def test_upgrade_qa_covers_previous_public_installer_migration_reindex_and_uninstall(self) -> None:
         script = read_script("qa-upgrade-build.ps1")
 
         self.assertIn("$OldInstallerPath", script)
         self.assertIn("$NewInstallerPath", script)
-        self.assertIn('ExpectedVersion "0.1.22"', script)
         self.assertIn('ExpectedVersion "0.1.23"', script)
+        self.assertIn('ExpectedVersion "0.1.24"', script)
         self.assertGreaterEqual(script.count('"/NOICONS"'), 1)
         self.assertGreaterEqual(script.count("-AppRoot $appRoot"), 2)
-        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.23\\upgrade-qa", script)
+        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.24\\upgrade-qa", script)
         self.assertIn('"seed-legacy-search-db.py"', script)
         self.assertIn('Seed a populated legacy search schema', script)
-        self.assertIn('"verify-v0.1.23-upgrade.py"', script)
-        self.assertIn('"old_version": "0.1.22"', script)
-        self.assertIn('"new_version": "0.1.23"', script)
-        self.assertIn('-Label "v0.1.22"', script)
-        self.assertIn('-Label "v0.1.23 in-place upgrade"', script)
-        self.assertIn("version = \"0.1.23\"", script)
+        self.assertIn('"verify-v0.1.24-upgrade.py"', script)
+        self.assertIn('"old_version": "0.1.23"', script)
+        self.assertIn('"new_version": "0.1.24"', script)
+        self.assertIn('-Label "v0.1.23"', script)
+        self.assertIn('-Label "v0.1.24 in-place upgrade"', script)
+        self.assertIn("version = \"0.1.24\"", script)
         self.assertIn("$env:TEMP = $tempRoot", script)
         self.assertIn("$env:TMP = $tempRoot", script)
         self.assertIn("$env:HF_HOME = $hfCacheRoot", script)
