@@ -194,7 +194,7 @@ def _run_rollback_check_smoke(
 
 
 def _run_auth_setup_fragment_smoke(client, web_app, *, qr_path: Path) -> dict:
-    from src.web.routes import auth as auth_routes
+    from src.web import douyin_auth
 
     user_id = "default"
     qr_path_str = str(qr_path)
@@ -210,16 +210,17 @@ def _run_auth_setup_fragment_smoke(client, web_app, *, qr_path: Path) -> dict:
     setup_unchanged_status_codes: list[int] = []
     sensitive_tokens_found: list[str] = []
 
-    with auth_routes._douyin_auth_lock:
-        previous_session = auth_routes._douyin_auth_sessions.get(user_id)
+    previous_session = douyin_auth.auth_session_snapshot(user_id)
 
     def set_session(status: str, message: str = "", path: str | None = qr_path_str) -> None:
-        with auth_routes._douyin_auth_lock:
-            auth_routes._douyin_auth_sessions[user_id] = {
+        douyin_auth.set_auth_session(
+            user_id,
+            {
                 "status": status,
                 "message": message,
                 "qr_path": path,
-            }
+            },
+        )
 
     def add_check(name: str, ok: bool, response=None, expected: str = "") -> None:
         details = {
@@ -312,11 +313,10 @@ def _run_auth_setup_fragment_smoke(client, web_app, *, qr_path: Path) -> dict:
             "授权过程出错，请重新生成二维码后再试。",
         )
     finally:
-        with auth_routes._douyin_auth_lock:
-            if previous_session is None:
-                auth_routes._douyin_auth_sessions.pop(user_id, None)
-            else:
-                auth_routes._douyin_auth_sessions[user_id] = previous_session
+        if previous_session:
+            douyin_auth.set_auth_session(user_id, previous_session)
+        else:
+            douyin_auth.clear_auth_session(user_id)
 
     ok = all(item["ok"] for item in checks) and not sensitive_tokens_found
     return _check(
@@ -1136,11 +1136,11 @@ def _run_account_boundaries_smoke(client, web_app) -> dict:
     }
     start_calls: list[tuple[str, bool]] = []
     cleanup_calls: list[str] = []
-    from src.web.routes import auth as auth_routes
+    from src.web import douyin_auth
 
-    original_start = auth_routes.ensure_douyin_auth_started
-    original_cleanup = auth_routes.start_douyin_logout_cleanup
-    original_fetch = auth_routes._fetch_douyin_profile_for_user
+    original_start = douyin_auth.ensure_douyin_auth_started
+    original_cleanup = douyin_auth.start_douyin_logout_cleanup
+    original_fetch = douyin_auth.fetch_douyin_profile_for_user
 
     def fake_start(user_id: str, *, force: bool = False) -> None:
         start_calls.append((user_id, bool(force)))
@@ -1154,9 +1154,9 @@ def _run_account_boundaries_smoke(client, web_app) -> dict:
         }
 
     try:
-        auth_routes.ensure_douyin_auth_started = fake_start
-        auth_routes.start_douyin_logout_cleanup = cleanup_calls.append
-        auth_routes._fetch_douyin_profile_for_user = fake_fetch
+        douyin_auth.ensure_douyin_auth_started = fake_start
+        douyin_auth.start_douyin_logout_cleanup = cleanup_calls.append
+        douyin_auth.fetch_douyin_profile_for_user = fake_fetch
 
         client.cookies.set(settings.session_cookie_name, alice_token)
         add_response = client.post("/auth/add", follow_redirects=False)
@@ -1205,9 +1205,9 @@ def _run_account_boundaries_smoke(client, web_app) -> dict:
         alice_after_rebind = _profile_state(conn, alice_id)
         bob_after_rebind = _profile_state(conn, bob_id)
     finally:
-        auth_routes.ensure_douyin_auth_started = original_start
-        auth_routes.start_douyin_logout_cleanup = original_cleanup
-        auth_routes._fetch_douyin_profile_for_user = original_fetch
+        douyin_auth.ensure_douyin_auth_started = original_start
+        douyin_auth.start_douyin_logout_cleanup = original_cleanup
+        douyin_auth.fetch_douyin_profile_for_user = original_fetch
 
     details = {
         "user_ids": {

@@ -7,16 +7,15 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse
 
 from src import onboarding
+from src.web import content_state, douyin_auth
 from src.web.helpers import current_user_id, templates
-from src.web.routes import auth
-from src.web.routes import content
 
 
 router = APIRouter()
 
 
 def _setup_auth_context(user_id: str, *, profile_exists: bool | None = None) -> dict:
-    session = auth.public_auth_session_for_template(auth._douyin_auth_sessions.get(user_id, {}))
+    session = douyin_auth.auth_session_for_template(user_id)
     qr_path = str(session.get("qr_path") or "")
     if profile_exists is None:
         status = onboarding.get_onboarding_status(user_id)
@@ -35,8 +34,8 @@ def setup_page(request: Request):
     user_id = current_user_id(request)
     status = onboarding.get_onboarding_status(user_id)
     profile_exists = bool(status.get("profile_path_exists") or status.get("has_profile"))
-    if auth.should_auto_start_setup_auth(status):
-        auth.ensure_douyin_auth_started(user_id)
+    if douyin_auth.should_auto_start_setup_auth(status):
+        douyin_auth.ensure_douyin_auth_started(user_id)
     return templates.TemplateResponse(
         request,
         "setup.html",
@@ -44,7 +43,7 @@ def setup_page(request: Request):
             "page": "setup",
             "status": status,
             **_setup_auth_context(user_id, profile_exists=profile_exists),
-            **content._stats("favorites", user_id=user_id),
+            **content_state.content_stats("favorites", user_id=user_id),
         },
     )
 
@@ -52,7 +51,7 @@ def setup_page(request: Request):
 @router.post("/setup/auth-start", response_class=HTMLResponse)
 def setup_auth_start(request: Request):
     user_id = current_user_id(request)
-    auth.ensure_douyin_auth_started(user_id, force=True)
+    douyin_auth.ensure_douyin_auth_started(user_id, force=True)
     return templates.TemplateResponse(
         request, "_setup_auth_status.html", _setup_auth_context(user_id)
     )
