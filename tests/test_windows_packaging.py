@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGING = ROOT / "packaging" / "windows"
 SCRIPTS = ROOT / "scripts"
 WORKFLOW = ROOT / ".github" / "workflows" / "windows-installer.yml"
+PR_CI_WORKFLOW = ROOT / ".github" / "workflows" / "pr-ci.yml"
 RELEASE_NOTES_DIR = ROOT / "docs" / "releases"
 WINDOWS_TROUBLESHOOTING = ROOT / "docs" / "windows-troubleshooting.md"
 RELEASE_TOOL_MODULES = [
@@ -693,7 +694,15 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("tags:", workflow)
         self.assertIn("'v*'", workflow)
         self.assertIn("CHANGELOG.md", workflow)
+        self.assertIn("contents: read", workflow)
         self.assertIn("contents: write", workflow)
+        self.assertIn("publish-draft-release:", workflow)
+        self.assertIn("if: startsWith(github.ref, 'refs/tags/v')", workflow)
+        self.assertIn("needs: build-installer", workflow)
+        self.assertIn(
+            "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1",
+            workflow,
+        )
         self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
         self.assertIn('"release", "create"', workflow)
         self.assertIn('"--draft"', workflow)
@@ -701,6 +710,51 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("docs/releases/${env:GITHUB_REF_NAME}.md", workflow)
         self.assertIn("--notes-file", workflow)
         self.assertIn("packaging/windows/out/DouyinRecallSetup.exe", workflow)
+
+    def test_installer_workflow_builds_pull_requests_without_publishing_them(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "  pull_request:\n    branches:\n      - main\n  push:\n",
+            workflow,
+        )
+        self.assertIn("if: startsWith(github.ref, 'refs/tags/v')", workflow)
+        self.assertNotIn("pull_request_target:", workflow)
+
+    def test_workflows_pin_current_node24_actions(self) -> None:
+        release_workflow = WORKFLOW.read_text(encoding="utf-8")
+        pr_workflow = PR_CI_WORKFLOW.read_text(encoding="utf-8")
+        checkout = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0"
+
+        self.assertIn(checkout, release_workflow)
+        self.assertIn(checkout, pr_workflow)
+        self.assertIn(
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            release_workflow,
+        )
+        self.assertNotIn("actions/checkout@v4", release_workflow)
+        self.assertNotIn("actions/upload-artifact@v4", release_workflow)
+
+    def test_pr_ci_is_read_only_and_runs_locked_test_suite(self) -> None:
+        workflow = PR_CI_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("pull_request:", workflow)
+        self.assertNotIn("pull_request_target:", workflow)
+        self.assertNotIn("push:", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertNotIn("contents: write", workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertIn(
+            "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0",
+            workflow,
+        )
+        self.assertIn(
+            "astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2",
+            workflow,
+        )
+        self.assertIn('python-version: "3.11"', workflow)
+        self.assertIn('version: "0.11.28"', workflow)
+        self.assertIn("uv run --locked pytest -q", workflow)
 
     def test_release_notes_document_installer_caveats_and_local_ops(self) -> None:
         version = project_version()
