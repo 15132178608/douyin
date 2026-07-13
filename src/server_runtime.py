@@ -341,9 +341,10 @@ def get_service_audit(
     if port_owner_pid is None:
         return audit(
             "record_without_listener",
-            "repair",
-            f"服务记录 pid={recorded_pid} 仍存在，但端口 {port} 没有监听。",
-            "运行 uv run python -m src.cli stop，或点击 Douyin Recall Repair State 清理状态，然后重新检查。",
+            "stop",
+            f"服务记录 pid={recorded_pid} 对应的进程仍存活，但端口 {port} 没有监听。",
+            "若服务刚启动，请稍候后重新检查；否则运行 uv run python -m src.cli stop，"
+            "或点击 Douyin Recall Stop Service，安全复核并清理项目状态。",
         )
     if recorded_pid is not None and int(port_owner_pid) == int(recorded_pid):
         return audit(
@@ -354,9 +355,10 @@ def get_service_audit(
         )
     return audit(
         "record_port_mismatch",
-        "repair",
-        f"服务记录 pid={recorded_pid} 与端口 {port} 的 owner pid={port_owner_pid} 不一致。",
-        f"运行 uv run python -m src.cli stop 或 Douyin Recall Repair State 清理项目状态；不要结束 pid={port_owner_pid}，除非你确认它是可关闭的进程。",
+        "stop",
+        f"服务记录 pid={recorded_pid} 对应的进程仍存活，但端口 {port} 的 owner pid={port_owner_pid} 与其不一致。",
+        f"运行 uv run python -m src.cli stop，或点击 Douyin Recall Stop Service，"
+        f"安全复核并清理本项目记录；不要结束 pid={port_owner_pid}，除非你确认它是可关闭的进程。",
     )
 
 

@@ -18,6 +18,8 @@ D:\codexDownload\douyinclaude-runtime
 
 这个目录可以长期保留，后续启动会复用缓存。不要把缓存移到安装目录或用户临时目录里。
 
+`doctor` 会优先检查显式设置的 `SENTENCE_TRANSFORMERS_HOME`、`HF_HOME` 等模型缓存环境变量，再检查上面的 Windows D 盘运行时目录，最后兼容旧版的 `data\models`。只有能读到非空模型文件才算缓存可用；空目录、锁文件和 `.incomplete` 未完成下载不会被误报为有效缓存。
+
 安装包启动脚本会设置 `UV_LINK_MODE=copy`。这是为了避免缓存目录在 D 盘、安装目录在 C 盘时，`uv` 因跨盘 hardlink 不可用而打印 warning；它不会改变下载目录，也不会影响数据目录。
 
 如果首次启动卡在 uv、Python 依赖、Playwright Chromium 或数据库初始化，可以点击开始菜单里的 `Douyin Recall Prepare Runtime`。这个入口只准备运行时：安装或定位 uv、执行 `uv sync`、`playwright install chromium`、`python -m src.cli init-db` 和 `python -m src.cli status`；它不会启动本地 Web 服务，也不会打开浏览器。网络恢复后可以反复运行它。启动脚本和 Prepare Runtime 都会显示步骤级进度；看到“首次运行可能需要几分钟”时，通常是在下载或准备依赖。Prepare Runtime 成功结束后会打印准备摘要，包括已完成步骤、安装目录、运行时缓存、浏览器缓存、日志目录和下一步启动入口。
@@ -127,7 +129,9 @@ uv run python -m src.cli status
 输出里的 `Service audit` 是关键：
 
 - `own_service_running`：记录的 Douyin Recall 服务正在占用端口。不想继续占用后台资源时，运行 `uv run python -m src.cli stop` 或点击 `Douyin Recall Stop Service`。
-- `stale_record` / `record_without_listener` / `record_port_mismatch`：状态文件和实际端口不一致。运行 `uv run python -m src.cli stop` 或点击 `Douyin Recall Repair State` 清理本项目状态后再检查。
+- `stale_record` / `stale_record_with_listener`：记录的 PID 已不存在，属于真正陈旧的状态；运行 `uv run python -m src.cli stop` 或点击 `Douyin Recall Repair State` 清理后再检查。
+- `record_without_listener`：记录的 PID 仍存活，但端口尚未监听。服务可能仍在启动；先稍候再检查，如果持续不变，运行 `uv run python -m src.cli stop` 或点击 `Douyin Recall Stop Service` 安全复核。此时不要使用 Repair State。
+- `record_port_mismatch`：记录的 PID 仍存活，但端口由另一个 PID 占用。运行 `uv run python -m src.cli stop` 或点击 `Douyin Recall Stop Service` 安全复核本项目状态；不要直接结束不认识的端口 owner，也不要使用 Repair State。
 - `external_listener`：端口被别的进程占用，但没有本项目服务记录。不要用本项目工具去结束它；先确认那个 PID，或修改 `.env` 里的 `WEB_PORT`。
 - `clear`：没有服务记录，也没有端口监听，不需要清理。
 

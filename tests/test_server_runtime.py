@@ -1062,6 +1062,26 @@ def test_service_audit_identifies_stale_record() -> None:
         assert "Douyin Recall Repair State" in audit["next_step"]
 
 
+def test_service_audit_identifies_stale_record_with_listener() -> None:
+    with TemporaryDirectory() as tmp:
+        runtime_dir = Path(tmp)
+        server_runtime.write_server_state(pid=3334, host="127.0.0.1", port=8000, runtime_dir=runtime_dir)
+
+        audit = server_runtime.get_service_audit(
+            runtime_dir=runtime_dir,
+            configured_port=8000,
+            process_checker=lambda pid: False,
+            port_owner_checker=lambda port: 7777,
+        )
+
+        assert audit["relation"] == "stale_record_with_listener"
+        assert audit["action"] == "repair"
+        assert audit["recorded_pid"] == 3334
+        assert audit["port_owner_pid"] == 7777
+        assert "Douyin Recall Repair State" in audit["next_step"]
+        assert "不要结束 pid=7777" in audit["next_step"]
+
+
 def test_service_audit_identifies_record_without_listener() -> None:
     with TemporaryDirectory() as tmp:
         runtime_dir = Path(tmp)
@@ -1075,10 +1095,11 @@ def test_service_audit_identifies_record_without_listener() -> None:
         )
 
         assert audit["relation"] == "record_without_listener"
-        assert audit["action"] == "repair"
+        assert audit["action"] == "stop"
         assert audit["recorded_pid"] == 4445
         assert audit["port_owner_pid"] is None
-        assert "重新检查" in audit["next_step"]
+        assert "Douyin Recall Stop Service" in audit["next_step"]
+        assert "Repair State" not in audit["next_step"]
 
 
 def test_service_audit_identifies_record_port_mismatch() -> None:
@@ -1094,9 +1115,11 @@ def test_service_audit_identifies_record_port_mismatch() -> None:
         )
 
         assert audit["relation"] == "record_port_mismatch"
-        assert audit["action"] == "repair"
+        assert audit["action"] == "stop"
         assert audit["recorded_pid"] == 5556
         assert audit["port_owner_pid"] == 9999
+        assert "Douyin Recall Stop Service" in audit["next_step"]
+        assert "Repair State" not in audit["next_step"]
         assert "不要结束 pid=9999" in audit["next_step"]
 
 
@@ -1314,6 +1337,7 @@ if __name__ == "__main__":
         test_service_audit_identifies_recorded_service_owning_port,
         test_service_audit_identifies_external_listener_without_state,
         test_service_audit_identifies_stale_record,
+        test_service_audit_identifies_stale_record_with_listener,
         test_service_audit_identifies_record_without_listener,
         test_service_audit_identifies_record_port_mismatch,
         test_service_audit_identifies_clear_port_without_state,
