@@ -12,6 +12,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -23,7 +24,8 @@ from src.db import SCHEMA_SQL
 from src.embedding import indexer
 from src.web import app as web_app
 from src.web import helpers as web_helpers
-from src.web.routes import content as content_routes
+from src.web.routes import browse as browse_routes
+from src.web.routes import categories as categories_routes
 
 
 @contextmanager
@@ -54,7 +56,7 @@ def isolated_web_db():
     original_jobs_get_connection = jobs.get_connection
     original_onboarding_get_connection = onboarding.get_connection
     original_index_one = indexer.index_one
-    original_find_category_import_candidates = content_routes.category_import.find_category_import_candidates
+    original_find_category_import_candidates = categories_routes.category_import.find_category_import_candidates
 
     def get_connection():
         return conn
@@ -65,7 +67,7 @@ def isolated_web_db():
     jobs.get_connection = get_connection
     onboarding.get_connection = get_connection
     indexer.index_one = lambda *args, **kwargs: None
-    content_routes.category_import.find_category_import_candidates = lambda **kwargs: []
+    categories_routes.category_import.find_category_import_candidates = lambda **kwargs: []
     try:
         yield conn
     finally:
@@ -75,7 +77,7 @@ def isolated_web_db():
         jobs.get_connection = original_jobs_get_connection
         onboarding.get_connection = original_onboarding_get_connection
         indexer.index_one = original_index_one
-        content_routes.category_import.find_category_import_candidates = original_find_category_import_candidates
+        categories_routes.category_import.find_category_import_candidates = original_find_category_import_candidates
         conn.close()
 
 
@@ -210,7 +212,7 @@ def test_likes_home_uses_video_publish_time_when_like_time_missing() -> None:
 
 def test_likes_home_supports_mobile_load_more_and_desktop_pagination() -> None:
     with isolated_web_db() as conn:
-        page_size = content_routes.HOME_PAGE_SIZE
+        page_size = browse_routes.HOME_PAGE_SIZE
         for index in range(page_size + 2):
             insert_item_for_paging(conn, "likes", index)
         client = TestClient(web_app.app)
@@ -287,7 +289,7 @@ def test_likes_home_renders_numbered_pagination_with_first_and_last_links() -> N
 
 def test_favorites_home_supports_mobile_load_more_and_desktop_pagination() -> None:
     with isolated_web_db() as conn:
-        page_size = content_routes.HOME_PAGE_SIZE
+        page_size = browse_routes.HOME_PAGE_SIZE
         for index in range(page_size + 1):
             insert_item_for_paging(conn, "favorites", index)
         client = TestClient(web_app.app)
@@ -361,8 +363,8 @@ def test_categories_empty_state_enqueues_index_and_categorize_without_cli_hint()
 def test_categories_empty_state_offers_import_when_old_database_has_matching_categories() -> None:
     with isolated_web_db() as conn:
         insert_item(conn, "favorites", "fav-1", "favorite only", "fav author")
-        original_find = content_routes.category_import.find_category_import_candidates
-        content_routes.category_import.find_category_import_candidates = lambda **kwargs: [
+        original_find = categories_routes.category_import.find_category_import_candidates
+        categories_routes.category_import.find_category_import_candidates = lambda **kwargs: [
             category_import.CategoryImportCandidate(
                 path=Path(r"D:\old\DouyinRecall\data\recall.db"),
                 category_count=3,
@@ -376,7 +378,7 @@ def test_categories_empty_state_offers_import_when_old_database_has_matching_cat
             client = TestClient(web_app.app)
             response = client.get("/categories")
         finally:
-            content_routes.category_import.find_category_import_candidates = original_find
+            categories_routes.category_import.find_category_import_candidates = original_find
 
         assert response.status_code == 200
         assert "发现已有分类" in response.text
@@ -394,9 +396,9 @@ def test_category_import_route_resolves_server_side_candidate_token_without_expo
         insert_item(conn, "favorites", "fav-1", "favorite only", "fav author")
         source_path = Path(r"D:\old\DouyinRecall\data\recall.db")
         calls = []
-        original_find = content_routes.category_import.find_category_import_candidates
-        original_import = content_routes.category_import.import_categories_from_database
-        content_routes.category_import.find_category_import_candidates = lambda **kwargs: [
+        original_find = categories_routes.category_import.find_category_import_candidates
+        original_import = categories_routes.category_import.import_categories_from_database
+        categories_routes.category_import.find_category_import_candidates = lambda **kwargs: [
             category_import.CategoryImportCandidate(
                 path=source_path,
                 category_count=3,
@@ -417,7 +419,7 @@ def test_category_import_route_resolves_server_side_candidate_token_without_expo
                 source_path=Path(resolved_path),
             )
 
-        content_routes.category_import.import_categories_from_database = fake_import
+        categories_routes.category_import.import_categories_from_database = fake_import
         try:
             client = TestClient(web_app.app)
             page = client.get("/categories")
@@ -429,8 +431,8 @@ def test_category_import_route_resolves_server_side_candidate_token_without_expo
                 headers={"HX-Request": "true"},
             )
         finally:
-            content_routes.category_import.find_category_import_candidates = original_find
-            content_routes.category_import.import_categories_from_database = original_import
+            categories_routes.category_import.find_category_import_candidates = original_find
+            categories_routes.category_import.import_categories_from_database = original_import
 
         assert page.status_code == 200
         assert response.status_code == 200
@@ -438,12 +440,52 @@ def test_category_import_route_resolves_server_side_candidate_token_without_expo
         assert "已导入 3 个分类，匹配 12 条收藏" in response.text
 
 
+def test_category_import_token_is_bound_to_user_and_content_kind() -> None:
+    source_path = Path(r"D:\old\DouyinRecall\data\tenant-bound.db")
+    candidate = category_import.CategoryImportCandidate(
+        path=source_path,
+        category_count=2,
+        match_count=5,
+        source_item_count=7,
+        content_kind="favorites",
+        updated_at=0,
+    )
+    public = categories_routes._remember_category_import_source(
+        candidate,
+        user_id="alice",
+        content_kind="favorites",
+    )
+    token = public["source_token"]
+
+    try:
+        assert categories_routes._resolve_category_import_source(
+            source_token=token,
+            source_path=None,
+            user_id="alice",
+            content_kind="favorites",
+        ) == source_path
+        assert categories_routes._resolve_category_import_source(
+            source_token=token,
+            source_path=None,
+            user_id="bob",
+            content_kind="favorites",
+        ) is None
+        assert categories_routes._resolve_category_import_source(
+            source_token=token,
+            source_path=None,
+            user_id="alice",
+            content_kind="likes",
+        ) is None
+    finally:
+        categories_routes._category_import_source_tokens.pop(token, None)
+
+
 def test_category_import_route_imports_selected_database_and_returns_status() -> None:
     with isolated_web_db() as conn:
         insert_item(conn, "favorites", "fav-1", "favorite only", "fav author")
         calls = []
-        original_import = content_routes.category_import.import_categories_from_database
-        original_find = content_routes.category_import.find_category_import_candidates
+        original_import = categories_routes.category_import.import_categories_from_database
+        original_find = categories_routes.category_import.find_category_import_candidates
 
         def fake_import(source_path, **kwargs):
             calls.append((Path(source_path), kwargs["content_kind"], kwargs["user_id"]))
@@ -455,8 +497,8 @@ def test_category_import_route_imports_selected_database_and_returns_status() ->
                 source_path=Path(source_path),
             )
 
-        content_routes.category_import.import_categories_from_database = fake_import
-        content_routes.category_import.find_category_import_candidates = lambda **kwargs: []
+        categories_routes.category_import.import_categories_from_database = fake_import
+        categories_routes.category_import.find_category_import_candidates = lambda **kwargs: []
         try:
             client = TestClient(web_app.app)
             response = client.post(
@@ -465,8 +507,8 @@ def test_category_import_route_imports_selected_database_and_returns_status() ->
                 headers={"HX-Request": "true"},
             )
         finally:
-            content_routes.category_import.import_categories_from_database = original_import
-            content_routes.category_import.find_category_import_candidates = original_find
+            categories_routes.category_import.import_categories_from_database = original_import
+            categories_routes.category_import.find_category_import_candidates = original_find
 
         assert response.status_code == 200
         assert calls == [(Path(r"D:\old\DouyinRecall\data\recall.db"), "favorites", "default")]
@@ -548,6 +590,121 @@ def test_existing_items_use_stable_background_sync_banner_for_favorites_and_like
         assert "work-progress-fill" in likes_response.text
         assert 'hx-trigger="every 3s"' not in favorites_response.text
         assert 'hx-trigger="every 3s"' not in likes_response.text
+
+
+def test_search_routes_use_requested_content_kind_without_real_embedding() -> None:
+    from src.search import hybrid
+
+    with isolated_web_db():
+        original_search_for_kind = hybrid.search_for_kind
+        calls: list[tuple[str, int, str, str]] = []
+
+        def fake_search_for_kind(
+            query: str,
+            top_k: int = 20,
+            content_kind: str = "favorites",
+            user_id: str = "default",
+        ):
+            calls.append((query, top_k, content_kind, user_id))
+            title = (
+                "favorite search result sentinel"
+                if content_kind == "favorites"
+                else "like search result sentinel"
+            )
+            return [
+                SimpleNamespace(
+                    id=f"{content_kind}-search-result",
+                    title=title,
+                    author=f"{content_kind} search author",
+                    raw_json="{}",
+                    video_url=f"https://example.test/{content_kind}/search-result",
+                    cover_url=None,
+                    user_note=None,
+                    favorited_at="2026-05-26 12:00:00",
+                    first_seen_at="2026-05-26 12:00:00",
+                    video_created_at=None,
+                    last_recalled_at=None,
+                    score=0.25,
+                    vec_rank=1,
+                    fts_rank=None,
+                )
+            ]
+
+        hybrid.search_for_kind = fake_search_for_kind
+        try:
+            client = TestClient(web_app.app)
+            favorites_response = client.get("/search?q=needle")
+            likes_response = client.get("/likes/search?q=needle")
+        finally:
+            hybrid.search_for_kind = original_search_for_kind
+
+        assert favorites_response.status_code == 200
+        assert "favorite search result sentinel" in favorites_response.text
+        assert "like search result sentinel" not in favorites_response.text
+        assert likes_response.status_code == 200
+        assert "like search result sentinel" in likes_response.text
+        assert "favorite search result sentinel" not in likes_response.text
+        assert calls == [
+            ("needle", 24, "favorites", "default"),
+            ("needle", 24, "likes", "default"),
+        ]
+
+
+def test_timeline_routes_read_only_the_requested_content_kind() -> None:
+    with isolated_web_db() as conn:
+        insert_item(conn, "favorites", "fav-timeline", "favorite timeline sentinel", "fav author")
+        insert_item(conn, "likes", "like-timeline", "like timeline sentinel", "like author")
+        client = TestClient(web_app.app)
+
+        favorites_response = client.get("/timeline")
+        likes_response = client.get("/likes/timeline")
+
+        assert favorites_response.status_code == 200
+        assert "favorite timeline sentinel" in favorites_response.text
+        assert "like timeline sentinel" not in favorites_response.text
+        assert likes_response.status_code == 200
+        assert "like timeline sentinel" in likes_response.text
+        assert "favorite timeline sentinel" not in likes_response.text
+
+
+def test_notes_routes_read_only_the_requested_content_kind() -> None:
+    with isolated_web_db() as conn:
+        insert_item(conn, "favorites", "fav-note-list", "favorite note item", "fav author")
+        insert_item(conn, "likes", "like-note-list", "like note item", "like author")
+        conn.execute(
+            "UPDATE favorites SET user_note = 'favorite note sentinel' WHERE id = 'fav-note-list'"
+        )
+        conn.execute(
+            "UPDATE likes SET user_note = 'like note sentinel' WHERE id = 'like-note-list'"
+        )
+        client = TestClient(web_app.app)
+
+        favorites_response = client.get("/notes")
+        likes_response = client.get("/likes/notes")
+
+        assert favorites_response.status_code == 200
+        assert "favorite note sentinel" in favorites_response.text
+        assert "like note sentinel" not in favorites_response.text
+        assert likes_response.status_code == 200
+        assert "like note sentinel" in likes_response.text
+        assert "favorite note sentinel" not in likes_response.text
+
+
+def test_empty_status_routes_read_only_the_requested_content_kind() -> None:
+    with isolated_web_db() as conn:
+        insert_item(conn, "favorites", "fav-empty-status", "favorite status sentinel", "fav author")
+        insert_item(conn, "likes", "like-empty-status", "like status sentinel", "like author")
+        client = TestClient(web_app.app)
+
+        favorites_response = client.get("/empty-status")
+        likes_response = client.get("/likes/empty-status")
+
+        assert favorites_response.status_code == 200
+        assert "favorite status sentinel" in favorites_response.text
+        assert "like status sentinel" not in favorites_response.text
+        assert likes_response.status_code == 200
+        assert "like status sentinel" in likes_response.text
+        assert "favorite status sentinel" not in likes_response.text
 
 
 def test_likes_author_and_category_pages_use_likes_tables() -> None:
@@ -640,6 +797,10 @@ if __name__ == "__main__":
         test_likes_home_preserves_custom_page_size_for_full_desktop_rows,
         test_likes_home_renders_numbered_pagination_with_first_and_last_links,
         test_favorites_home_supports_mobile_load_more_and_desktop_pagination,
+        test_search_routes_use_requested_content_kind_without_real_embedding,
+        test_timeline_routes_read_only_the_requested_content_kind,
+        test_notes_routes_read_only_the_requested_content_kind,
+        test_empty_status_routes_read_only_the_requested_content_kind,
         test_likes_author_and_category_pages_use_likes_tables,
         test_likes_note_and_open_tracking_write_likes_tables,
         test_likes_unlike_updates_likes_only_and_writes_unlike_log,

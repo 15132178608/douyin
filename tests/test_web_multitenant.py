@@ -30,7 +30,6 @@ from src.web import security as web_security
 from src.web import job_service
 from src.web import helpers as web_helpers
 from src.web import middleware as web_middleware
-from src.web.routes import content as content_routes
 from src.web.routes import maintenance as maintenance_routes
 
 
