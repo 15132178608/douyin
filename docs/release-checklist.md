@@ -36,15 +36,26 @@ scripts\release_gate.ps1
 
 - `release-gate-*.json`：机器可读报告，包含每一关的命令、退出码、耗时、stdout、stderr 和关联报告路径
 - `release-gate-*.md`：人工阅读报告，适合贴到 release 记录里
-- `delivery-manifest-*.json`：交付证据清单，汇总 release gate 报告、doctor JSON、数据库安全巡检、备份恢复演练、性能报告、安装包路径和 SHA256
+- `delivery-manifest-*.json`：交付证据清单，汇总 release gate 报告、doctor JSON、数据库安全巡检、备份恢复演练、性能报告，以及安装包路径、大小、ProductVersion、SHA256 和 Authenticode 状态
 - `delivery-manifest-*.md`：人工阅读版交付证据清单，适合作为发版记录索引
 - `pre-release-backup-*.json`：发布前回滚点校验报告，包含源库/备份库关键表数量对比、备份路径、大小和 SHA256
 - `acceptance-matrix.json` / `acceptance-matrix.md`：需求到自动化证据的验收矩阵，覆盖回归测试、性能、数据库安全、任务队列、同步幂等、分类迁移、诊断分层、备份恢复、账号边界、慢查询、Crawler 状态机和维护中心后端能力
 - `delivery-evidence-check.json` / `delivery-evidence-check.md`：复核最新 `delivery-manifest-*.json` 中记录的 release gate、doctor、安装冒烟、数据库安全巡检、备份恢复演练、性能报告、验收矩阵和发布前备份路径都存在且状态为 ok
 - `preflight-summary.json` / `preflight-summary.md`：只读汇总最新发布门禁、交付证据、验收矩阵、性能 current/baseline、数据库安全巡检和备份恢复演练
-- `final-release-check.json` / `final-release-check.md`：最终发布终检报告，记录 release gate、交付证据复核和预检摘要的执行顺序、退出码和报告路径
+- `final-release-check.json` / `final-release-check.md`：最终发布终检报告，记录 release gate、交付证据复核和预检摘要的执行顺序、退出码和报告路径；传入安装包时也会直接展示同一份安装包元数据
 
 如果任一关失败，脚本会返回非 0，并在报告里标出失败关卡和错误输出。不要发布失败的版本。
+
+需要把发布报告、性能基准和数据库演练全部隔离到同一个 QA 根目录时，同时传入三个目录；最终终检会把它们继续传给下层 Release Gate 和各审计脚本：
+
+```powershell
+scripts\final_release_check.ps1 `
+  -OutputDir D:\codexDownload\<release-qa>\release-checks `
+  -BenchmarksDir D:\codexDownload\<release-qa>\benchmarks `
+  -AuditsDir D:\codexDownload\<release-qa>\audits
+```
+
+性能 baseline 保存在 `OutputDir`。全新的空目录第一次运行会得到 `baseline_status=created`，只能证明本次基准完整生成，不能证明相对历史版本没有退化。正式做历史性能比较时应复用含有已批准 `performance-baseline.json` 的稳定 `OutputDir`，或先把已批准 baseline 放入隔离目录；不要为了让门禁通过而临时使用 `-UpdatePerformanceBaseline`。
 
 ## 发布证据保留
 
@@ -113,7 +124,25 @@ scripts\release_gate.ps1 -BuildInstaller
 packaging\windows\out\DouyinRecallSetup.exe
 ```
 
-报告会记录 `DouyinRecallSetup.exe` 的路径和 SHA256。若安装包不存在或构建失败，发布验收失败。
+构建成功后还会执行 `installer_artifact`，记录并校验 `DouyinRecallSetup.exe` 的路径、大小、ProductVersion、SHA256 和 Authenticode 状态。若安装包不存在、为空、版本不等于 `pyproject.toml`、签名状态无效或构建失败，发布验收失败。当前未签名版本的状态 `NotSigned` 会明确记录，但在代码签名正式启用前允许通过。
+
+## 已有安装包精确验收
+
+GitHub Draft Release 或其他构建流程已经生成 EXE 时，不要重新构建，用 `-InstallerPath` 把下载到本机的确切文件纳入最终终检：
+
+```powershell
+scripts\final_release_check.ps1 -InstallerPath D:\codexDownload\<release-qa>\DouyinRecallSetup.exe
+```
+
+这个模式不会构建或替换 EXE。报告中的安装包字段应为 `requested=true`、`source=external`、`built=false`、`validated=true`，并绑定该文件的绝对路径、字节数、ProductVersion、SHA256 和 Authenticode 状态。文件缺失、空文件、ProductVersion 与当前项目版本不一致、无法计算 SHA256，或签名状态既不是 `Valid` 也不是 `NotSigned` 时，`installer_artifact` 会返回非 0，最终终检失败。
+
+`-BuildInstaller` 和 `-InstallerPath` 是两种互斥模式：前者构建并验证仓库默认产物，后者只验证传入的现有文件；不要在同一条命令中同时使用。
+
+需要单独复核元数据时可以运行：
+
+```powershell
+scripts\inspect-installer.ps1 -InstallerPath D:\codexDownload\<release-qa>\DouyinRecallSetup.exe -ExpectedVersion <project-version>
+```
 
 ## 安装后 smoke test
 
@@ -235,7 +264,8 @@ uv run python scripts\preflight_summary.py
 
 - `scripts\final_release_check.ps1` 通过
 - `scripts\release_gate.ps1` 通过
-- 如果本次交付安装包，`scripts\release_gate.ps1 -BuildInstaller` 通过
+- 如果本次交付本机构建的安装包，`scripts\release_gate.ps1 -BuildInstaller` 通过
+- 如果本次交付 CI / Draft Release 生成的安装包，`scripts\final_release_check.ps1 -InstallerPath <exact-exe>` 通过，且 `installer_artifact` 为 `validated=true`
 - `scripts\installed_smoke.py` 通过
 - 全量 pytest 通过
 - 数据库安全巡检和备份恢复演练报告 `ok=true`
@@ -243,7 +273,7 @@ uv run python scripts\preflight_summary.py
 - `acceptance_matrix` 通过，原始加固目标都有测试、脚本或 release gate 证据
 - `scripts\validate_delivery_evidence.py` 通过，delivery manifest 中的关键 evidence 状态和路径一致
 - `scripts\preflight_summary.py` 通过，发布前关键报告没有缺失或失败项
-- 安装包路径和 SHA256 已记录
+- 安装包路径、大小、ProductVersion、SHA256 和 Authenticode 状态已由最终终检记录
 - 升级前备份、恢复前安全备份、诊断包脱敏路径都有测试或人工验收记录
 
 ## GitHub Release 精确二进制验收
@@ -256,8 +286,8 @@ uv run python scripts\preflight_summary.py
 2. 在合并后的 `main` 提交上创建并推送 annotated version tag。
 3. 等待标签工作流成功，并确认 Release 仍为 Draft。
 4. 将 Draft Release 中的 `DouyinRecallSetup.exe` 下载到 `D:\codexDownload` 下独立、清晰命名的 QA 目录。
-5. 对下载的确切 EXE 重新执行静默新装、上一正式版原地升级和最终发布门禁。
-6. 记录该 EXE 的 SHA256，并与 Draft Release 的 asset digest 对照。
+5. 对下载的确切 EXE 重新执行静默新装、上一正式版原地升级，并运行 `scripts\final_release_check.ps1 -InstallerPath <qa-directory>\DouyinRecallSetup.exe`。
+6. 确认最终终检报告中的 `installer_artifact` 为 `validated=true`，ProductVersion 等于项目版本，路径和大小对应下载文件；再独立计算 SHA256，与报告和 Draft Release 的 asset digest 三方对照。
 7. 所有检查通过后，才把 Release 从 Draft 改为公开并标记 Latest。
 
 推荐核对命令：
@@ -265,7 +295,10 @@ uv run python scripts\preflight_summary.py
 ```powershell
 gh release view v0.1.24 --json tagName,name,isDraft,isPrerelease,assets
 gh release download v0.1.24 --pattern DouyinRecallSetup.exe --dir <qa-directory>
+scripts\final_release_check.ps1 -InstallerPath <qa-directory>\DouyinRecallSetup.exe
 Get-FileHash -Algorithm SHA256 -LiteralPath <qa-directory>\DouyinRecallSetup.exe
 ```
+
+`Get-FileHash` 是对机器门禁记录的独立复核，不代替 `installer_artifact` 的版本、大小和签名状态校验。
 
 如果 Draft Release 中的安装包发生替换，先前针对该资产的验收立即失效，必须重新下载并完整复测后才能公开。

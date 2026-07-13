@@ -68,21 +68,81 @@ def run_command(command: Sequence[str], cwd: Path, env: dict[str, str], timeout_
     )
 
 
-def _latest_file(root: Path, pattern: str) -> str | None:
+FileSignature = tuple[int, int]
+
+
+def _file_signature(path: Path) -> FileSignature | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _release_gate_artifact_snapshot(root: Path) -> dict[str, FileSignature]:
+    snapshot: dict[str, FileSignature] = {}
+    if not root.exists():
+        return snapshot
+    for pattern in (
+        "release-gate-*.json",
+        "release-gate-*.md",
+        "delivery-manifest-*.json",
+    ):
+        for path in root.glob(pattern):
+            if not path.is_file():
+                continue
+            signature = _file_signature(path)
+            if signature is not None:
+                snapshot[str(path.resolve())] = signature
+    return snapshot
+
+
+def _latest_file(
+    root: Path,
+    pattern: str,
+    *,
+    previous: dict[str, FileSignature] | None = None,
+) -> str | None:
     if not root.exists():
         return None
     files = [path for path in root.glob(pattern) if path.is_file()]
+    if previous is not None:
+        files = [
+            path
+            for path in files
+            if previous.get(str(path.resolve())) != _file_signature(path)
+        ]
     if not files:
         return None
     return str(max(files, key=lambda path: (path.stat().st_mtime_ns, path.name)))
 
 
-def _step_artifacts(name: str, output_dir: Path) -> dict[str, str]:
+def _step_artifacts(
+    name: str,
+    output_dir: Path,
+    *,
+    previous_release_gate_artifacts: dict[str, FileSignature] | None = None,
+) -> dict[str, str]:
     if name == "release_gate":
         return {
-            "release_gate_json": _latest_file(output_dir, "release-gate-*.json") or "",
-            "release_gate_markdown": _latest_file(output_dir, "release-gate-*.md") or "",
-            "delivery_manifest": _latest_file(output_dir, "delivery-manifest-*.json") or "",
+            "release_gate_json": _latest_file(
+                output_dir,
+                "release-gate-*.json",
+                previous=previous_release_gate_artifacts,
+            )
+            or "",
+            "release_gate_markdown": _latest_file(
+                output_dir,
+                "release-gate-*.md",
+                previous=previous_release_gate_artifacts,
+            )
+            or "",
+            "delivery_manifest": _latest_file(
+                output_dir,
+                "delivery-manifest-*.json",
+                previous=previous_release_gate_artifacts,
+            )
+            or "",
         }
     if name == "delivery_evidence":
         return {
@@ -97,10 +157,86 @@ def _step_artifacts(name: str, output_dir: Path) -> dict[str, str]:
     return {}
 
 
+def _release_gate_details(artifacts: dict[str, str]) -> dict:
+    path_text = artifacts.get("release_gate_json")
+    if not path_text:
+        return {}
+    path = Path(path_text)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    installer = payload.get("installer")
+    if not isinstance(installer, dict):
+        installer = {}
+    return {
+        "ok": payload.get("ok") is True,
+        "installer": installer,
+    }
+
+
+def _same_path(left: object, right: Path) -> bool:
+    if not left:
+        return False
+    try:
+        return Path(str(left)).resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def _release_gate_contract_errors(
+    artifacts: dict[str, str],
+    details: dict,
+    *,
+    build_installer: bool,
+    installer_path: Path | None,
+) -> list[str]:
+    errors = [
+        f"missing fresh {name}"
+        for name in ("release_gate_json", "release_gate_markdown", "delivery_manifest")
+        if not artifacts.get(name)
+    ]
+    if not details:
+        errors.append("fresh release gate JSON is missing or invalid")
+        return errors
+    if not details.get("ok"):
+        errors.append("fresh release gate report has ok=false")
+
+    installer_requested = bool(build_installer or installer_path is not None)
+    if not installer_requested:
+        return errors
+
+    installer = details.get("installer")
+    if not isinstance(installer, dict):
+        errors.append("fresh release gate report has no installer metadata")
+        return errors
+    if installer.get("requested") is not True:
+        errors.append("installer metadata requested is not true")
+    if installer.get("validated") is not True:
+        errors.append("installer metadata validated is not true")
+    expected_source = "built" if build_installer else "external"
+    if installer.get("source") != expected_source:
+        errors.append(f"installer metadata source is not {expected_source}")
+    if build_installer and installer.get("built") is not True:
+        errors.append("built installer metadata built is not true")
+    if installer_path is not None and installer.get("built") is not False:
+        errors.append("external installer metadata built is not false")
+    expected_path = installer_path
+    if build_installer:
+        expected_path = PROJECT_ROOT / "packaging" / "windows" / "out" / "DouyinRecallSetup.exe"
+    if expected_path is not None and not _same_path(installer.get("path"), expected_path):
+        errors.append("installer metadata path does not match expected path")
+    return errors
+
+
 def _release_gate_command(
     *,
     python_executable: str,
     output_dir: Path,
+    benchmarks_dir: Path,
+    audits_dir: Path,
     build_installer: bool,
     installer_path: Path | None,
     update_performance_baseline: bool,
@@ -111,6 +247,10 @@ def _release_gate_command(
         "relcheck.release_gate",
         "--output-dir",
         str(output_dir),
+        "--benchmarks-dir",
+        str(benchmarks_dir),
+        "--audits-dir",
+        str(audits_dir),
         "--skip-evidence-cleanup",
     ]
     if build_installer:
@@ -140,6 +280,8 @@ def _planned_steps(
             "command": _release_gate_command(
                 python_executable=python_executable,
                 output_dir=output_dir,
+                benchmarks_dir=benchmarks_dir,
+                audits_dir=audits_dir,
                 build_installer=build_installer,
                 installer_path=installer_path,
                 update_performance_baseline=update_performance_baseline,
@@ -176,9 +318,22 @@ def _planned_steps(
     ]
 
 
-def _result_step(step: dict, result: CommandResult, output_dir: Path) -> dict:
+def _result_step(
+    step: dict,
+    result: CommandResult,
+    output_dir: Path,
+    *,
+    previous_release_gate_artifacts: dict[str, FileSignature] | None = None,
+    build_installer: bool = False,
+    installer_path: Path | None = None,
+) -> dict:
     ok = result.exit_code == 0
-    return {
+    artifacts = _step_artifacts(
+        step["name"],
+        output_dir,
+        previous_release_gate_artifacts=previous_release_gate_artifacts,
+    )
+    item = {
         "name": step["name"],
         "title": step["title"],
         "ok": ok,
@@ -189,8 +344,27 @@ def _result_step(step: dict, result: CommandResult, output_dir: Path) -> dict:
         "stdout": result.stdout,
         "stderr": result.stderr,
         "message": "通过" if ok else "命令返回非 0。",
-        "artifacts": _step_artifacts(step["name"], output_dir),
+        "artifacts": artifacts,
     }
+    if step["name"] == "release_gate":
+        details = _release_gate_details(artifacts)
+        item["details"] = details
+        if ok:
+            contract_errors = _release_gate_contract_errors(
+                artifacts,
+                details,
+                build_installer=build_installer,
+                installer_path=installer_path,
+            )
+            if contract_errors:
+                message = "Release gate evidence contract failed: " + "; ".join(contract_errors)
+                item["ok"] = False
+                item["status"] = "failed"
+                item["message"] = "发布门禁未生成可信的本次证据。"
+                item["stderr"] = "\n".join(
+                    part for part in (item.get("stderr", ""), message) if part
+                )
+    return item
 
 
 def _skipped_step(step: dict) -> dict:
@@ -220,6 +394,9 @@ def run_final_release_check(
     update_performance_baseline: bool = False,
     runner: Runner = run_command,
 ) -> dict:
+    if build_installer and installer_path is not None:
+        raise ValueError("build_installer and installer_path are mutually exclusive")
+
     output_root = Path(output_dir)
     benchmark_root = Path(benchmarks_dir)
     audit_root = Path(audits_dir)
@@ -228,24 +405,55 @@ def run_final_release_check(
     env = _default_env()
     steps: list[dict] = []
     blocked = False
+    requested_installer_path = Path(installer_path) if installer_path is not None else None
+    if requested_installer_path is not None and not requested_installer_path.is_absolute():
+        requested_installer_path = PROJECT_ROOT / requested_installer_path
+    if requested_installer_path is not None:
+        requested_installer_path = requested_installer_path.resolve()
 
-    for step in _planned_steps(
+    planned_steps = _planned_steps(
         python_executable=executable,
         output_dir=output_root,
         benchmarks_dir=benchmark_root,
         audits_dir=audit_root,
         build_installer=build_installer,
-        installer_path=Path(installer_path) if installer_path is not None else None,
+        installer_path=requested_installer_path,
         update_performance_baseline=update_performance_baseline,
-    ):
+    )
+
+    for step in planned_steps:
         if blocked:
             steps.append(_skipped_step(step))
             continue
+        previous_release_gate_artifacts = (
+            _release_gate_artifact_snapshot(output_root)
+            if step["name"] == "release_gate"
+            else None
+        )
         result = runner(step["command"], PROJECT_ROOT, env, int(step["timeout_seconds"]))
-        check = _result_step(step, result, output_root)
+        check = _result_step(
+            step,
+            result,
+            output_root,
+            previous_release_gate_artifacts=previous_release_gate_artifacts,
+            build_installer=build_installer,
+            installer_path=requested_installer_path,
+        )
         steps.append(check)
         if not check["ok"]:
             blocked = True
+        elif step["name"] == "release_gate":
+            manifest_path = check["artifacts"]["delivery_manifest"]
+            for future_step in planned_steps:
+                if future_step["name"] == "delivery_evidence":
+                    future_step["command"].extend(["--manifest", manifest_path])
+                    break
+
+    installer = {}
+    for step in steps:
+        if step.get("name") == "release_gate":
+            installer = (step.get("details") or {}).get("installer") or {}
+            break
 
     passed = sum(1 for step in steps if step["status"] == "passed")
     failed = sum(1 for step in steps if step["status"] == "failed")
@@ -264,6 +472,7 @@ def run_final_release_check(
         "benchmarks_dir": str(benchmark_root),
         "audits_dir": str(audit_root),
         "failed_steps": [step["name"] for step in steps if step["status"] == "failed"],
+        "installer": installer,
         "steps": steps,
     }
 
@@ -290,6 +499,26 @@ def render_final_release_check_markdown(report: dict) -> str:
         exit_code = "-" if step.get("exit_code") is None else step.get("exit_code")
         lines.append(
             f"| {step.get('title')} | {status} | {exit_code} | {step.get('elapsed_seconds')} | {artifact_text} |"
+        )
+
+    installer = report.get("installer") or {}
+    if installer.get("requested"):
+        lines.extend(
+            [
+                "",
+                "## Installer",
+                "",
+                f"- requested: `{installer.get('requested')}`",
+                f"- source: `{installer.get('source')}`",
+                f"- built: `{installer.get('built')}`",
+                f"- validated: `{installer.get('validated')}`",
+                f"- path: `{installer.get('path')}`",
+                f"- size_bytes: `{installer.get('size_bytes')}`",
+                f"- product_version: `{installer.get('product_version')}`",
+                f"- expected_version: `{installer.get('expected_version')}`",
+                f"- sha256: `{installer.get('sha256')}`",
+                f"- authenticode_status: `{installer.get('authenticode_status')}`",
+            ]
         )
 
     failed = [step for step in report.get("steps", []) if step.get("status") != "passed"]

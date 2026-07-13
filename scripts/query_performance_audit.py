@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import sys
 
@@ -14,8 +15,12 @@ from relcheck.query_performance import (
 )
 
 
-def main() -> int:
-    output_dir = PROJECT_ROOT / "data" / "benchmarks"
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the release query performance audit.")
+    parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "data" / "benchmarks"))
+    args = parser.parse_args(argv)
+
+    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     report = run_query_performance_audit()
     report_path = output_dir / "query-performance-audit.md"
