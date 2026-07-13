@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OldInstallerPath,
     [string]$NewInstallerPath = "D:\douyinclaude\packaging\windows\out\DouyinRecallSetup.exe",
-    [string]$QaRoot = "D:\codexDownload\douyin-release-v0.1.21\upgrade-qa",
+    [string]$QaRoot = "D:\codexDownload\douyin-release-v0.1.22\upgrade-qa",
     [string]$PythonPath = "",
     [switch]$SkipUninstall
 )
@@ -184,8 +184,8 @@ foreach ($requiredFile in @($OldInstallerPath, $NewInstallerPath, $PythonPath)) 
 $OldInstallerPath = (Resolve-Path -LiteralPath $OldInstallerPath).Path
 $NewInstallerPath = (Resolve-Path -LiteralPath $NewInstallerPath).Path
 $PythonPath = (Resolve-Path -LiteralPath $PythonPath).Path
-Assert-InstallerVersion -Path $OldInstallerPath -ExpectedVersion "0.1.20"
-Assert-InstallerVersion -Path $NewInstallerPath -ExpectedVersion "0.1.21"
+Assert-InstallerVersion -Path $OldInstallerPath -ExpectedVersion "0.1.21"
+Assert-InstallerVersion -Path $NewInstallerPath -ExpectedVersion "0.1.22"
 
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $runRoot = Join-Path $QaRoot "upgrade-$stamp-$PID"
@@ -193,8 +193,8 @@ $appRoot = Join-Path $runRoot "DouyinRecall"
 $dataRoot = Join-Path $appRoot "data"
 $dbPath = Join-Path $dataRoot "recall.db"
 $reportPath = Join-Path $runRoot "qa-upgrade-result.json"
-$seedPath = Join-Path $runRoot "seed-v0.1.20-db.py"
-$verifyPath = Join-Path $runRoot "verify-v0.1.21-upgrade.py"
+$seedPath = Join-Path $runRoot "seed-legacy-search-db.py"
+$verifyPath = Join-Path $runRoot "verify-v0.1.22-upgrade.py"
 $verifyUninstallPath = Join-Path $runRoot "verify-uninstall-data.py"
 $tempRoot = Join-Path $runRoot "temp"
 $hfCacheRoot = Join-Path $runRoot "hf-cache"
@@ -512,8 +512,8 @@ successful_jobs = conn.execute(
 assert successful_jobs == 4, successful_jobs
 report = {
     "status": "passed",
-    "old_version": "0.1.20",
-    "new_version": "0.1.21",
+    "old_version": "0.1.21",
+    "new_version": "0.1.22",
     "app_root": str(app_root),
     "database": str(db_path),
     "preinstall_backup": str(backup_path),
@@ -558,22 +558,22 @@ try {
     Invoke-IsolatedInstaller `
         -InstallerPath $OldInstallerPath `
         -AppRoot $appRoot `
-        -Label "v0.1.20"
+        -Label "v0.1.21"
     Assert-True `
         -Condition (Test-Path -LiteralPath (Join-Path $appRoot "src\db.py") -PathType Leaf) `
-        -Message "v0.1.20 install is missing src\db.py: $appRoot"
+        -Message "v0.1.21 install is missing src\db.py: $appRoot"
 
-    Write-Step "Seed a populated v0.1.20 search schema"
+    Write-Step "Seed a populated legacy search schema"
     Invoke-PythonScript -ScriptPath $seedPath -Arguments @($dbPath)
 
     Invoke-IsolatedInstaller `
         -InstallerPath $NewInstallerPath `
         -AppRoot $appRoot `
-        -Label "v0.1.21 in-place upgrade"
+        -Label "v0.1.22 in-place upgrade"
     $installedProject = Get-Content -Raw -LiteralPath (Join-Path $appRoot "pyproject.toml")
     Assert-True `
-        -Condition $installedProject.Contains('version = "0.1.21"') `
-        -Message "In-place upgrade did not install v0.1.21 source."
+        -Condition $installedProject.Contains('version = "0.1.22"') `
+        -Message "In-place upgrade did not install v0.1.22 source."
 
     Write-Step "Verify installer-created pre-upgrade database backup"
     $preinstallBackups = @(

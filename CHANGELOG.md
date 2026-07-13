@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.22
+
+- Legacy vec/FTS upgrades now persist per-user, per-content recovery markers and automatically enqueue force-reindex work until both search partitions exactly match active content.
+- Web hardening now keeps session lookup off the event loop, makes invite claiming atomic and rate-limited, validates the effective bind before startup, rejects unsafe login redirects, isolates profile roots, and pins avatar downloads to validated addresses.
+- The former `routes/content.py` implementation has been removed; browse, categories, and item actions now own their endpoints and use route-free domain services without wildcard or dynamic compatibility shims.
+- Single and batch 收藏/喜欢 removals now update local state, append audit records, and enqueue remote work in one transaction; concurrent retries are idempotent, and item-open tracking cannot create foreign or orphan recall records.
+- Pull requests now run the locked test suite on the supported Windows target, while installer builds, draft publishing, installed-build checks, and Release Gate evidence remain explicit delivery gates.
+
+See [docs/releases/v0.1.22.md](docs/releases/v0.1.22.md).
+
 ## v0.1.21
 
 - Legacy single-user search indexes now create durable per-user recovery work during schema migration, and the background worker force-rebuilds vec/FTS partitions before clearing the recovery marker.

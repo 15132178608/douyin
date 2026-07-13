@@ -262,8 +262,8 @@ uv run python scripts\preflight_summary.py
 推荐核对命令：
 
 ```powershell
-gh release view v0.1.21 --json tagName,name,isDraft,isPrerelease,assets
-gh release download v0.1.21 --pattern DouyinRecallSetup.exe --dir <qa-directory>
+gh release view v0.1.22 --json tagName,name,isDraft,isPrerelease,assets
+gh release download v0.1.22 --pattern DouyinRecallSetup.exe --dir <qa-directory>
 Get-FileHash -Algorithm SHA256 -LiteralPath <qa-directory>\DouyinRecallSetup.exe
 ```
 
