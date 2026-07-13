@@ -17,6 +17,76 @@ from src import server_runtime
 from src.config import PROJECT_ROOT, settings
 
 
+WINDOWS_RUNTIME_MODEL_CACHE = Path(
+    r"D:\codexDownload\douyinclaude-runtime\huggingface"
+)
+MODEL_CACHE_ENV_VARS = (
+    "SENTENCE_TRANSFORMERS_HOME",
+    "HF_HOME",
+    "HF_HUB_CACHE",
+    "HUGGINGFACE_HUB_CACHE",
+    "TRANSFORMERS_CACHE",
+)
+MODEL_CACHE_SNAPSHOT_PATTERNS = (
+    "models--*/snapshots/*",
+    "hub/models--*/snapshots/*",
+    "sentence-transformers/models--*/snapshots/*",
+)
+MODEL_CACHE_MARKERS = (
+    "config.json",
+    "modules.json",
+    "model.safetensors",
+    "pytorch_model.bin",
+)
+MODEL_CACHE_METADATA_NAMES = {
+    ".ds_store",
+    ".gitattributes",
+    ".gitkeep",
+    "cachedir.tag",
+    "desktop.ini",
+    "thumbs.db",
+}
+MODEL_CACHE_IGNORED_DIRECTORY_NAMES = {
+    ".locks",
+    ".no_exist",
+    "blobs",
+    "refs",
+    "xet",
+}
+MODEL_CACHE_PARTIAL_SUFFIXES = (".incomplete", ".lock", ".part", ".tmp")
+MODEL_CACHE_PAYLOAD_NAMES = {
+    "config.json",
+    "flax_model.msgpack",
+    "merges.txt",
+    "model.safetensors",
+    "modules.json",
+    "pytorch_model.bin",
+    "rust_model.ot",
+    "sentence_bert_config.json",
+    "sentencepiece.bpe.model",
+    "special_tokens_map.json",
+    "spiece.model",
+    "tf_model.h5",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+    "vocab.txt",
+}
+MODEL_CACHE_PAYLOAD_SUFFIXES = (
+    ".bin",
+    ".h5",
+    ".msgpack",
+    ".onnx",
+    ".ot",
+    ".pt",
+    ".pth",
+    ".safetensors",
+)
+MODEL_CACHE_MAX_SCAN_DEPTH = 12
+MODEL_CACHE_MAX_SCAN_DIRECTORIES = 512
+MODEL_CACHE_MAX_SCAN_FILES = 4096
+
+
 def _check(status: str, ok: bool, message: str, details: dict[str, Any] | None = None) -> dict:
     return {
         "status": status,
@@ -131,6 +201,159 @@ def _playwright_chromium_check() -> dict:
     )
 
 
+def _model_cache_candidates() -> list[tuple[str, Path]]:
+    candidates: list[tuple[str, Path]] = []
+    for variable in MODEL_CACHE_ENV_VARS:
+        value = os.environ.get(variable)
+        if value and value.strip():
+            candidates.append((variable, Path(value).expanduser()))
+    if os.name == "nt":
+        candidates.append(("windows_runtime_default", WINDOWS_RUNTIME_MODEL_CACHE))
+    candidates.append(("project_data_models", PROJECT_ROOT / "data" / "models"))
+
+    unique: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for source, path in candidates:
+        key = os.path.normcase(os.path.abspath(str(path)))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((source, path))
+    return unique
+
+
+def _is_model_payload_file(
+    path: Path,
+    *,
+    candidate_root: Path | None = None,
+    require_model_signature: bool = False,
+) -> bool:
+    name = path.name.lower()
+    if name in MODEL_CACHE_METADATA_NAMES or name.endswith(MODEL_CACHE_PARTIAL_SUFFIXES):
+        return False
+    try:
+        relative_parts = path.relative_to(candidate_root).parts if candidate_root is not None else path.parts
+    except ValueError:
+        return False
+    if any(part.lower() in MODEL_CACHE_IGNORED_DIRECTORY_NAMES for part in relative_parts[:-1]):
+        return False
+    if (
+        require_model_signature
+        and name not in MODEL_CACHE_PAYLOAD_NAMES
+        and not name.endswith(MODEL_CACHE_PAYLOAD_SUFFIXES)
+    ):
+        return False
+    try:
+        if not path.is_file() or path.stat().st_size <= 0:
+            return False
+        with path.open("rb") as handle:
+            return bool(handle.read(1))
+    except (OSError, ValueError):
+        return False
+
+
+def _find_model_payload(root: Path, *, require_model_signature: bool = False) -> Path | None:
+    scanned_directories = 0
+    scanned_files = 0
+    try:
+        for current_value, directory_names, file_names in os.walk(
+            root,
+            topdown=True,
+            followlinks=False,
+        ):
+            scanned_directories += 1
+            if scanned_directories > MODEL_CACHE_MAX_SCAN_DIRECTORIES:
+                return None
+
+            current = Path(current_value)
+            try:
+                depth = len(current.relative_to(root).parts)
+            except ValueError:
+                return None
+
+            directory_names[:] = [
+                name
+                for name in sorted(directory_names)
+                if name.lower() not in MODEL_CACHE_IGNORED_DIRECTORY_NAMES
+                and not name.lower().endswith(MODEL_CACHE_PARTIAL_SUFFIXES)
+            ]
+            if depth >= MODEL_CACHE_MAX_SCAN_DEPTH:
+                directory_names[:] = []
+
+            for name in sorted(file_names):
+                scanned_files += 1
+                if scanned_files > MODEL_CACHE_MAX_SCAN_FILES:
+                    return None
+                candidate = current / name
+                if _is_model_payload_file(
+                    candidate,
+                    candidate_root=root,
+                    require_model_signature=require_model_signature,
+                ):
+                    return candidate
+    except OSError:
+        return None
+    return None
+
+
+def _model_cache_evidence(root: Path, *, allow_legacy_payload: bool = False) -> Path | None:
+    try:
+        if not root.is_dir():
+            return None
+        for pattern in MODEL_CACHE_SNAPSHOT_PATTERNS:
+            for snapshot in root.glob(pattern):
+                if snapshot.is_dir():
+                    evidence = _find_model_payload(snapshot, require_model_signature=True)
+                    if evidence is not None:
+                        return evidence
+        for marker in MODEL_CACHE_MARKERS:
+            direct = root / marker
+            if _is_model_payload_file(direct, candidate_root=root):
+                return direct
+            for nested in root.glob(f"*/{marker}"):
+                if _is_model_payload_file(nested, candidate_root=root):
+                    return nested
+        if allow_legacy_payload:
+            return _find_model_payload(root)
+    except OSError:
+        return None
+    return None
+
+
+def _model_cache_check() -> dict:
+    candidates = _model_cache_candidates()
+    existing_roots: list[str] = []
+    detected_source: str | None = None
+    detected_root: Path | None = None
+    evidence: Path | None = None
+    for source, root in candidates:
+        if root.is_dir():
+            existing_roots.append(str(root))
+        evidence = _model_cache_evidence(
+            root,
+            allow_legacy_payload=source == "project_data_models",
+        )
+        if evidence is not None:
+            detected_source = source
+            detected_root = root
+            break
+
+    found = evidence is not None
+    return _check(
+        "ok" if found else "warning",
+        True,
+        "已发现本地模型缓存。" if found else "未确认本地模型缓存；首次搜索可能需要下载模型。",
+        {
+            "candidate_roots": [str(path) for _source, path in candidates],
+            "existing_roots": existing_roots,
+            "found": found,
+            "detected_source": detected_source,
+            "detected_root": str(detected_root) if detected_root else None,
+            "evidence_path": str(evidence) if evidence else None,
+        },
+    )
+
+
 def _backups_check(backup_dir: Path | None = None) -> dict:
     root = maintenance._backup_dir(backup_dir)  # Reuse the central path policy.
     retention = maintenance.describe_backup_retention(root)
@@ -209,7 +432,7 @@ def collect_doctor_report(*, backup_dir: Path | None = None, db_path: Path | Non
             "本地 Web 服务状态已读取。",
             server_runtime.get_service_audit(configured_port=settings.web_port),
         ),
-        "model_cache": _path_check(PROJECT_ROOT / "data" / "models", "模型缓存", create_expected=True),
+        "model_cache": _model_cache_check(),
         "avatar_cache": _path_check(settings.avatar_cache_dir, "头像缓存", create_expected=True),
         "smtp": _smtp_check(),
     }

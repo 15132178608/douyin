@@ -2,7 +2,8 @@
 BGE-M3 中文向量模型封装（singleton）。
 
 - 模型：BAAI/bge-m3 —— 中文效果好、1024 维、CPU 可跑、零调用成本
-- 首次加载会从 HuggingFace 下载 ~2.3GB，缓存到 ~/.cache/huggingface/
+- 首次加载会从 HuggingFace 下载 ~2.3GB；缓存位置遵循
+  SENTENCE_TRANSFORMERS_HOME / HF_HOME（Windows 安装器默认放在 D 盘运行时目录）
 - 之后每次启动 ~10–20 秒装载到内存
 - 单例：第一次调用时加载，后续直接复用
 """

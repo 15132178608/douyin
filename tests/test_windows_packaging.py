@@ -397,7 +397,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("external listener", control)
         self.assertIn("recorded PID and port owner mismatch", control)
         self.assertIn("Do not stop pid=", control)
-        self.assertIn("Repair suggestion", control)
+        self.assertIn("Suggested action", control)
         repair = control[
             control.index("function Repair-StaleServerState"):
             control.index("function Show-ControlMenu")
@@ -409,6 +409,46 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertNotIn("rm -rf", control)
         self.assertIn('"health" { Invoke-HealthCheck; Wait-BeforeExit }', control)
         self.assertIn('"repair" { Repair-StaleServerState; Wait-BeforeExit }', control)
+
+    def test_control_service_audit_reserves_repair_for_stale_pid_records(self) -> None:
+        control = read("control-douyin-recall.ps1")
+        audit = control[
+            control.index("function Get-ServiceAudit"):
+            control.index("function Get-ControlSummary")
+        ]
+
+        stale_without_listener = audit[
+            audit.index('Relation = "stale service record"'):
+            audit.index('Relation = "stale service record with listener"')
+        ]
+        stale_with_listener = audit[
+            audit.index('Relation = "stale service record with listener"'):
+            audit.index('Relation = "record without listener"')
+        ]
+        live_without_listener = audit[
+            audit.index('Relation = "record without listener"'):
+            audit.index('Relation = "own service running"')
+        ]
+        live_owner_mismatch = audit[
+            audit.index('Relation = "recorded PID and port owner mismatch"'):
+        ]
+
+        for stale_branch in (stale_without_listener, stale_with_listener):
+            self.assertIn('Action = "repair"', stale_branch)
+            self.assertIn("Douyin Recall Repair State", stale_branch)
+
+        for live_branch in (live_without_listener, live_owner_mismatch):
+            self.assertIn('Action = "stop"', live_branch)
+            self.assertIn("Douyin Recall Stop Service", live_branch)
+            self.assertNotIn("Douyin Recall Repair State", live_branch)
+
+        health = control[
+            control.index("function Invoke-HealthCheck"):
+            control.index("function Repair-StaleServerState")
+        ]
+        self.assertIn('$audit.Action -eq "stop"', health)
+        self.assertIn("Run: Douyin Recall Stop Service", health)
+        self.assertIn("Run: Douyin Recall Repair State", health)
 
     def test_control_script_exposes_backup_and_restore_center_actions(self) -> None:
         control = read("control-douyin-recall.ps1")
@@ -830,6 +870,9 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Windows 安装包排障", doc)
         self.assertIn("SmartScreen", doc)
         self.assertIn("D:\\codexDownload\\douyinclaude-runtime", doc)
+        self.assertIn("SENTENCE_TRANSFORMERS_HOME", doc)
+        self.assertIn("HF_HOME", doc)
+        self.assertIn(".incomplete", doc)
         self.assertIn("start-douyin-recall.log", doc)
         self.assertIn("uv run python -m src.cli status", doc)
         self.assertIn("uv run python -m src.cli stop", doc)
@@ -844,6 +887,10 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("健康检查", doc)
         self.assertIn("Douyin Recall Health Check", doc)
         self.assertIn("Douyin Recall Repair State", doc)
+        self.assertIn("record_without_listener", doc)
+        self.assertIn("record_port_mismatch", doc)
+        self.assertIn("此时不要使用 Repair State", doc)
+        self.assertIn("也不要使用 Repair State", doc)
         self.assertIn("Douyin Recall Prepare Runtime", doc)
         self.assertIn("不会启动本地 Web 服务", doc)
         self.assertIn("Douyin Recall Backup Now", doc)

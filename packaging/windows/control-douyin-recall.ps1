@@ -425,12 +425,12 @@ function Get-ServiceAudit {
     if ($null -eq $portOwner) {
         return [pscustomobject]@{
             Relation = "record without listener"
-            Action = "repair"
+            Action = "stop"
             Port = $port
             RecordedPid = $recordedPid
             PortOwnerPid = $null
             Message = "Recorded PID $recordedPid still exists, but port $port has no listener."
-            NextStep = "Run Douyin Recall Repair State or uv run python -m src.cli stop, then check status again."
+            NextStep = "If the service just started, wait and check again. Otherwise run Douyin Recall Stop Service or uv run python -m src.cli stop to safely recheck and clean project state."
         }
     }
 
@@ -448,12 +448,12 @@ function Get-ServiceAudit {
 
     return [pscustomobject]@{
         Relation = "recorded PID and port owner mismatch"
-        Action = "repair"
+        Action = "stop"
         Port = $port
         RecordedPid = $recordedPid
         PortOwnerPid = $portOwner
         Message = "Recorded PID $recordedPid does not match port $port owner pid=$portOwner."
-        NextStep = "Run Douyin Recall Repair State or uv run python -m src.cli stop to clean project state. Do not stop pid=$portOwner unless you recognize it."
+        NextStep = "Run Douyin Recall Stop Service or uv run python -m src.cli stop to safely recheck and clean project state. Do not stop pid=$portOwner unless you recognize it."
     }
 }
 
@@ -752,13 +752,17 @@ function Invoke-HealthCheck {
     Write-Host "[INFO] Next step: $($audit.NextStep)"
 
     Write-Host ""
-    Write-Host "Repair suggestion:"
+    Write-Host "Suggested action:"
     if ($needsRepair) {
         Write-Host "  Run: Douyin Recall Repair State"
         Write-Host "  Or run from install dir: powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\control-douyin-recall.ps1 -Action repair"
     }
+    elseif ($audit.Action -eq "stop") {
+        Write-Host "  Run: Douyin Recall Stop Service"
+        Write-Host "  Or run from install dir: powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\control-douyin-recall.ps1 -Action stop"
+    }
     else {
-        Write-Host "  No stale service record needs automatic cleanup."
+        Write-Host "  Follow the next step shown above."
     }
 }
 
