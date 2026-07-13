@@ -172,9 +172,63 @@ def _release_gate_details(artifacts: dict[str, str]) -> dict:
     if not isinstance(installer, dict):
         installer = {}
     return {
-        "ok": bool(payload.get("ok")),
+        "ok": payload.get("ok") is True,
         "installer": installer,
     }
+
+
+def _same_path(left: object, right: Path) -> bool:
+    if not left:
+        return False
+    try:
+        return Path(str(left)).resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def _release_gate_contract_errors(
+    artifacts: dict[str, str],
+    details: dict,
+    *,
+    build_installer: bool,
+    installer_path: Path | None,
+) -> list[str]:
+    errors = [
+        f"missing fresh {name}"
+        for name in ("release_gate_json", "release_gate_markdown", "delivery_manifest")
+        if not artifacts.get(name)
+    ]
+    if not details:
+        errors.append("fresh release gate JSON is missing or invalid")
+        return errors
+    if not details.get("ok"):
+        errors.append("fresh release gate report has ok=false")
+
+    installer_requested = bool(build_installer or installer_path is not None)
+    if not installer_requested:
+        return errors
+
+    installer = details.get("installer")
+    if not isinstance(installer, dict):
+        errors.append("fresh release gate report has no installer metadata")
+        return errors
+    if installer.get("requested") is not True:
+        errors.append("installer metadata requested is not true")
+    if installer.get("validated") is not True:
+        errors.append("installer metadata validated is not true")
+    expected_source = "built" if build_installer else "external"
+    if installer.get("source") != expected_source:
+        errors.append(f"installer metadata source is not {expected_source}")
+    if build_installer and installer.get("built") is not True:
+        errors.append("built installer metadata built is not true")
+    if installer_path is not None and installer.get("built") is not False:
+        errors.append("external installer metadata built is not false")
+    expected_path = installer_path
+    if build_installer:
+        expected_path = PROJECT_ROOT / "packaging" / "windows" / "out" / "DouyinRecallSetup.exe"
+    if expected_path is not None and not _same_path(installer.get("path"), expected_path):
+        errors.append("installer metadata path does not match expected path")
+    return errors
 
 
 def _release_gate_command(
@@ -270,6 +324,8 @@ def _result_step(
     output_dir: Path,
     *,
     previous_release_gate_artifacts: dict[str, FileSignature] | None = None,
+    build_installer: bool = False,
+    installer_path: Path | None = None,
 ) -> dict:
     ok = result.exit_code == 0
     artifacts = _step_artifacts(
@@ -291,7 +347,23 @@ def _result_step(
         "artifacts": artifacts,
     }
     if step["name"] == "release_gate":
-        item["details"] = _release_gate_details(artifacts)
+        details = _release_gate_details(artifacts)
+        item["details"] = details
+        if ok:
+            contract_errors = _release_gate_contract_errors(
+                artifacts,
+                details,
+                build_installer=build_installer,
+                installer_path=installer_path,
+            )
+            if contract_errors:
+                message = "Release gate evidence contract failed: " + "; ".join(contract_errors)
+                item["ok"] = False
+                item["status"] = "failed"
+                item["message"] = "发布门禁未生成可信的本次证据。"
+                item["stderr"] = "\n".join(
+                    part for part in (item.get("stderr", ""), message) if part
+                )
     return item
 
 
@@ -333,16 +405,23 @@ def run_final_release_check(
     env = _default_env()
     steps: list[dict] = []
     blocked = False
+    requested_installer_path = Path(installer_path) if installer_path is not None else None
+    if requested_installer_path is not None and not requested_installer_path.is_absolute():
+        requested_installer_path = PROJECT_ROOT / requested_installer_path
+    if requested_installer_path is not None:
+        requested_installer_path = requested_installer_path.resolve()
 
-    for step in _planned_steps(
+    planned_steps = _planned_steps(
         python_executable=executable,
         output_dir=output_root,
         benchmarks_dir=benchmark_root,
         audits_dir=audit_root,
         build_installer=build_installer,
-        installer_path=Path(installer_path) if installer_path is not None else None,
+        installer_path=requested_installer_path,
         update_performance_baseline=update_performance_baseline,
-    ):
+    )
+
+    for step in planned_steps:
         if blocked:
             steps.append(_skipped_step(step))
             continue
@@ -357,10 +436,18 @@ def run_final_release_check(
             result,
             output_root,
             previous_release_gate_artifacts=previous_release_gate_artifacts,
+            build_installer=build_installer,
+            installer_path=requested_installer_path,
         )
         steps.append(check)
         if not check["ok"]:
             blocked = True
+        elif step["name"] == "release_gate":
+            manifest_path = check["artifacts"]["delivery_manifest"]
+            for future_step in planned_steps:
+                if future_step["name"] == "delivery_evidence":
+                    future_step["command"].extend(["--manifest", manifest_path])
+                    break
 
     installer = {}
     for step in steps:

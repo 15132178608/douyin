@@ -80,6 +80,27 @@ def passing_installer_artifact(installer_path: Path, expected_version: str) -> d
     }
 
 
+def write_final_release_gate_artifacts(
+    output_dir: Path,
+    payload: dict,
+    *,
+    stamp: str = "20260714-000000",
+) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "json": output_dir / f"release-gate-{stamp}.json",
+        "markdown": output_dir / f"release-gate-{stamp}.md",
+        "manifest": output_dir / f"delivery-manifest-{stamp}.json",
+    }
+    paths["json"].write_text(json.dumps(payload), encoding="utf-8")
+    paths["markdown"].write_text("# release gate\n", encoding="utf-8")
+    paths["manifest"].write_text(
+        json.dumps({"schema_version": 1, "ok": bool(payload.get("ok"))}),
+        encoding="utf-8",
+    )
+    return paths
+
+
 class FakeResponse:
     def __init__(self, text: str = "ok", status_code: int = 200) -> None:
         self.text = text
@@ -642,6 +663,11 @@ def test_final_release_check_runs_release_gate_evidence_and_preflight_in_order(t
 
     def runner(command, cwd, env, timeout_seconds):
         calls.append(list(command))
+        if command[:3] == ["python", "-m", "relcheck.release_gate"]:
+            write_final_release_gate_artifacts(
+                tmp_path / "release-checks",
+                {"ok": True, "installer": {"requested": False}},
+            )
         return final_release_check.CommandResult(
             command=list(command),
             exit_code=0,
@@ -675,6 +701,9 @@ def test_final_release_check_runs_release_gate_evidence_and_preflight_in_order(t
     assert calls[0][calls[0].index("--benchmarks-dir") + 1] == str(tmp_path / "benchmarks")
     assert calls[0][calls[0].index("--audits-dir") + 1] == str(tmp_path / "audits")
     assert calls[1][:2] == ["python", str(Path.cwd() / "scripts" / "validate_delivery_evidence.py")]
+    assert calls[1][calls[1].index("--manifest") + 1] == str(
+        output_dir / "delivery-manifest-20260714-000000.json"
+    )
     assert calls[2][:2] == ["python", str(Path.cwd() / "scripts" / "preflight_summary.py")]
     assert paths["json"].exists()
     assert paths["markdown"].exists()
@@ -760,6 +789,143 @@ def test_final_release_check_does_not_attach_stale_release_gate_metadata(tmp_pat
     assert report["steps"][0]["details"] == {}
 
 
+def test_final_release_check_rejects_zero_exit_without_fresh_release_gate_evidence(tmp_path: Path) -> None:
+    from relcheck import final_release_check
+
+    output_dir = tmp_path / "release-checks"
+    write_final_release_gate_artifacts(
+        output_dir,
+        {
+            "ok": True,
+            "installer": {
+                "requested": True,
+                "source": "external",
+                "validated": True,
+                "path": "stale-installer.exe",
+            },
+        },
+        stamp="20260713-235959",
+    )
+    calls: list[list[str]] = []
+
+    def runner(command, cwd, env, timeout_seconds):
+        calls.append(list(command))
+        return final_release_check.CommandResult(
+            command=list(command),
+            exit_code=0,
+            elapsed_seconds=0.01,
+            stdout="success without new evidence",
+            stderr="",
+        )
+
+    report = final_release_check.run_final_release_check(
+        output_dir=output_dir,
+        benchmarks_dir=tmp_path / "benchmarks",
+        audits_dir=tmp_path / "audits",
+        python_executable="python",
+        runner=runner,
+    )
+
+    assert report["ok"] is False
+    assert len(calls) == 1
+    assert report["summary"] == {"total": 3, "passed": 0, "failed": 1, "skipped": 2}
+    assert report["steps"][0]["exit_code"] == 0
+    assert report["steps"][0]["artifacts"] == {
+        "release_gate_json": "",
+        "release_gate_markdown": "",
+        "delivery_manifest": "",
+    }
+    assert "evidence contract failed" in report["steps"][0]["stderr"]
+
+
+def test_final_release_check_rejects_fresh_failed_release_gate_report(tmp_path: Path) -> None:
+    from relcheck import final_release_check
+
+    output_dir = tmp_path / "release-checks"
+
+    def runner(command, cwd, env, timeout_seconds):
+        if command[:3] == ["python", "-m", "relcheck.release_gate"]:
+            write_final_release_gate_artifacts(
+                output_dir,
+                {"ok": False, "installer": {"requested": False}},
+            )
+        return final_release_check.CommandResult(
+            command=list(command),
+            exit_code=0,
+            elapsed_seconds=0.01,
+            stdout="incorrect zero exit",
+            stderr="",
+        )
+
+    report = final_release_check.run_final_release_check(
+        output_dir=output_dir,
+        benchmarks_dir=tmp_path / "benchmarks",
+        audits_dir=tmp_path / "audits",
+        python_executable="python",
+        runner=runner,
+    )
+
+    assert report["ok"] is False
+    assert report["steps"][0]["details"]["ok"] is False
+    assert "ok=false" in report["steps"][0]["stderr"]
+    assert [step["status"] for step in report["steps"]] == ["failed", "skipped", "skipped"]
+
+
+def test_final_release_check_rejects_truthy_string_release_gate_status(tmp_path: Path) -> None:
+    from relcheck import final_release_check
+
+    report_path = tmp_path / "release-gate-20260714-000000.json"
+    report_path.write_text(json.dumps({"ok": "true", "installer": {}}), encoding="utf-8")
+
+    details = final_release_check._release_gate_details({"release_gate_json": str(report_path)})
+
+    assert details["ok"] is False
+
+
+def test_final_release_check_requires_real_json_booleans_in_installer_contract(tmp_path: Path) -> None:
+    from relcheck import final_release_check
+
+    output_dir = tmp_path / "release-checks"
+    installer_path = tmp_path / "DouyinRecallSetup.exe"
+
+    def runner(command, cwd, env, timeout_seconds):
+        if command[:3] == ["python", "-m", "relcheck.release_gate"]:
+            write_final_release_gate_artifacts(
+                output_dir,
+                {
+                    "ok": True,
+                    "installer": {
+                        "requested": "true",
+                        "source": "external",
+                        "built": "false",
+                        "validated": "true",
+                        "path": str(installer_path),
+                    },
+                },
+            )
+        return final_release_check.CommandResult(
+            command=list(command),
+            exit_code=0,
+            elapsed_seconds=0.01,
+            stdout="incorrect truthy strings",
+            stderr="",
+        )
+
+    report = final_release_check.run_final_release_check(
+        output_dir=output_dir,
+        benchmarks_dir=tmp_path / "benchmarks",
+        audits_dir=tmp_path / "audits",
+        python_executable="python",
+        installer_path=installer_path,
+        runner=runner,
+    )
+
+    assert report["ok"] is False
+    assert "requested is not true" in report["steps"][0]["stderr"]
+    assert "validated is not true" in report["steps"][0]["stderr"]
+    assert "built is not false" in report["steps"][0]["stderr"]
+
+
 def test_final_release_check_records_external_installer_metadata(tmp_path: Path) -> None:
     from relcheck import final_release_check
 
@@ -783,10 +949,9 @@ def test_final_release_check_records_external_installer_metadata(tmp_path: Path)
 
     def runner(command, cwd, env, timeout_seconds):
         if command[:3] == ["python", "-m", "relcheck.release_gate"]:
-            output_dir.mkdir(parents=True, exist_ok=True)
-            (output_dir / "release-gate-20260714-000000.json").write_text(
-                json.dumps({"ok": True, "installer": installer}),
-                encoding="utf-8",
+            write_final_release_gate_artifacts(
+                output_dir,
+                {"ok": True, "installer": installer},
             )
         return final_release_check.CommandResult(
             command=list(command),
@@ -814,6 +979,143 @@ def test_final_release_check_records_external_installer_metadata(tmp_path: Path)
     assert "product_version: `0.1.24`" in markdown
     assert "sha256: `abc123`" in markdown
     assert "authenticode_status: `NotSigned`" in markdown
+
+
+def test_final_release_check_accepts_built_installer_metadata(tmp_path: Path) -> None:
+    from relcheck import final_release_check
+
+    output_dir = tmp_path / "release-checks"
+    installer_path = Path.cwd() / "packaging" / "windows" / "out" / "DouyinRecallSetup.exe"
+
+    def runner(command, cwd, env, timeout_seconds):
+        if command[:3] == ["python", "-m", "relcheck.release_gate"]:
+            write_final_release_gate_artifacts(
+                output_dir,
+                {
+                    "ok": True,
+                    "installer": {
+                        "requested": True,
+                        "source": "built",
+                        "built": True,
+                        "validated": True,
+                        "path": str(installer_path),
+                    },
+                },
+            )
+        return final_release_check.CommandResult(
+            command=list(command),
+            exit_code=0,
+            elapsed_seconds=0.01,
+            stdout="ok",
+            stderr="",
+        )
+
+    report = final_release_check.run_final_release_check(
+        output_dir=output_dir,
+        benchmarks_dir=tmp_path / "benchmarks",
+        audits_dir=tmp_path / "audits",
+        python_executable="python",
+        build_installer=True,
+        runner=runner,
+    )
+
+    assert report["ok"] is True
+    assert report["installer"]["source"] == "built"
+    assert report["installer"]["built"] is True
+
+
+def test_final_release_check_resolves_relative_installer_from_project_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from relcheck import final_release_check
+
+    output_dir = tmp_path / "release-checks"
+    relative_path = Path("qa artifacts") / "DouyinRecallSetup.exe"
+    expected_path = final_release_check.PROJECT_ROOT / relative_path
+    monkeypatch.chdir(tmp_path)
+    calls: list[list[str]] = []
+
+    def runner(command, cwd, env, timeout_seconds):
+        calls.append(list(command))
+        if command[:3] == ["python", "-m", "relcheck.release_gate"]:
+            write_final_release_gate_artifacts(
+                output_dir,
+                {
+                    "ok": True,
+                    "installer": {
+                        "requested": True,
+                        "source": "external",
+                        "built": False,
+                        "validated": True,
+                        "path": str(expected_path),
+                    },
+                },
+            )
+        return final_release_check.CommandResult(
+            command=list(command),
+            exit_code=0,
+            elapsed_seconds=0.01,
+            stdout="ok",
+            stderr="",
+        )
+
+    report = final_release_check.run_final_release_check(
+        output_dir=output_dir,
+        benchmarks_dir=tmp_path / "benchmarks",
+        audits_dir=tmp_path / "audits",
+        python_executable="python",
+        installer_path=relative_path,
+        runner=runner,
+    )
+
+    release_command = calls[0]
+    assert report["ok"] is True
+    assert release_command[release_command.index("--installer-path") + 1] == str(expected_path)
+    assert report["installer"]["path"] == str(expected_path)
+
+
+def test_final_release_check_rejects_external_installer_metadata_for_another_path(tmp_path: Path) -> None:
+    from relcheck import final_release_check
+
+    output_dir = tmp_path / "release-checks"
+    installer_path = tmp_path / "DouyinRecallSetup.exe"
+
+    def runner(command, cwd, env, timeout_seconds):
+        if command[:3] == ["python", "-m", "relcheck.release_gate"]:
+            write_final_release_gate_artifacts(
+                output_dir,
+                {
+                    "ok": True,
+                    "installer": {
+                        "requested": True,
+                        "source": "external",
+                        "built": False,
+                        "validated": True,
+                        "path": str(tmp_path / "another-installer.exe"),
+                    },
+                },
+            )
+        return final_release_check.CommandResult(
+            command=list(command),
+            exit_code=0,
+            elapsed_seconds=0.01,
+            stdout="ok",
+            stderr="",
+        )
+
+    report = final_release_check.run_final_release_check(
+        output_dir=output_dir,
+        benchmarks_dir=tmp_path / "benchmarks",
+        audits_dir=tmp_path / "audits",
+        python_executable="python",
+        installer_path=installer_path,
+        runner=runner,
+    )
+
+    assert report["ok"] is False
+    assert "path does not match" in report["steps"][0]["stderr"]
+    assert [step["status"] for step in report["steps"]] == ["failed", "skipped", "skipped"]
 
 
 def test_installer_artifact_check_parses_stable_powershell_evidence(tmp_path: Path) -> None:
