@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
+from src import accounts
+from src.categorize import cluster
 from src.db import SCHEMA_SQL
 from src.recall import selector
 from src.web import app as web_app
@@ -33,13 +35,19 @@ def isolated_memories_db():
     conn.execute("CREATE TABLE likes_vec (id TEXT PRIMARY KEY, user_id TEXT, embedding BLOB)")
 
     original_web_get_connection = web_helpers._db_get_connection
+    original_accounts_get_connection = accounts.get_connection
+    original_cluster_get_connection = cluster.get_connection
     original_selector_get_connection = selector.get_connection
     web_helpers._db_get_connection = lambda: conn
+    accounts.get_connection = lambda: conn
+    cluster.get_connection = lambda: conn
     selector.get_connection = lambda: conn
     try:
         yield conn
     finally:
         web_helpers._db_get_connection = original_web_get_connection
+        accounts.get_connection = original_accounts_get_connection
+        cluster.get_connection = original_cluster_get_connection
         selector.get_connection = original_selector_get_connection
         conn.close()
 
