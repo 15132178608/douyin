@@ -36,6 +36,13 @@ def isolated_web_db():
     )
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA_SQL)
+    conn.execute(
+        """
+        INSERT INTO users (id, display_name, douyin_nickname, created_at)
+        VALUES ('default', '本地默认用户', '测试抖音账号', ?)
+        """,
+        (datetime.now(timezone.utc),),
+    )
     conn.execute("ALTER TABLE favorites ADD COLUMN category_id INTEGER")
     conn.execute("ALTER TABLE likes ADD COLUMN category_id INTEGER")
     conn.execute("CREATE TABLE favorites_vec (id TEXT PRIMARY KEY, user_id TEXT, embedding BLOB)")

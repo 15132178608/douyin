@@ -106,6 +106,9 @@ def test_home_page_only_shows_items_for_session_user() -> None:
     with isolated_web_accounts_db() as conn:
         insert_user_item(conn, "alice", "a1", "alice private item")
         insert_user_item(conn, "bob", "b1", "bob private item")
+        conn.execute(
+            "UPDATE users SET douyin_nickname = 'Alice 抖音账号' WHERE id = 'alice'"
+        )
         alice_token = accounts.create_session("alice")
 
         client = TestClient(web_app.app)
