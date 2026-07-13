@@ -3,21 +3,18 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-import threading
 
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from loguru import logger
 
-from src import jobs
 from src.categorize import cluster as cluster_mod
 from src.content.kinds import get_content_kind
-from src.web import content_items, content_state
+from src.web import content_items, content_state, item_action_service
 from src.web.helpers import current_user_id, get_connection, templates
 
 
 router = APIRouter()
-_uncollect_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -233,44 +230,22 @@ def _batch_remove_for_kind(request: Request, content_kind: str, ids: list[str]):
     if not unique_ids:
         return HTMLResponse("<div class='empty'>没有选择条目。</div>", status_code=400)
 
-    conn = get_connection()
-    removed = 0
-    now = datetime.now(timezone.utc)
-    with _uncollect_lock:
-        for item_id in unique_ids:
-            row = conn.execute(
-                f"SELECT id, is_removed FROM {kind.table} WHERE user_id = ? AND id = ?",
-                (user_id, item_id),
-            ).fetchone()
-            if row is None or row["is_removed"]:
-                continue
-            if kind.key == "likes":
-                cur = conn.execute(
-                    "INSERT INTO unlike_log (user_id, like_id, initiated_at, status, channel) "
-                    "VALUES (?, ?, ?, 'pending', 'web-batch')",
-                    (user_id, item_id, now),
-                )
-            else:
-                cur = conn.execute(
-                    "INSERT INTO uncollect_log (user_id, favorite_id, initiated_at, status, channel) "
-                    "VALUES (?, ?, ?, 'pending', 'web-batch')",
-                    (user_id, item_id, now),
-                )
-            jobs.enqueue_job(
-                "uncollect",
-                user_id=user_id,
-                payload={
-                    "content_kind": kind.key,
-                    "aweme_id": item_id,
-                    "log_id": cur.lastrowid,
-                },
-            )
-            conn.execute(
-                f"UPDATE {kind.table} SET is_removed = 1, last_seen_at = ? WHERE user_id = ? AND id = ?",
-                (datetime.now(timezone.utc), user_id, item_id),
-            )
-            removed += 1
-    return HTMLResponse(f"<div class='empty'>已加入后台队列：{removed} 条{kind.label}</div>")
+    try:
+        result = item_action_service.queue_item_removals(
+            kind.key,
+            user_id,
+            unique_ids,
+            channel="web-batch",
+        )
+    except Exception as exc:
+        logger.exception("batch removal failed for {}: {}", kind.key, exc)
+        return HTMLResponse(
+            "<div class='card-error'>操作失败，请稍后重试</div>",
+            status_code=500,
+        )
+    return HTMLResponse(
+        f"<div class='empty'>已加入后台队列：{result.queued_count} 条{kind.label}</div>"
+    )
 
 
 @router.post("/favorites/{favorite_id}/uncollect", response_class=HTMLResponse)
@@ -279,39 +254,7 @@ def uncollect_favorite(request: Request, favorite_id: str):
     后台复用本地登录态调用抖音 Web 收藏接口取消收藏。
     成功返回空内容（HTMX 把卡片 remove 掉）；失败返回错误片段。
     """
-    conn = get_connection()
-    user_id = current_user_id(request)
-    with _uncollect_lock:
-        row = conn.execute(
-            "SELECT id, title, is_removed FROM favorites WHERE user_id = ? AND id = ?",
-            (user_id, favorite_id),
-        ).fetchone()
-        if row is None:
-            return HTMLResponse("<div class='empty'>找不到这条</div>", status_code=404)
-        if row["is_removed"]:
-            return HTMLResponse("", status_code=200)
-
-        now = datetime.now(timezone.utc)
-        cur = conn.execute(
-            "INSERT INTO uncollect_log (user_id, favorite_id, initiated_at, status, channel) "
-            "VALUES (?, ?, ?, 'pending', 'web')",
-            (user_id, favorite_id, now),
-        )
-        log_id = cur.lastrowid
-        jobs.enqueue_job(
-            "uncollect",
-            user_id=user_id,
-            payload={
-                "content_kind": "favorites",
-                "aweme_id": favorite_id,
-                "log_id": log_id,
-            },
-        )
-        conn.execute(
-            "UPDATE favorites SET is_removed = 1, last_seen_at = ? WHERE user_id = ? AND id = ?",
-            (datetime.now(timezone.utc), user_id, favorite_id),
-        )
-        return HTMLResponse("", status_code=200)
+    return _remove_one_for_kind(request, "favorites", favorite_id)
 
 
 @router.post("/likes/{favorite_id}/unlike", response_class=HTMLResponse)
@@ -320,39 +263,29 @@ def unlike_like(request: Request, favorite_id: str):
     后台复用本地登录态调用抖音 Web 点赞接口取消喜欢。
     成功返回空内容（HTMX 把卡片 remove 掉）；失败返回错误片段。
     """
-    conn = get_connection()
-    user_id = current_user_id(request)
-    with _uncollect_lock:
-        row = conn.execute(
-            "SELECT id, title, is_removed FROM likes WHERE user_id = ? AND id = ?",
-            (user_id, favorite_id),
-        ).fetchone()
-        if row is None:
-            return HTMLResponse("<div class='empty'>找不到这条</div>", status_code=404)
-        if row["is_removed"]:
-            return HTMLResponse("", status_code=200)
+    return _remove_one_for_kind(request, "likes", favorite_id)
 
-        now = datetime.now(timezone.utc)
-        cur = conn.execute(
-            "INSERT INTO unlike_log (user_id, like_id, initiated_at, status, channel) "
-            "VALUES (?, ?, ?, 'pending', 'web')",
-            (user_id, favorite_id, now),
+
+def _remove_one_for_kind(request: Request, content_kind: str, item_id: str):
+    kind = get_content_kind(content_kind)
+    user_id = current_user_id(request)
+    try:
+        result = item_action_service.queue_item_removals(
+            kind.key,
+            user_id,
+            [item_id],
+            channel="web",
+            limit=1,
         )
-        log_id = cur.lastrowid
-        jobs.enqueue_job(
-            "uncollect",
-            user_id=user_id,
-            payload={
-                "content_kind": "likes",
-                "aweme_id": favorite_id,
-                "log_id": log_id,
-            },
+    except Exception as exc:
+        logger.exception("item removal failed for {} {}: {}", kind.key, item_id, exc)
+        return HTMLResponse(
+            "<div class='card-error'>操作失败，请稍后重试</div>",
+            status_code=500,
         )
-        conn.execute(
-            "UPDATE likes SET is_removed = 1, last_seen_at = ? WHERE user_id = ? AND id = ?",
-            (datetime.now(timezone.utc), user_id, favorite_id),
-        )
-        return HTMLResponse("", status_code=200)
+    if result.missing_ids:
+        return HTMLResponse("<div class='empty'>找不到这条</div>", status_code=404)
+    return HTMLResponse("", status_code=200)
 
 
 # ---------------------------------------------------------------------------
@@ -372,29 +305,14 @@ def likes_track_open(request: Request, favorite_id: str):
 def _track_open_for_kind(request: Request, content_kind: str, favorite_id: str):
     kind = get_content_kind(content_kind)
     user_id = current_user_id(request)
-    now = datetime.now(timezone.utc)
-    conn = get_connection()
     try:
-        conn.execute("BEGIN")
-        conn.execute(
-            f"UPDATE {kind.table} SET last_recalled_at = ? WHERE user_id = ? AND id = ?",
-            (now, user_id, favorite_id),
+        found = item_action_service.track_item_open(kind.key, user_id, favorite_id)
+    except Exception as exc:
+        logger.exception("track_open failed for {} {}: {}", kind.key, favorite_id, exc)
+        return JSONResponse(
+            {"ok": False, "error": "tracking failed"},
+            status_code=500,
         )
-        if kind.key == "favorites":
-            conn.execute(
-                "INSERT INTO recall_log (user_id, favorite_id, recalled_at, channel, user_action) "
-                "VALUES (?, ?, ?, 'search', 'opened')",
-                (user_id, favorite_id, now),
-            )
-        else:
-            conn.execute(
-                "INSERT INTO like_recall_log (user_id, like_id, recalled_at, channel, user_action) "
-                "VALUES (?, ?, ?, 'search', 'opened')",
-                (user_id, favorite_id, now),
-            )
-        conn.execute("COMMIT")
-    except Exception as e:
-        conn.execute("ROLLBACK")
-        logger.exception("track_open failed for {}: {}", favorite_id, e)
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    if not found:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
     return JSONResponse({"ok": True})
