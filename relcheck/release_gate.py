@@ -767,8 +767,12 @@ def render_markdown_report(report: dict) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _default_checks(python_executable: str) -> list[tuple[str, list[str], int, dict[str, str]]]:
-    installed_smoke_report = PROJECT_ROOT / "data" / "release-checks" / "installed-smoke-report.json"
+def _default_checks(
+    python_executable: str,
+    output_dir: Path | str = DEFAULT_OUTPUT_DIR,
+) -> list[tuple[str, list[str], int, dict[str, str]]]:
+    output_root = Path(output_dir)
+    installed_smoke_report = output_root / "installed-smoke-report.json"
     return [
         ("pytest", [python_executable, "-m", "pytest", "-q"], 600, {}),
         (
@@ -783,9 +787,9 @@ def _default_checks(python_executable: str) -> list[tuple[str, list[str], int, d
                 python_executable,
                 str(PROJECT_ROOT / "scripts" / "installed_smoke.py"),
                 "--app-root",
-                str(PROJECT_ROOT / "data" / "release-checks" / "installed-smoke"),
+                str(output_root / "installed-smoke"),
                 "--output-dir",
-                str(PROJECT_ROOT / "data" / "release-checks"),
+                str(output_root),
             ],
             300,
             {"report": str(installed_smoke_report)},
@@ -816,11 +820,16 @@ def _default_checks(python_executable: str) -> list[tuple[str, list[str], int, d
         ),
         (
             "acceptance_matrix",
-            [python_executable, str(PROJECT_ROOT / "scripts" / "acceptance_matrix.py")],
+            [
+                python_executable,
+                str(PROJECT_ROOT / "scripts" / "acceptance_matrix.py"),
+                "--output-dir",
+                str(output_root),
+            ],
             120,
             {
-                "json": str(PROJECT_ROOT / "data" / "release-checks" / "acceptance-matrix.json"),
-                "markdown": str(PROJECT_ROOT / "data" / "release-checks" / "acceptance-matrix.md"),
+                "json": str(output_root / "acceptance-matrix.json"),
+                "markdown": str(output_root / "acceptance-matrix.md"),
             },
         ),
     ]
@@ -858,7 +867,7 @@ def run_release_gate(
         ok = False
 
     if ok or not stop_on_failure:
-        for name, command, timeout, artifacts in _default_checks(python):
+        for name, command, timeout, artifacts in _default_checks(python, output_root):
             result = execute(command, PROJECT_ROOT, env, timeout)
             stdout_limit = None if name == "doctor_json" else 8000
             check = _check_result(name, result, artifacts, stdout_limit=stdout_limit)
