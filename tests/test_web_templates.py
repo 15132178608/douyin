@@ -6,8 +6,9 @@ Run:
 """
 from __future__ import annotations
 
-from pathlib import Path
 import ast
+from importlib.util import resolve_name
+from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -42,6 +43,58 @@ def test_web_app_is_application_assembly_only() -> None:
         source = (routes_dir / f"{module}.py").read_text(encoding="utf-8")
         assert "router.get(" in source or "router.post(" in source
         assert ")(content." not in source
+
+
+def test_route_modules_are_decoupled_and_route_topology_stays_stable() -> None:
+    source_paths = [
+        *sorted((ROOT / "src" / "web" / "routes").glob("*.py")),
+        ROOT / "src" / "web" / "runtime.py",
+    ]
+    for source_path in source_paths:
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        package = (
+            "src.web.routes" if source_path.parent.name == "routes" else "src.web"
+        )
+        forbidden_imports: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                forbidden_imports.extend(
+                    alias.name
+                    for alias in node.names
+                    if alias.name == "src.web.routes"
+                    or alias.name.startswith("src.web.routes.")
+                )
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if node.level:
+                    module = resolve_name(f"{'.' * node.level}{module}", package)
+                if module == "src.web.routes" or module.startswith("src.web.routes."):
+                    forbidden_imports.append(module)
+        assert not forbidden_imports, f"{source_path}: {forbidden_imports}"
+
+    from src.web.app import app
+
+    assert len(app.routes) == 80
+    assert sum(
+        getattr(route.endpoint, "__module__", "") == "src.web.routes.content"
+        for route in app.routes
+    ) == 46
+    stream_routes = {
+        (route.path, frozenset(route.methods or ())): getattr(
+            route.endpoint, "__module__", ""
+        )
+        for route in app.routes
+        if route.path.endswith("/stream")
+    }
+    assert stream_routes == {
+        ("/favorites/{favorite_id}/stream", frozenset({"GET"})): "src.web.routes.media",
+        ("/likes/{favorite_id}/stream", frozenset({"GET"})): "src.web.routes.media",
+    }
+
+    content_source = (ROOT / "src" / "web" / "routes" / "content.py").read_text(
+        encoding="utf-8"
+    )
+    assert len(content_source.splitlines()) <= 1800
 
 
 def test_remaining_async_functions_in_app_have_real_awaits() -> None:
@@ -116,7 +169,8 @@ def test_empty_content_states_are_user_facing_not_cli_instructions() -> None:
     assert "去维护中心" not in combined
     assert "empty-panel" in base
     assert "emptySpin" in base
-    assert "def _empty_state_context" in app_source
+    assert "def empty_state_context" in app_source
+    assert "def _empty_state_context" not in app_source
     assert '"/likes/empty-status"' in app_source
 
 
@@ -153,17 +207,17 @@ def test_card_layout_keeps_note_below_and_removes_inline_category_picker() -> No
     assert "white-space: nowrap" in card_meta_rule
 
 
-def test_uncollect_route_serializes_profile_access_and_skips_removed_items() -> None:
+def test_uncollect_routes_enqueue_jobs_without_import_time_worker_pool() -> None:
     app_source = read_web_source()
 
     assert "_uncollect_lock" in app_source
-    assert "_uncollect_worker" in app_source
     assert "start_background_workers" in app_source
     assert "with _uncollect_lock" in app_source
     assert "row[\"is_removed\"]" in app_source
     assert "jobs.enqueue_job(" in app_source
     assert '"content_kind": "favorites"' in app_source
-    assert "shutdown_uncollect_workers" in app_source
+    assert "_uncollect_worker" not in app_source
+    assert "shutdown_uncollect_workers" not in app_source
 
 
 def test_web_startup_does_not_warm_uncollect_bridge_or_lock_profile() -> None:
@@ -550,8 +604,8 @@ def test_local_first_run_prewarms_qr_auth_on_web_startup() -> None:
     assert "_maybe_prewarm_first_run_auth()" in startup_block
     assert "def _maybe_prewarm_first_run_auth" in app_source
     assert "settings.web_auth_required" in app_source
-    assert "auth.should_auto_start_setup_auth(status)" in app_source
-    assert "auth.ensure_douyin_auth_started(user_id)" in app_source
+    assert "douyin_auth.should_auto_start_setup_auth(status)" in app_source
+    assert "douyin_auth.ensure_douyin_auth_started(user_id)" in app_source
 
 
 def test_desktop_pagination_blocks_mobile_load_more_trigger() -> None:
@@ -700,7 +754,7 @@ if __name__ == "__main__":
         test_uncollect_button_has_busy_state_and_duplicate_submit_guard,
         test_batch_selection_has_persistent_state_and_bulk_actions,
         test_card_layout_keeps_note_below_and_removes_inline_category_picker,
-        test_uncollect_route_serializes_profile_access_and_skips_removed_items,
+        test_uncollect_routes_enqueue_jobs_without_import_time_worker_pool,
         test_web_startup_does_not_warm_uncollect_bridge_or_lock_profile,
         test_topbar_does_not_show_or_poll_uncollect_bridge_status,
         test_navigation_separates_modules_from_views,

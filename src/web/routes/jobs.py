@@ -2,30 +2,15 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from src import jobs
 from src.content.kinds import get_content_kind
+from src.web import content_state, job_service
 from src.web.helpers import current_user_id, templates
-from src.web.routes import content
 
 
 router = APIRouter()
-
-
-def public_job_error_message(message: str | None) -> str:
-    if not (message or "").strip():
-        return ""
-    return "任务失败，请打开诊断包或日志查看详情。"
-
-
-def jobs_for_template(user_id: str, *, limit: int = 200) -> list[dict]:
-    public_jobs: list[dict] = []
-    for job in jobs.list_jobs(user_id=user_id, limit=limit):
-        item = dict(job)
-        item["error_message"] = public_job_error_message(item.get("error_message"))
-        public_jobs.append(item)
-    return public_jobs
 
 
 @router.post("/jobs/sync")
@@ -46,7 +31,10 @@ def enqueue_sync_job(
         },
     )
     if request.headers.get("HX-Request"):
-        return content._empty_status_for_kind(request, content_kind.key)
+        return RedirectResponse(
+            content_state.empty_status_url(content_kind.key),
+            status_code=303,
+        )
     return JSONResponse({"ok": True, "job_id": job_id})
 
 
@@ -70,9 +58,7 @@ def enqueue_index_job(
 
 @router.get("/jobs", response_class=HTMLResponse)
 def jobs_page(request: Request):
-    from src.web.routes.maintenance import maintenance_page
-
-    return maintenance_page(request)
+    return RedirectResponse("/maintenance", status_code=303)
 
 
 @router.get("/jobs/status", response_class=HTMLResponse)
@@ -80,5 +66,5 @@ def jobs_status_fragment(request: Request):
     return templates.TemplateResponse(
         request,
         "_jobs_table.html",
-        {"jobs": jobs_for_template(current_user_id(request))},
+        {"jobs": job_service.jobs_for_template(current_user_id(request))},
     )

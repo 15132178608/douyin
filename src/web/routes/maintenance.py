@@ -11,10 +11,9 @@ from loguru import logger
 from src import db as db_module
 from src import diagnostics, jobs, maintenance
 from src.db import init_schema
+from src.web import content_state, douyin_auth, job_service
 from src.web.helpers import current_user_id, templates
 from src.web import runtime
-from src.web.routes import auth, content
-from src.web.routes.jobs import jobs_for_template
 
 
 router = APIRouter()
@@ -63,7 +62,7 @@ def _public_diagnostic_value_for_template(value, *, key: str = ""):
         return _public_local_path_token(value)
     if "command" in lowered_key:
         return "本机命令"
-    if auth.looks_sensitive_for_public_page(value):
+    if douyin_auth.looks_sensitive_for_public_page(value):
         prefix = "任务失败" if "error" in lowered_key else "维护状态异常"
         return public_operation_error_message(prefix, value)
     return value
@@ -87,8 +86,8 @@ def public_maintenance_status_for_template(user_id: str) -> dict:
             raw_message = latest_error.get("message")
             latest_error["message"] = (
                 "登录态可能过期，请重新绑定抖音账号。"
-                if auth.looks_sensitive_for_public_page(raw_message)
-                else auth.public_douyin_auth_message(raw_message)
+                if douyin_auth.looks_sensitive_for_public_page(raw_message)
+                else douyin_auth.public_douyin_auth_message(raw_message)
             )
         errors = auth_status.get("errors")
         if isinstance(errors, list):
@@ -97,8 +96,8 @@ def public_maintenance_status_for_template(user_id: str) -> dict:
                     raw_message = error.get("message")
                     error["message"] = (
                         "登录态可能过期，请重新绑定抖音账号。"
-                        if auth.looks_sensitive_for_public_page(raw_message)
-                        else auth.public_douyin_auth_message(raw_message)
+                        if douyin_auth.looks_sensitive_for_public_page(raw_message)
+                        else douyin_auth.public_douyin_auth_message(raw_message)
                     )
     update = status.get("update")
     if isinstance(update, dict) and update.get("error"):
@@ -130,11 +129,11 @@ def _maintenance_template_context(
 ) -> dict:
     return {
         "page": "maintenance",
-        "jobs": jobs_for_template(user_id),
+        "jobs": job_service.jobs_for_template(user_id),
         "maintenance_status": public_maintenance_status_for_template(user_id),
         "message": message,
         "message_kind": message_kind,
-        **content._stats("favorites", user_id=user_id),
+        **content_state.content_stats("favorites", user_id=user_id),
     }
 
 

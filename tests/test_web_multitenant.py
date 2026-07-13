@@ -25,11 +25,11 @@ from src import onboarding
 from src.categorize import cluster
 from src.config import settings
 from src.web import app as web_app
+from src.web import douyin_auth
 from src.web import security as web_security
 from src.web import job_service
 from src.web import helpers as web_helpers
 from src.web import middleware as web_middleware
-from src.web.routes import auth as auth_routes
 from src.web.routes import content as content_routes
 from src.web.routes import maintenance as maintenance_routes
 
@@ -417,6 +417,33 @@ def test_job_enqueue_routes_scope_sync_and_index_to_session_user() -> None:
         assert '"force": true' in rows[1]["payload_json"]
 
 
+def test_hx_sync_redirects_to_the_kind_specific_empty_status() -> None:
+    with isolated_web_accounts_db() as conn:
+        conn.execute(
+            "INSERT INTO users (id, display_name, created_at) "
+            "VALUES ('alice', 'Alice', '2026-05-26 00:00:00')"
+        )
+        alice_token = accounts.create_session("alice")
+        client = TestClient(web_app.app)
+        client.cookies.set(settings.session_cookie_name, alice_token)
+
+        response = client.post(
+            "/jobs/sync",
+            data={"kind": "likes", "max_pages": "7"},
+            headers={"HX-Request": "true"},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/likes/empty-status"
+        row = conn.execute(
+            "SELECT user_id, kind, payload_json FROM job_queue"
+        ).fetchone()
+        assert row["user_id"] == "alice"
+        assert row["kind"] == "sync_likes"
+        assert '"content_kind": "likes"' in row["payload_json"]
+
+
 def test_first_run_jobs_enqueue_sync_and_index_once_per_session_user() -> None:
     with isolated_web_accounts_db() as conn:
         conn.execute(
@@ -541,8 +568,8 @@ def test_auth_profile_refresh_updates_current_session_user_only() -> None:
             "INSERT INTO users (id, display_name, created_at) VALUES ('bob', 'Bob', '2026-05-26 00:00:00')"
         )
         alice_token = accounts.create_session("alice")
-        original_fetch = auth_routes._fetch_douyin_profile_for_user
-        auth_routes._fetch_douyin_profile_for_user = lambda user_id: {
+        original_fetch = douyin_auth.fetch_douyin_profile_for_user
+        douyin_auth.fetch_douyin_profile_for_user = lambda user_id: {
             "nickname": f"{user_id}抖音",
             "unique_id": "alice_dy",
             "sec_uid": "SEC_ALICE",
@@ -554,7 +581,7 @@ def test_auth_profile_refresh_updates_current_session_user_only() -> None:
             client.cookies.set(settings.session_cookie_name, alice_token)
             response = client.post("/auth/profile/refresh")
         finally:
-            auth_routes._fetch_douyin_profile_for_user = original_fetch
+            douyin_auth.fetch_douyin_profile_for_user = original_fetch
 
         alice = conn.execute("SELECT * FROM users WHERE id = 'alice'").fetchone()
         bob = conn.execute("SELECT * FROM users WHERE id = 'bob'").fetchone()
@@ -577,18 +604,18 @@ def test_auth_profile_refresh_reports_expired_login_without_overwriting_existing
             """
         )
         alice_token = accounts.create_session("alice")
-        original_fetch = auth_routes._fetch_douyin_profile_for_user
+        original_fetch = douyin_auth.fetch_douyin_profile_for_user
 
         def expired(_user_id: str) -> dict:
             raise RuntimeError("抖音登录态失效，请先运行 `recall auth` 扫码授权。API 返回：用户未登录")
 
-        auth_routes._fetch_douyin_profile_for_user = expired
+        douyin_auth.fetch_douyin_profile_for_user = expired
         try:
             client = TestClient(web_app.app)
             client.cookies.set(settings.session_cookie_name, alice_token)
             response = client.post("/auth/profile/refresh")
         finally:
-            auth_routes._fetch_douyin_profile_for_user = original_fetch
+            douyin_auth.fetch_douyin_profile_for_user = original_fetch
 
         row = conn.execute("SELECT douyin_nickname, douyin_avatar_url FROM users WHERE id = 'alice'").fetchone()
         assert response.status_code == 200
@@ -627,15 +654,15 @@ def test_auth_logout_clears_current_douyin_profile_only_and_preserves_items() ->
         insert_user_item(conn, "bob", "fav-bob", "Bob 收藏")
         alice_token = accounts.create_session("alice")
         cleanup_calls: list[str] = []
-        original_start_cleanup = auth_routes.start_douyin_logout_cleanup
-        auth_routes.start_douyin_logout_cleanup = cleanup_calls.append
+        original_start_cleanup = douyin_auth.start_douyin_logout_cleanup
+        douyin_auth.start_douyin_logout_cleanup = cleanup_calls.append
 
         try:
             client = TestClient(web_app.app)
             client.cookies.set(settings.session_cookie_name, alice_token)
             response = client.post("/auth/logout", follow_redirects=False)
         finally:
-            auth_routes.start_douyin_logout_cleanup = original_start_cleanup
+            douyin_auth.start_douyin_logout_cleanup = original_start_cleanup
 
         alice = conn.execute("SELECT * FROM users WHERE id = 'alice'").fetchone()
         bob = conn.execute("SELECT * FROM users WHERE id = 'bob'").fetchone()
@@ -665,18 +692,18 @@ def test_auth_add_account_creates_session_user_and_starts_qr_scan() -> None:
         )
         token = accounts.create_session("default")
         calls: list[tuple[str, bool]] = []
-        original_start = auth_routes.ensure_douyin_auth_started
+        original_start = douyin_auth.ensure_douyin_auth_started
 
         def fake_start(user_id: str, *, force: bool = False) -> None:
             calls.append((user_id, force))
 
-        auth_routes.ensure_douyin_auth_started = fake_start
+        douyin_auth.ensure_douyin_auth_started = fake_start
         try:
             client = TestClient(web_app.app)
             client.cookies.set(settings.session_cookie_name, token)
             response = client.post("/auth/add", follow_redirects=False)
         finally:
-            auth_routes.ensure_douyin_auth_started = original_start
+            douyin_auth.ensure_douyin_auth_started = original_start
 
         users = conn.execute("SELECT id, display_name FROM users ORDER BY created_at, id").fetchall()
         new_token = client.cookies.get(settings.session_cookie_name, domain="testserver.local")
@@ -747,12 +774,14 @@ def _set_douyin_auth_session(
     message: str = "",
     qr_path: str | None = None,
 ) -> None:
-    with auth_routes._douyin_auth_lock:
-        auth_routes._douyin_auth_sessions[user_id] = {
+    douyin_auth.set_auth_session(
+        user_id,
+        {
             "status": status,
             "message": message,
             "qr_path": qr_path,
-        }
+        },
+    )
 
 
 def test_auth_status_fragment_renders_qr_scan_and_confirmed_states_without_phone_scan() -> None:
@@ -771,8 +800,7 @@ def test_auth_status_fragment_renders_qr_scan_and_confirmed_states_without_phone
             _set_douyin_auth_session("alice", status="confirmed", message="")
             confirmed_response = client.get("/auth/status")
         finally:
-            with auth_routes._douyin_auth_lock:
-                auth_routes._douyin_auth_sessions.pop("alice", None)
+            douyin_auth.clear_auth_session("alice")
 
         assert qr_response.status_code == 200
         assert "打开抖音 App 扫一扫" in qr_response.text
@@ -803,8 +831,7 @@ def test_setup_auth_fragments_render_state_transitions_without_phone_scan() -> N
             unchanged_confirmed_response = client.get("/setup/scan-state?state=confirmed")
             confirmed_response = client.get("/setup/scan-state?state=scan_pending")
         finally:
-            with auth_routes._douyin_auth_lock:
-                auth_routes._douyin_auth_sessions.pop("alice", None)
+            douyin_auth.clear_auth_session("alice")
 
         assert qr_response.status_code == 200
         assert "打开抖音 App 扫一扫" in qr_response.text
@@ -831,8 +858,7 @@ def test_auth_and_setup_failed_fragments_hide_sensitive_error_details() -> None:
             auth_response = client.get("/auth/status")
             setup_response = client.get("/setup/auth-status")
         finally:
-            with auth_routes._douyin_auth_lock:
-                auth_routes._douyin_auth_sessions.pop("alice", None)
+            douyin_auth.clear_auth_session("alice")
 
         assert auth_response.status_code == 200
         assert setup_response.status_code == 200
@@ -847,7 +873,7 @@ def test_auth_and_setup_failed_fragments_hide_sensitive_error_details() -> None:
 def test_public_douyin_auth_message_hides_internal_screenshot_path() -> None:
     message = r"等待扫码超时（180s）。二维码截图：D:\测试\DouyinRecall\data\users\abc\auth\douyin-login.png"
 
-    cleaned = auth_routes.public_douyin_auth_message(message)
+    cleaned = douyin_auth.public_douyin_auth_message(message)
 
     assert cleaned == "扫码超时，请重新生成二维码后再试。"
     assert "D:\\" not in cleaned
@@ -992,6 +1018,7 @@ if __name__ == "__main__":
         test_login_form_and_success_redirect_sanitize_next_target,
         test_uncollect_route_enqueues_background_job_for_session_user,
         test_job_enqueue_routes_scope_sync_and_index_to_session_user,
+        test_hx_sync_redirects_to_the_kind_specific_empty_status,
         test_first_run_jobs_enqueue_sync_and_index_once_per_session_user,
         test_jobs_status_page_only_shows_current_session_user_jobs,
         test_jobs_page_hides_internal_error_details_from_failed_jobs,

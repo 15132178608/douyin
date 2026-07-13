@@ -47,3 +47,18 @@ def enqueue_first_run_jobs(user_id: str) -> list[str]:
         jobs.enqueue_job(kind, user_id=uid, payload=payload)
         enqueued.append(kind)
     return enqueued
+
+
+def public_job_error_message(message: str | None) -> str:
+    if not (message or "").strip():
+        return ""
+    return "任务失败，请打开诊断包或日志查看详情。"
+
+
+def jobs_for_template(user_id: str, *, limit: int = 200) -> list[dict]:
+    public_jobs: list[dict] = []
+    for job in jobs.list_jobs(user_id=user_id, limit=limit):
+        item = dict(job)
+        item["error_message"] = public_job_error_message(item.get("error_message"))
+        public_jobs.append(item)
+    return public_jobs

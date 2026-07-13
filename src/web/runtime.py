@@ -8,7 +8,7 @@ from loguru import logger
 from src import accounts, jobs, onboarding
 from src.config import settings
 from src.tenancy import normalize_user_id
-from src.web.routes import auth, content
+from src.web import douyin_auth
 
 
 _job_worker_stop = threading.Event()
@@ -22,8 +22,8 @@ def _maybe_prewarm_first_run_auth() -> None:
         user = accounts.ensure_default_user()
         user_id = normalize_user_id(user["id"])
         status = onboarding.get_onboarding_status(user_id)
-        if auth.should_auto_start_setup_auth(status):
-            auth.ensure_douyin_auth_started(user_id)
+        if douyin_auth.should_auto_start_setup_auth(status):
+            douyin_auth.ensure_douyin_auth_started(user_id)
     except Exception as exc:
         logger.warning("Could not prewarm first-run Douyin auth: {}", exc)
 
@@ -61,4 +61,3 @@ def stop_background_workers() -> None:
 
 def shutdown_workers() -> None:
     stop_background_workers()
-    content.shutdown_uncollect_workers()
