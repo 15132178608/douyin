@@ -1,6 +1,7 @@
 ﻿param(
     [string]$OpenPath = "/",
-    [switch]$Silent
+    [switch]$Silent,
+    [switch]$NoOpen
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +17,7 @@ catch {
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 $env:UV_NO_DEV = "1"
+$env:NO_COLOR = "1"
 
 $LauncherPath = $MyInvocation.MyCommand.Path
 $ScriptDir = Split-Path -Parent $LauncherPath
@@ -25,12 +27,17 @@ $RuntimeDir = Join-Path $DataRoot "runtime"
 $LogsDir = Join-Path $DataRoot "logs"
 $StartLog = Join-Path $LogsDir "start-douyin-recall.log"
 $StartupStatusPath = Join-Path $RuntimeDir "startup-status.html"
+$StartupWaitStatusPath = Join-Path $RuntimeDir "startup-status-waiting.html"
+$StartupFailureStatusPath = Join-Path $RuntimeDir "startup-status-launcher-failed.html"
+$PreparationStatePath = Join-Path $RuntimeDir "runtime-preparation.json"
+$PreparationLockPath = Join-Path $RuntimeDir "runtime-preparation.lock"
 $RuntimePreparedPath = Join-Path $RuntimeDir "runtime-prepared.json"
 $EnvPath = Join-Path $AppRoot ".env"
 $EnvExamplePath = Join-Path $AppRoot ".env.example"
 $PyProjectPath = Join-Path $AppRoot "pyproject.toml"
 $UvLockPath = Join-Path $AppRoot "uv.lock"
 $VenvPython = Join-Path $AppRoot ".venv\Scripts\python.exe"
+$PlaywrightBrowsersJsonPath = Join-Path $AppRoot ".venv\Lib\site-packages\playwright\driver\package\browsers.json"
 $DownloadRoot = "D:\codexDownload\douyinclaude-runtime"
 $UvDownloadDir = Join-Path $DownloadRoot "uv"
 $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
@@ -38,10 +45,23 @@ $PlaywrightBrowsersDir = Join-Path $DownloadRoot "ms-playwright"
 $HuggingFaceCacheDir = Join-Path $DownloadRoot "huggingface"
 $SentenceTransformersCacheDir = Join-Path $HuggingFaceCacheDir "sentence-transformers"
 $UvInstallScriptUrl = "https://astral.sh/uv/install.ps1"
+$RuntimeCommonScript = Join-Path $ScriptDir "runtime-preparation-common.ps1"
+$RuntimeToolRunnerScript = Join-Path $ScriptDir "runtime-tool-runner.ps1"
+$RuntimeToolWorkerScript = Join-Path $ScriptDir "runtime-tool-worker.ps1"
+foreach ($requiredRuntimeScript in @($RuntimeCommonScript, $RuntimeToolRunnerScript, $RuntimeToolWorkerScript)) {
+    if (-not (Test-Path -LiteralPath $requiredRuntimeScript -PathType Leaf)) {
+        throw "Missing runtime preparation helper: $requiredRuntimeScript"
+    }
+}
+. $RuntimeCommonScript
 $script:CurrentStartupStep = ""
 $script:CurrentStartupStepKey = ""
 $script:StartupStepTotal = 7
 $script:StartupStepIndex = 0
+$script:StartupStartedAt = Get-Date
+$script:StartupStatusOpened = $false
+$script:PreparationLockStream = $null
+$script:OwnsPreparationLock = $false
 $script:StartupStatusSteps = @(
     [pscustomobject]@{ Key = "environment"; Label = "检查本地环境"; Detail = "准备本地运行目录，确认安装目录、日志目录和运行时缓存可写。"; Status = "waiting" },
     [pscustomobject]@{ Key = "config"; Label = "检查本地配置"; Detail = "首次运行会从 .env.example 创建本地配置。"; Status = "waiting" },
@@ -85,12 +105,16 @@ function ConvertTo-HtmlText {
 function Set-StartupStatusStep {
     param(
         [string]$Key,
-        [string]$Status
+        [string]$Status,
+        [string]$Detail = ""
     )
 
     foreach ($step in $script:StartupStatusSteps) {
         if ($step.Key -eq $Key) {
             $step.Status = $Status
+            if (-not [string]::IsNullOrWhiteSpace($Detail)) {
+                $step.Detail = $Detail
+            }
         }
     }
 }
@@ -100,16 +124,28 @@ function Write-StartupStatusPage {
         [string]$Summary,
         [string]$Detail = "",
         [string]$Tone = "running",
-        [switch]$Final
+        [switch]$Final,
+        [string]$RedirectUrl = "",
+        [string]$Path = $StartupStatusPath
     )
 
     New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
-    $refresh = if ($Final) { "" } else { '<meta http-equiv="refresh" content="2">' }
+    $refresh = if (-not [string]::IsNullOrWhiteSpace($RedirectUrl)) {
+        $safeRedirectUrl = ConvertTo-HtmlText $RedirectUrl
+        "<meta http-equiv='refresh' content='1;url=$safeRedirectUrl'>"
+    }
+    elseif ($Final) { "" } else { '<meta http-equiv="refresh" content="2">' }
+    $doneCount = @($script:StartupStatusSteps | Where-Object { $_.Status -eq "done" }).Count
+    $overallPercent = [int][Math]::Floor(($doneCount * 100) / [Math]::Max(1, $script:StartupStepTotal))
+    if ($Tone -eq "done") {
+        $overallPercent = 100
+    }
     $stepHtml = foreach ($step in $script:StartupStatusSteps) {
         $status = ConvertTo-HtmlText $step.Status
         $label = ConvertTo-HtmlText $step.Label
         $stepDetail = ConvertTo-HtmlText $step.Detail
-        "<li class='step $status'><span class='dot'></span><div><strong>$label</strong><small>$status</small><p>$stepDetail</p></div></li>"
+        $activity = if ($step.Status -eq "running") { "<div class='activity'><span></span></div>" } else { "" }
+        "<li class='step $status'><span class='dot'></span><div><strong>$label</strong><small>$status</small><p>$stepDetail</p>$activity</div></li>"
     }
     $summaryText = ConvertTo-HtmlText $Summary
     $detailText = ConvertTo-HtmlText $Detail
@@ -133,6 +169,8 @@ function Write-StartupStatusPage {
     .summary.done { border-left: 6px solid #16803c; }
     .summary.failed { border-left: 6px solid #c2410c; }
     .summary p { margin: 8px 0 0; color: #556070; line-height: 1.5; }
+    .overall { margin-top: 14px; height: 8px; overflow: hidden; border-radius: 999px; background: #e4e9f1; }
+    .overall span { display: block; width: $overallPercent%; height: 100%; background: linear-gradient(90deg, #2563eb, #06b6d4); transition: width .2s ease; }
     .steps { list-style: none; margin: 20px 0; padding: 0; display: grid; gap: 10px; }
     .step { display: grid; grid-template-columns: 18px 1fr; gap: 12px; padding: 14px 16px; background: #fff; border: 1px solid #d9e0ea; border-radius: 8px; }
     .dot { width: 12px; height: 12px; border-radius: 50%; background: #a8b1bf; margin-top: 4px; }
@@ -142,6 +180,9 @@ function Write-StartupStatusPage {
     .step strong { display: block; font-size: 16px; }
     .step small { display: inline-block; margin-top: 4px; color: #667085; }
     .step p { margin: 8px 0 0; color: #556070; line-height: 1.45; }
+    .activity { height: 5px; margin-top: 10px; overflow: hidden; border-radius: 999px; background: #e4e9f1; }
+    .activity span { display: block; width: 35%; height: 100%; background: #2563eb; animation: activity 1.2s ease-in-out infinite alternate; }
+    @keyframes activity { from { transform: translateX(-20%); } to { transform: translateX(220%); } }
     .meta { margin-top: 20px; padding: 16px; background: #eef2f7; border-radius: 8px; color: #3a4658; line-height: 1.7; }
     code { font-family: Consolas, monospace; }
   </style>
@@ -152,6 +193,8 @@ function Write-StartupStatusPage {
     <section class="summary $Tone">
       <strong>$summaryText</strong>
       <p>$detailText</p>
+      <div class="overall"><span></span></div>
+      <p>已完成阶段：$doneCount / $script:StartupStepTotal</p>
     </section>
     <ol class="steps">
       $($stepHtml -join "`n      ")
@@ -167,7 +210,62 @@ function Write-StartupStatusPage {
 </body>
 </html>
 "@
-    Set-Content -Path $StartupStatusPath -Value $html -Encoding UTF8
+    Write-RecallTextAtomic -Path $Path -Value $html
+}
+
+function Show-StartupStatusPage {
+    param([string]$Path = $StartupStatusPath)
+
+    if ($script:StartupStatusOpened) {
+        return
+    }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    if ($NoOpen) {
+        $script:StartupStatusOpened = $true
+        Write-StartLog "First-run progress page opening suppressed by -NoOpen: $Path"
+        return
+    }
+    try {
+        Start-Process $Path
+        $script:StartupStatusOpened = $true
+        Write-StartLog "Opened first-run progress page: $Path"
+    }
+    catch {
+        Write-StartLog "Could not open first-run progress page $Path`: $($_.Exception.Message)"
+    }
+}
+
+function Write-PreparationStateBestEffort {
+    param(
+        [string]$Status,
+        [string]$Summary,
+        [string]$Detail = "",
+        [string]$ErrorSummary = "",
+        [string]$RecommendedAction = ""
+    )
+
+    try {
+        $completed = @($script:StartupStatusSteps | Where-Object { $_.Status -eq "done" } | ForEach-Object { $_.Key })
+        $stepLabel = $script:CurrentStartupStep
+        Write-RecallPreparationState `
+            -Path $PreparationStatePath `
+            -Status $Status `
+            -StepKey $script:CurrentStartupStepKey `
+            -StepLabel $stepLabel `
+            -StepIndex $script:StartupStepIndex `
+            -StepTotal $script:StartupStepTotal `
+            -Summary $Summary `
+            -Detail $Detail `
+            -ErrorSummary $ErrorSummary `
+            -RecommendedAction $RecommendedAction `
+            -StartedAt $script:StartupStartedAt `
+            -CompletedSteps $completed
+    }
+    catch {
+        Write-StartLog "Could not persist runtime preparation state: $($_.Exception.Message)"
+    }
 }
 
 function Update-StartupStatus {
@@ -177,14 +275,17 @@ function Update-StartupStatus {
         [string]$Summary,
         [string]$Detail = "",
         [string]$Tone = "running",
-        [switch]$Final
+        [switch]$Final,
+        [string]$RedirectUrl = ""
     )
 
     if ($Key) {
         $script:CurrentStartupStepKey = $Key
-        Set-StartupStatusStep -Key $Key -Status $Status
+        Set-StartupStatusStep -Key $Key -Status $Status -Detail $Detail
     }
-    Write-StartupStatusPage -Summary $Summary -Detail $Detail -Tone $Tone -Final:$Final
+    $stateStatus = if ($Tone -eq "failed") { "failed" } elseif ($Tone -eq "done") { "ready" } else { "running" }
+    Write-PreparationStateBestEffort -Status $stateStatus -Summary $Summary -Detail $Detail
+    Write-StartupStatusPage -Summary $Summary -Detail $Detail -Tone $Tone -Final:$Final -RedirectUrl $RedirectUrl
 }
 
 function Write-StartupProgress {
@@ -210,6 +311,185 @@ function Write-StartupProgress {
         $detail = if ($LongRunning) { "首次运行可能需要几分钟，取决于网络和缓存状态。" } else { "" }
         Update-StartupStatus -Key $Key -Status "running" -Summary $Message -Detail $detail
     }
+}
+
+function Get-LatestToolOutput {
+    param([string[]]$Paths)
+
+    $lines = @()
+    foreach ($path in $Paths) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            continue
+        }
+        try {
+            $lines += Get-Content -LiteralPath $path -Tail 12 -Encoding UTF8 -ErrorAction Stop
+        }
+        catch {
+            # The child process may be flushing this file; the next heartbeat will retry.
+        }
+    }
+    $line = $lines |
+        ForEach-Object { ([string]$_ -replace '\x1B\[[0-?]*[ -/]*[@-~]', '').Trim() } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Last 1
+    if ([string]::IsNullOrWhiteSpace($line)) {
+        return ""
+    }
+    $line = $line -replace '\s+', ' '
+    if ($line.Length -gt 280) {
+        $line = $line.Substring(0, 280) + "..."
+    }
+    return $line
+}
+
+function Invoke-StartupTool {
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList,
+        [string]$Key,
+        [string]$Summary
+    )
+
+    $stdoutPath = Join-Path $LogsDir "runtime-$Key.out.log"
+    $stderrPath = Join-Path $LogsDir "runtime-$Key.err.log"
+    $exitCodePath = Join-Path $LogsDir "runtime-$Key.exit-code.txt"
+    $toolExitCodePath = Join-Path $LogsDir "runtime-$Key.tool-exit-code.txt"
+    $childIdentityPath = Join-Path $LogsDir "runtime-$Key.child.json"
+    $runnerGatePath = Join-Path $LogsDir "runtime-$Key.runner-go"
+    $workerSpecPath = Join-Path $LogsDir "runtime-$Key.worker.json"
+    $runnerSpecPath = Join-Path $LogsDir "runtime-$Key.runner.json"
+    foreach ($path in @(
+        $stdoutPath,
+        $stderrPath,
+        $exitCodePath,
+        $toolExitCodePath,
+        $childIdentityPath,
+        $runnerGatePath,
+        $workerSpecPath,
+        $runnerSpecPath
+    )) {
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Force
+        }
+    }
+    $runnerPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    $toolSpec = [ordered]@{
+        file_path = $FilePath
+        arguments = @($ArgumentList)
+        working_directory = $AppRoot
+        stdout_path = $stdoutPath
+        stderr_path = $stderrPath
+        tool_exit_code_path = $toolExitCodePath
+    }
+    Write-RecallJsonAtomic -Path $workerSpecPath -Value $toolSpec
+    $runnerSpec = [ordered]@{
+        powershell_path = $runnerPowerShell
+        worker_script_path = $RuntimeToolWorkerScript
+        worker_spec_path = $workerSpecPath
+        stderr_path = $stderrPath
+        exit_code_path = $exitCodePath
+        tool_exit_code_path = $toolExitCodePath
+        child_identity_path = $childIdentityPath
+        start_gate_path = $runnerGatePath
+        owner_pid = $PID
+        owner_started_at_ticks = (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks.ToString(
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+    }
+    Write-RecallJsonAtomic -Path $runnerSpecPath -Value $runnerSpec
+    $runnerArguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "`"$RuntimeToolRunnerScript`"",
+        "-SpecPath",
+        "`"$runnerSpecPath`""
+    )
+    $startedAt = Get-Date
+    $process = $null
+    $exitCode = $null
+    $runnerProtocolCompleted = $false
+    $runnerAssignedToJob = $false
+    $jobHandle = [IntPtr]::Zero
+    try {
+        $jobHandle = New-RecallKillOnCloseJob
+        $process = Start-Process `
+            -FilePath $runnerPowerShell `
+            -ArgumentList $runnerArguments `
+            -WorkingDirectory $AppRoot `
+            -WindowStyle Hidden `
+            -PassThru
+        Add-RecallProcessToJob -JobHandle $jobHandle -ProcessHandle $process.Handle
+        $runnerAssignedToJob = $true
+        [IO.File]::WriteAllText($runnerGatePath, "go", (New-Object Text.UTF8Encoding($false)))
+        do {
+            $elapsed = [int][Math]::Max(0, ((Get-Date) - $startedAt).TotalSeconds)
+            $latest = Get-LatestToolOutput -Paths @($stdoutPath, $stderrPath)
+            $detail = "已运行 $elapsed 秒；正在等待工具完成。"
+            if (-not [string]::IsNullOrWhiteSpace($latest)) {
+                $detail = "已运行 $elapsed 秒；最新输出：$latest"
+            }
+            try {
+                Update-StartupStatus -Key $Key -Status "running" -Summary $Summary -Detail $detail
+            }
+            catch {
+                Write-StartLog "Could not refresh startup progress while $Summary was running: $($_.Exception.Message)"
+            }
+            if (-not $process.HasExited) {
+                Start-Sleep -Milliseconds 900
+            }
+        } while (-not $process.HasExited)
+        $process.WaitForExit()
+        if (-not (Test-Path -LiteralPath $exitCodePath -PathType Leaf)) {
+            throw "$Summary runner exited without writing $exitCodePath"
+        }
+        $exitCodeText = (Get-Content -LiteralPath $exitCodePath -Raw -Encoding UTF8).Trim()
+        $parsedExitCode = 0
+        if (-not [int]::TryParse($exitCodeText, [ref]$parsedExitCode)) {
+            throw "$Summary runner wrote an invalid exit code: $exitCodeText"
+        }
+        $exitCode = $parsedExitCode
+        $runnerProtocolCompleted = $true
+    }
+    finally {
+        if (-not $runnerProtocolCompleted -and $jobHandle -ne [IntPtr]::Zero) {
+            Close-RecallRuntimeJob -JobHandle $jobHandle
+            $jobHandle = [IntPtr]::Zero
+        }
+        if ($null -ne $process) {
+            try {
+                if (-not $runnerProtocolCompleted) {
+                    Write-StartLog "Cleaning runtime process tree because $Summary monitoring did not complete."
+                    if ($runnerAssignedToJob) {
+                        if (-not $process.HasExited) {
+                            $process.WaitForExit(5000) | Out-Null
+                        }
+                    }
+                    elseif (-not $process.HasExited) {
+                        $process.Kill()
+                    }
+                    if (-not $process.HasExited -and -not $process.WaitForExit(5000)) {
+                        $process.Kill()
+                    }
+                }
+            }
+            catch {
+                Write-StartLog "Could not finish child process cleanup for $Summary`: $($_.Exception.Message)"
+            }
+            $process.Dispose()
+        }
+        if ($jobHandle -ne [IntPtr]::Zero) {
+            Close-RecallRuntimeJob -JobHandle $jobHandle
+            $jobHandle = [IntPtr]::Zero
+        }
+    }
+    $latest = Get-LatestToolOutput -Paths @($stdoutPath, $stderrPath)
+    Write-StartLog "$Summary finished with exit code $exitCode. Output: $latest"
+    if ($exitCode -ne 0) {
+        throw "$Summary failed with exit code $exitCode. See $stdoutPath and $stderrPath"
+    }
+    return $latest
 }
 
 function Test-DirectoryWritable {
@@ -447,75 +727,35 @@ function Wait-WebReady {
 
 function Get-FileSha256 {
     param([string]$Path)
-
-    $stream = [System.IO.File]::OpenRead($Path)
-    try {
-        $sha256 = [System.Security.Cryptography.SHA256]::Create()
-        try {
-            $bytes = $sha256.ComputeHash($stream)
-            return ([System.BitConverter]::ToString($bytes)).Replace("-", "")
-        }
-        finally {
-            $sha256.Dispose()
-        }
-    }
-    finally {
-        $stream.Dispose()
-    }
+    return (Get-RecallFileSha256 -Path $Path)
 }
 
 function Get-RuntimeFingerprint {
-    $parts = @()
-    foreach ($path in @($PyProjectPath, $UvLockPath)) {
-        if (Test-Path $path) {
-            $hash = Get-FileSha256 -Path $path
-            $parts += "$path=$hash"
-        }
-    }
-    return ($parts -join "|")
+    return (Get-RecallRuntimeFingerprint -PyProjectPath $PyProjectPath -UvLockPath $UvLockPath)
 }
 
 function Test-PlaywrightChromiumReady {
-    if (-not (Test-Path $PlaywrightBrowsersDir)) {
-        return $false
-    }
-    $candidate = Get-ChildItem -Path $PlaywrightBrowsersDir -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like "chromium-*" } |
-        ForEach-Object { Join-Path $_.FullName "chrome-win\chrome.exe" } |
-        Where-Object { Test-Path $_ } |
-        Select-Object -First 1
-    return ($null -ne $candidate)
+    return (Test-RecallPlaywrightChromiumReady `
+        -PlaywrightBrowsersDir $PlaywrightBrowsersDir `
+        -PlaywrightBrowsersJsonPath $PlaywrightBrowsersJsonPath)
 }
 
 function Test-RuntimePrepared {
-    if (-not (Test-Path $VenvPython)) {
-        return $false
-    }
-    if (-not (Test-Path $EnvPath)) {
-        return $false
-    }
-    if (-not (Test-PlaywrightChromiumReady)) {
-        return $false
-    }
-    if (-not (Test-Path $RuntimePreparedPath)) {
-        return $true
-    }
-    try {
-        $state = Get-Content -Path $RuntimePreparedPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        return ([string]$state.fingerprint -eq (Get-RuntimeFingerprint))
-    }
-    catch {
-        return $false
-    }
+    return (Test-RecallRuntimePrepared `
+        -RuntimePreparedPath $RuntimePreparedPath `
+        -VenvPython $VenvPython `
+        -EnvPath $EnvPath `
+        -PlaywrightBrowsersDir $PlaywrightBrowsersDir `
+        -PlaywrightBrowsersJsonPath $PlaywrightBrowsersJsonPath `
+        -PyProjectPath $PyProjectPath `
+        -UvLockPath $UvLockPath)
 }
 
 function Write-RuntimePreparedMarker {
-    New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
-    $payload = [pscustomobject]@{
-        prepared_at = (Get-Date).ToUniversalTime().ToString("o")
-        fingerprint = Get-RuntimeFingerprint
-    }
-    $payload | ConvertTo-Json -Depth 4 | Set-Content -Path $RuntimePreparedPath -Encoding UTF8
+    Write-RecallRuntimePreparedMarker `
+        -RuntimePreparedPath $RuntimePreparedPath `
+        -PyProjectPath $PyProjectPath `
+        -UvLockPath $UvLockPath
 }
 
 function Invoke-PreparedRecallCli {
@@ -558,6 +798,14 @@ function Open-DouyinRecall {
     Write-Host "维护中心：$BaseUrl/maintenance"
     Write-Host "停止服务：uv run python -m src.cli stop"
     Write-Host "排障日志：$StartLog"
+    if ($NoOpen) {
+        Write-StartLog "Browser opening suppressed by -NoOpen: $openUrl"
+        return
+    }
+    if ($script:StartupStatusOpened) {
+        Write-StartLog "First-run progress page will redirect to $openUrl"
+        return
+    }
     Start-Process $openUrl
 }
 
@@ -718,7 +966,7 @@ function Write-Troubleshooting {
     Write-Host "运行时下载/缓存： $DownloadRoot"
 }
 
-function Write-StartupFailureHint {
+function Get-StartupFailureInfo {
     param(
         [string]$ErrorMessage,
         [int]$Port = 8000
@@ -754,10 +1002,27 @@ function Write-StartupFailureHint {
         $next = "先运行 Douyin Recall Health Check 或 Douyin Recall Repair State，再查看 $LogsDir 中的 serve.err.log。"
     }
 
-    Write-Host "失败阶段：$step" -ForegroundColor Yellow
-    Write-Host "可能原因：$cause"
-    Write-Host "建议下一步：$next"
-    Write-Host "维护中心：http://127.0.0.1:$Port/maintenance"
+    $errorSummary = ($ErrorMessage -replace '\s+', ' ').Trim()
+    if ($errorSummary.Length -gt 500) {
+        $errorSummary = $errorSummary.Substring(0, 500) + "..."
+    }
+    return [pscustomobject]@{
+        Step = $step
+        Cause = $cause
+        Next = $next
+        ErrorSummary = $errorSummary
+        Port = $Port
+    }
+}
+
+function Write-StartupFailureHint {
+    param([object]$FailureInfo)
+
+    Write-Host "失败阶段：$($FailureInfo.Step)" -ForegroundColor Yellow
+    Write-Host "可能原因：$($FailureInfo.Cause)"
+    Write-Host "建议下一步：$($FailureInfo.Next)"
+    Write-Host "错误摘要：$($FailureInfo.ErrorSummary)"
+    Write-Host "维护中心：http://127.0.0.1:$($FailureInfo.Port)/maintenance"
     Write-Host "诊断命令：uv run python -m src.cli diagnose"
     Write-Host "运行时下载/缓存：$DownloadRoot"
     Write-Host "启动日志：$StartLog"
@@ -781,15 +1046,39 @@ try {
     $env:SENTENCE_TRANSFORMERS_HOME = $SentenceTransformersCacheDir
     Write-StartLog "Startup requested from $AppRoot"
 
-    Write-StartupProgress -Message "检查本地配置文件" -Key "config"
+    $script:PreparationLockStream = Enter-RecallPreparationLock -Path $PreparationLockPath
+    if ($null -eq $script:PreparationLockStream) {
+        Write-StartLog "Another runtime preparation already owns $PreparationLockPath; opening a fresh follower page."
+        $ownerDetail = "另一个安装器或 Douyin Recall Prepare Runtime 正在准备运行环境。为避免并发修改，本次启动不会重复执行；准备完成后请重新打开 Douyin Recall。状态文件：$PreparationStatePath"
+        try {
+            if (Test-Path -LiteralPath $PreparationStatePath) {
+                $ownerState = Get-Content -LiteralPath $PreparationStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if (-not [string]::IsNullOrWhiteSpace([string]$ownerState.summary)) {
+                    $ownerDetail = "$ownerDetail 当前状态：$([string]$ownerState.summary)"
+                }
+            }
+        }
+        catch {
+            Write-StartLog "Could not read the active preparation state: $($_.Exception.Message)"
+        }
+        $script:CurrentStartupStep = "等待另一个运行环境准备任务"
+        $script:CurrentStartupStepKey = "environment"
+        Set-StartupStatusStep -Key "environment" -Status "running" -Detail $ownerDetail
+        Write-StartupStatusPage -Summary "已有运行环境准备任务正在进行" -Detail $ownerDetail -Tone "running" -Final -Path $StartupWaitStatusPath
+        Show-StartupStatusPage -Path $StartupWaitStatusPath
+        exit 0
+    }
+    $script:OwnsPreparationLock = $true
+
+    $createdEnv = $false
     if (-not (Test-Path $EnvPath)) {
         if (-not (Test-Path $EnvExamplePath)) {
             throw "Missing .env.example in $AppRoot"
         }
         Write-Step "Creating .env from .env.example"
         Copy-Item -Path $EnvExamplePath -Destination $EnvPath
+        $createdEnv = $true
     }
-    Update-StartupStatus -Key "config" -Status "done" -Summary "本地配置检查完成"
 
     $port = Get-WebPort
     $url = "http://127.0.0.1:$port"
@@ -810,28 +1099,32 @@ try {
 
     if (Test-RuntimePrepared) {
         Write-Step "运行环境已准备，跳过 uv sync 和 Playwright 安装"
-        try {
-            if (-not (Test-Path (Join-Path $DataRoot "recall.db"))) {
-                Write-StartupProgress -Message "初始化本地数据库：prepared python -m src.cli init-db" -Key "database"
-                Invoke-PreparedRecallCli @("init-db")
-                Update-StartupStatus -Key "database" -Status "done" -Summary "本地数据库已就绪"
-            }
-            Write-StartupProgress -Message "启动本地 Web 服务：prepared python -m src.cli serve" -Key "service"
-            $serverProcess = Start-RecallServiceProcess -UsePreparedRuntime
-            Wait-WebReady -Url $url -Process $serverProcess -TimeoutSeconds 60 | Out-Null
-            Write-RuntimePreparedMarker
-            Update-StartupStatus -Key "service" -Status "done" -Summary "准备完成" -Detail "Douyin Recall 本地 Web 界面即将打开。" -Tone "done" -Final
-            Open-DouyinRecall -BaseUrl $url -PathToOpen $OpenPath
-            exit 0
+        if (-not (Test-Path (Join-Path $DataRoot "recall.db"))) {
+            Write-StartupProgress -Message "初始化本地数据库：prepared python -m src.cli init-db" -Key "database"
+            Invoke-PreparedRecallCli @("init-db")
+            Update-StartupStatus -Key "database" -Status "done" -Summary "本地数据库已就绪"
         }
-        catch {
-            Write-StartLog "Prepared runtime fast path failed; falling back to full preparation: $($_.Exception.Message)"
-            Write-Step "Prepared runtime fast path failed; falling back to full preparation"
-        }
+        Write-StartupProgress -Message "启动本地 Web 服务：prepared python -m src.cli serve" -Key "service"
+        $serverProcess = Start-RecallServiceProcess -UsePreparedRuntime
+        Wait-WebReady -Url $url -Process $serverProcess -TimeoutSeconds 60 | Out-Null
+        Write-RuntimePreparedMarker
+        Update-StartupStatus -Key "service" -Status "done" -Summary "准备完成" -Detail "Douyin Recall 本地 Web 界面即将打开。" -Tone "done" -Final
+        Open-DouyinRecall -BaseUrl $url -PathToOpen $OpenPath
+        exit 0
     }
+
+    if (Test-Path -LiteralPath $RuntimePreparedPath) {
+        Remove-Item -LiteralPath $RuntimePreparedPath -Force
+        Write-StartLog "Invalidated the previous runtime-prepared marker before full preparation."
+    }
+
+    Write-StartupProgress -Message "检查本地配置文件" -Key "config"
+    $configDetail = if ($createdEnv) { "已从 .env.example 创建本地配置。" } else { "本地配置文件已经存在。" }
+    Update-StartupStatus -Key "config" -Status "done" -Summary "本地配置检查完成" -Detail $configDetail
 
     Write-StartupProgress -Message "检查本地环境" -Key "environment"
     Update-StartupStatus -Key "environment" -Status "running" -Summary "检查本地环境" -Detail "正在确认安装目录、日志目录和运行时缓存目录。"
+    Show-StartupStatusPage
     Assert-StartupPreflight
     Update-StartupStatus -Key "environment" -Status "done" -Summary "本地环境检查完成" -Detail "安装目录、日志目录和运行时缓存目录可用。"
 
@@ -845,18 +1138,26 @@ try {
     Update-StartupStatus -Key "uv" -Status "done" -Summary "uv 运行时已就绪"
 
     Write-StartupProgress -Message "准备 Python 运行环境：uv sync" -Key "python" -LongRunning
-    & $uv "sync" "--no-dev"
-    if ($LASTEXITCODE -ne 0) {
-        throw "uv sync failed with exit code $LASTEXITCODE"
-    }
-    Update-StartupStatus -Key "python" -Status "done" -Summary "Python 运行环境已就绪"
+    $pythonOutput = Invoke-StartupTool -FilePath $uv -ArgumentList @("sync", "--no-dev", "--color", "never") -Key "python" -Summary "准备 Python 运行环境：uv sync"
+    $pythonDetail = if ([string]::IsNullOrWhiteSpace($pythonOutput)) { "Python 依赖已经同步。" } else { "完成：$pythonOutput" }
+    Update-StartupStatus -Key "python" -Status "done" -Summary "Python 运行环境已就绪" -Detail $pythonDetail
 
     Write-StartupProgress -Message "下载/安装 Playwright Chromium：uv run playwright install chromium" -Key "browser" -LongRunning
-    & $uv "run" "playwright" "install" "chromium"
-    if ($LASTEXITCODE -ne 0) {
-        throw "playwright install chromium failed with exit code $LASTEXITCODE"
+    if (Test-PlaywrightChromiumReady) {
+        $browserOutput = "当前 Playwright manifest 所需的浏览器组件已经完整就绪。"
     }
-    Update-StartupStatus -Key "browser" -Status "done" -Summary "Playwright Chromium 已就绪"
+    else {
+        $browserOutput = Invoke-StartupTool -FilePath $uv -ArgumentList @("run", "playwright", "install", "chromium") -Key "browser" -Summary "下载/安装 Playwright Chromium"
+        if (-not (Test-PlaywrightChromiumReady)) {
+            Write-StartLog "Browser post-install validation was incomplete; retrying with playwright install --force chromium."
+            $browserOutput = Invoke-StartupTool -FilePath $uv -ArgumentList @("run", "playwright", "install", "--force", "chromium") -Key "browser" -Summary "强制修复 Playwright Chromium"
+        }
+        if (-not (Test-PlaywrightChromiumReady)) {
+            throw "playwright install chromium completed, but the required browser components failed exact post-install validation"
+        }
+    }
+    $browserDetail = if ([string]::IsNullOrWhiteSpace($browserOutput)) { "Playwright Chromium 已安装。" } else { "完成：$browserOutput" }
+    Update-StartupStatus -Key "browser" -Status "done" -Summary "Playwright Chromium 已就绪" -Detail $browserDetail
 
     Write-StartupProgress -Message "初始化本地数据库：uv run python -m src.cli init-db" -Key "database"
     Invoke-RecallCli @("init-db")
@@ -871,7 +1172,9 @@ try {
         $serverProcess = Start-RecallServiceProcess
         Wait-WebReady -Url $url -Process $serverProcess -TimeoutSeconds 60 | Out-Null
     }
-    Update-StartupStatus -Key "service" -Status "done" -Summary "准备完成" -Detail "Douyin Recall 本地 Web 界面即将打开。" -Tone "done" -Final
+    $openPathNormalized = if ($OpenPath.StartsWith("/")) { $OpenPath } else { "/$OpenPath" }
+    $redirectUrl = "$url$openPathNormalized"
+    Update-StartupStatus -Key "service" -Status "done" -Summary "准备完成" -Detail "Douyin Recall 本地 Web 界面即将打开。" -Tone "done" -Final -RedirectUrl $redirectUrl
     Open-DouyinRecall -BaseUrl $url -PathToOpen $OpenPath
 }
 catch {
@@ -892,12 +1195,39 @@ catch {
     if ([string]::IsNullOrWhiteSpace($failedKey)) {
         $failedKey = "environment"
     }
-    Update-StartupStatus -Key $failedKey -Status "failed" -Summary "准备失败" -Detail "失败阶段：$script:CurrentStartupStep。建议运行 Douyin Recall Prepare Runtime，或执行 uv run python -m src.cli diagnose 导出诊断。" -Tone "failed" -Final
-    Write-StartupFailureHint -ErrorMessage $_.Exception.Message -Port $port
+    $failureInfo = Get-StartupFailureInfo -ErrorMessage $_.Exception.Message -Port $port
+    $failureDetail = "失败阶段：$($failureInfo.Step)。可能原因：$($failureInfo.Cause) 建议下一步：$($failureInfo.Next) 错误摘要：$($failureInfo.ErrorSummary)"
+    $failurePagePath = $StartupFailureStatusPath
+    if ($script:OwnsPreparationLock) {
+        $failurePagePath = $StartupStatusPath
+        try {
+            Update-StartupStatus -Key $failedKey -Status "failed" -Summary "准备失败" -Detail $failureDetail -Tone "failed" -Final
+        }
+        catch {
+            Write-StartLog "Could not persist the startup failure page: $($_.Exception.Message)"
+        }
+        Write-PreparationStateBestEffort -Status "failed" -Summary "准备失败" -Detail $failureDetail -ErrorSummary $failureInfo.ErrorSummary -RecommendedAction $failureInfo.Next
+    }
+    else {
+        try {
+            Set-StartupStatusStep -Key $failedKey -Status "failed" -Detail $failureDetail
+            Write-StartupStatusPage -Summary "启动入口失败" -Detail $failureDetail -Tone "failed" -Final -Path $StartupFailureStatusPath
+        }
+        catch {
+            Write-StartLog "Could not persist the independent launcher failure page: $($_.Exception.Message)"
+        }
+    }
+    Show-StartupStatusPage -Path $failurePagePath
+    Write-StartupFailureHint -FailureInfo $failureInfo
     Write-Host ""
     Write-Troubleshooting -Port $port
     if (-not $Silent) {
         Read-Host "Press Enter to close"
     }
     exit 1
+}
+finally {
+    Exit-RecallPreparationLock -LockStream $script:PreparationLockStream
+    $script:PreparationLockStream = $null
+    $script:OwnsPreparationLock = $false
 }

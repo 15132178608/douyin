@@ -1310,7 +1310,7 @@ def test_release_gate_validates_external_installer_without_rebuilding(tmp_path: 
     assert report["installer"]["source"] == "external"
     assert report["installer"]["built"] is False
     assert report["installer"]["validated"] is True
-    assert report["installer"]["product_version"] == "0.1.24"
+    assert report["installer"]["product_version"] == release_gate._project_version()
     assert report["installer"]["sha256"] == release_gate._sha256(installer_path)
 
 
@@ -1528,7 +1528,7 @@ def test_release_gate_runs_required_checks_and_writes_machine_and_markdown_repor
     assert "manifest_rollback_dry_run" in markdown
     assert report["installer"]["path"].endswith("DouyinRecallSetup.exe")
     assert report["installer"]["validated"] is True
-    assert report["installer"]["product_version"] == "0.1.24"
+    assert report["installer"]["product_version"] == release_gate._project_version()
     assert len(report["installer"]["sha256"]) == 64
 
 

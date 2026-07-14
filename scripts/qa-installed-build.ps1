@@ -1,6 +1,7 @@
 param(
-    [string]$InstallerPath = "D:\codexDownload\douyin-release-v0.1.24\DouyinRecallSetup.exe",
-    [string]$QaRoot = "D:\codexDownload\douyin-release-v0.1.24\installed-qa",
+    [string]$InstallerPath = "D:\codexDownload\douyin-release-v0.1.25\DouyinRecallSetup.exe",
+    [string]$QaRoot = "D:\codexDownload\douyin-release-v0.1.25\installed-qa",
+    [string]$ExpectedVersion = "0.1.25",
     [int]$Port = 18765
 )
 
@@ -16,6 +17,7 @@ catch {
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 $UninstallRegistryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{8D520E24-23C6-4C2E-8C2D-7AF8A935E32F}_is1"
+$DownloadRoot = [System.IO.Path]::GetFullPath("D:\codexDownload")
 
 function Write-Step {
     param([string]$Message)
@@ -115,6 +117,19 @@ function Assert-NotContains {
     }
 }
 
+function Assert-InstallerVersion {
+    param(
+        [string]$Path,
+        [string]$Expected
+    )
+    $version = [string](Get-Item -LiteralPath $Path).VersionInfo.ProductVersion
+    $version = $version.Trim()
+    if (-not [string]::Equals($version, $Expected, [System.StringComparison]::Ordinal)) {
+        throw "Expected installer version $Expected, got '$version': $Path"
+    }
+    return $version
+}
+
 function Stop-PortOwner {
     param([int]$LocalPort)
     $connections = Get-NetTCPConnection -LocalPort $LocalPort -State Listen -ErrorAction SilentlyContinue
@@ -140,7 +155,11 @@ function Save-InnoRegistration {
     foreach ($name in $item.GetValueNames()) {
         $values += [pscustomobject]@{
             Name = $name
-            Value = $item.GetValue($name)
+            Value = $item.GetValue(
+                $name,
+                $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
             Kind = $item.GetValueKind($name).ToString()
         }
     }
@@ -192,7 +211,7 @@ function Restore-InnoRegistration {
     $currentItem = Get-Item -LiteralPath $UninstallRegistryPath
     foreach ($name in $currentItem.GetValueNames()) {
         if (-not $savedNames.ContainsKey($name)) {
-            Remove-ItemProperty -LiteralPath $UninstallRegistryPath -Name $name -ErrorAction SilentlyContinue
+            Remove-ItemProperty -LiteralPath $UninstallRegistryPath -Name $name -ErrorAction Stop
         }
     }
 
@@ -211,14 +230,80 @@ if (-not (Test-Path -LiteralPath $InstallerPath)) {
     throw "Installer not found: $InstallerPath"
 }
 
+function Test-RegistryValueEqual {
+    param(
+        [object]$Left,
+        [object]$Right
+    )
+    $leftIsArray = $Left -is [System.Array]
+    $rightIsArray = $Right -is [System.Array]
+    if ($leftIsArray -or $rightIsArray) {
+        if (-not ($leftIsArray -and $rightIsArray)) {
+            return $false
+        }
+        if ($Left.Count -ne $Right.Count) {
+            return $false
+        }
+        for ($index = 0; $index -lt $Left.Count; $index++) {
+            if (-not [object]::Equals($Left[$index], $Right[$index])) {
+                return $false
+            }
+        }
+        return $true
+    }
+    return [object]::Equals($Left, $Right)
+}
+
+function Assert-InnoRegistrationRestored {
+    param([object]$Snapshot)
+
+    $current = Save-InnoRegistration
+    if ([bool]$current.Exists -ne [bool]$Snapshot.Exists) {
+        throw "Inno uninstall registration existence was not restored."
+    }
+    if (-not $Snapshot.Exists) {
+        return
+    }
+    if ($current.Values.Count -ne $Snapshot.Values.Count) {
+        throw "Inno uninstall registration value count was not restored."
+    }
+    $currentByName = @{}
+    foreach ($entry in $current.Values) {
+        $currentByName[$entry.Name] = $entry
+    }
+    foreach ($expected in $Snapshot.Values) {
+        if (-not $currentByName.ContainsKey($expected.Name)) {
+            throw "Inno uninstall registration value '$($expected.Name)' was not restored."
+        }
+        $actual = $currentByName[$expected.Name]
+        if ($actual.Kind -ne $expected.Kind -or
+            -not (Test-RegistryValueEqual -Left $actual.Value -Right $expected.Value)) {
+            throw "Inno uninstall registration value '$($expected.Name)' changed during QA."
+        }
+    }
+}
+$QaRoot = [System.IO.Path]::GetFullPath($QaRoot)
+$managedPrefix = $DownloadRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+$qaRootIsManaged = $QaRoot.StartsWith($managedPrefix, [System.StringComparison]::OrdinalIgnoreCase) -and
+    $QaRoot.Length -gt $managedPrefix.Length
+if (-not $qaRootIsManaged) {
+    throw "QaRoot must stay under D:\codexDownload: $QaRoot"
+}
+$InstallerPath = (Resolve-Path -LiteralPath $InstallerPath).Path
+$installerVersion = Assert-InstallerVersion -Path $InstallerPath -Expected $ExpectedVersion
+
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $appRoot = Join-Path $QaRoot "DouyinRecall-$stamp"
+$reportPath = Join-Path $QaRoot "installed-qa-$stamp.json"
+$installLogPath = Join-Path $QaRoot "install-$stamp.log"
 $runtimeRoot = Join-Path $QaRoot "runtime"
 $env:UV_CACHE_DIR = Join-Path $runtimeRoot "uv-cache"
 $env:UV_LINK_MODE = "copy"
 $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $runtimeRoot "ms-playwright"
 $server = $null
 $originalRegistration = Save-InnoRegistration
+$registrationRestored = $false
+$verificationPassed = $false
 
 try {
 New-Item -ItemType Directory -Path $QaRoot -Force | Out-Null
@@ -231,7 +316,8 @@ $installArgs = @(
     "/SUPPRESSMSGBOXES",
     "/NORESTART",
     "/NOICONS",
-    "/DIR=$appRoot"
+    "/DIR=`"$appRoot`"",
+    "/LOG=`"$installLogPath`""
 )
 $process = Start-Process -FilePath $InstallerPath -ArgumentList $installArgs -Wait -PassThru -WindowStyle Hidden
 if ($process.ExitCode -ne 0) {
@@ -338,8 +424,7 @@ try {
     Assert-Contains -Text $favoritesAgain -Needle "QA favorite item" -Message "Favorites item disappeared on repeated load."
     Assert-Contains -Text $likesAgain -Needle "QA liked item" -Message "Likes item disappeared on repeated load."
 
-    Write-Step "Installed QA passed"
-    Write-Host "Installed app: $appRoot"
+    $verificationPassed = $true
 }
 finally {
     if ($server -and -not $server.HasExited) {
@@ -351,4 +436,35 @@ finally {
 finally {
     Stop-PortOwner -LocalPort $Port
     Restore-InnoRegistration -Snapshot $originalRegistration
+    Assert-InnoRegistrationRestored -Snapshot $originalRegistration
+    $registrationRestored = $true
+}
+
+if ($verificationPassed -and $registrationRestored) {
+    $portReleased = -not [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    if (-not $portReleased) {
+        throw "QA port $Port is still listening after service cleanup."
+    }
+    $installerItem = Get-Item -LiteralPath $InstallerPath
+    $report = [ordered]@{
+        status = "passed"
+        installer = [ordered]@{
+            path = $InstallerPath
+            expected_version = $ExpectedVersion
+            product_version = $installerVersion
+            size_bytes = $installerItem.Length
+            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $InstallerPath).Hash
+        }
+        app_root = $appRoot
+        port = $Port
+        install_log = $installLogPath
+        service_stopped = $true
+        port_released = $portReleased
+        registration_restored = $true
+    }
+    $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $reportPath -Encoding UTF8
+    Write-Step "Installed QA passed"
+    Write-Host "Installed app: $appRoot"
+    Write-Host "Install log: $installLogPath"
+    Write-Host "Report: $reportPath"
 }
