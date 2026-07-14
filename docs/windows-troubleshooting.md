@@ -72,7 +72,7 @@ C:\Users\<你的用户名>\AppData\Local\Programs\DouyinRecall\data\logs
 - `Douyin Recall Backup Now`：立即生成 SQLite 备份，写入 `data\exports`。
 - `Douyin Recall Backups`：打开 `data\exports` 备份目录。
 - `Douyin Recall Restore Center`：打开 `/maintenance` 的恢复中心；恢复前仍会校验备份并要求输入确认文字。
-- `Douyin Recall Verify Backup`：只读校验 `data\exports` 里最新的手动备份或安装前备份，不会替换当前数据库。
+- `Douyin Recall Verify Backup`：只读校验 `data\exports` 里最新的普通备份或受保护备份，不会替换当前数据库。
 - `Douyin Recall Rollback Check`：只读校验最近一次 `delivery-manifest-*.json` 记录的发布前回滚点，不会替换当前数据库。
 
 维护中心 `/maintenance` 会检查最近失败的同步任务和抓取记录。如果看到 `登录态可能过期`，先点击 `Douyin Recall Account Recovery`，或打开 `/auth` 重新扫码，再重新同步收藏和喜欢。
@@ -84,6 +84,8 @@ data\exports\pre-install-recall-*.db
 ```
 
 如果是首次安装，或当前还没有 `data\recall.db`，安装日志里会显示 `Pre-install backup skipped: recall.db not found.`。
+
+这份安装前备份是 best-effort：创建失败不会中止安装。因此升级前仍应先停止服务，手动生成并校验一份普通备份。维护中心的恢复列表目前只展示 `recall-backup-*.db`；`pre-install-*`、`pre-restore-*` 和 `pre-release-*` 等受保护备份可以用 `verify-backup --path <文件>` 明确校验，但不会直接出现在恢复列表中。完整步骤和卸载后保留范围见[数据、备份与卸载](data-backup-and-uninstall.md)。
 
 在安装目录打开 PowerShell，优先按这个顺序排查：
 
@@ -101,7 +103,7 @@ uv run python -m src.cli rollback-from-manifest --manifest data\release-checks\d
 - `uv run python -m src.cli stop`：停止由 `python -m src.cli serve` 记录的本地 Web 服务，适合处理忘记关闭导致后台占用的问题。
 - `uv run python -m src.cli diagnose`：导出脱敏诊断包，排查失败任务、服务状态和日志摘要。
 - `uv run python -m src.cli update`：检查 GitHub Release 上是否有新版安装包；只读检查，不会自动下载或安装。
-- `uv run python -m src.cli verify-backup`：只读校验最新的 `recall-backup-*.db` 或 `pre-install-recall-*.db` 是否可读取、完整性通过且必要表存在。
+- `uv run python -m src.cli verify-backup`：只读校验最新的普通备份或受保护备份是否可读取、完整性通过且必要表存在；也可添加 `--path <文件>` 明确校验某一份备份。
 - `uv run python -m src.cli rollback-from-manifest --manifest ...`：只读校验发布证据里的 `pre-release-recall-*.db`，确认 SHA256 和关键表数量一致；不加 `--apply` 不会恢复数据库。
 
 如果网页能打开，维护中心在：
@@ -170,3 +172,5 @@ uv run python -m src.cli stop
 ```
 
 也可以先点击 `Douyin Recall Backup Now` 手动生成一份备份；安装器本身还会尽量生成 `pre-install-recall-*.db` 安全备份。备份生成后可以点击 `Douyin Recall Verify Backup`，或运行 `uv run python -m src.cli verify-backup` 做一次只读恢复演练。发布证据存在时，也可以点击 `Douyin Recall Rollback Check`，或运行 `uv run python -m src.cli rollback-from-manifest --manifest data\release-checks\delivery-manifest-YYYYMMDD-HHMMSS.json` 做只读回滚校验。
+
+卸载器不是备份工具。当前自动化卸载验收明确验证的是 `data\recall.db` 保留；配置、登录 profile、日志和其他运行时目录即使通常不会被卸载器主动递归删除，也应在卸载前按[数据、备份与卸载](data-backup-and-uninstall.md)单独检查。
