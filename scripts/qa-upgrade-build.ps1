@@ -1,8 +1,10 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$OldInstallerPath,
-    [string]$NewInstallerPath = "D:\douyinclaude\packaging\windows\out\DouyinRecallSetup.exe",
-    [string]$QaRoot = "D:\codexDownload\douyin-release-v0.1.24\upgrade-qa",
+    [string]$NewInstallerPath = "D:\codexDownload\douyin-release-v0.1.25\DouyinRecallSetup.exe",
+    [string]$QaRoot = "D:\codexDownload\douyin-release-v0.1.25\upgrade-qa",
+    [string]$OldVersion = "0.1.24",
+    [string]$NewVersion = "0.1.25",
     [string]$PythonPath = "",
     [switch]$SkipUninstall
 )
@@ -42,9 +44,27 @@ function Assert-InstallerVersion {
         [string]$Path,
         [string]$ExpectedVersion
     )
-    $version = (Get-Item -LiteralPath $Path).VersionInfo.ProductVersion
-    if (-not $version -or -not $version.StartsWith($ExpectedVersion, [System.StringComparison]::Ordinal)) {
+    $version = [string](Get-Item -LiteralPath $Path).VersionInfo.ProductVersion
+    $version = $version.Trim()
+    if (-not [string]::Equals($version, $ExpectedVersion, [System.StringComparison]::Ordinal)) {
         throw "Expected installer version $ExpectedVersion, got '$version': $Path"
+    }
+    return $version
+}
+
+function Get-InstallerMetadata {
+    param(
+        [string]$Path,
+        [string]$ExpectedVersion
+    )
+    $item = Get-Item -LiteralPath $Path
+    $version = Assert-InstallerVersion -Path $Path -ExpectedVersion $ExpectedVersion
+    return [ordered]@{
+        path = $item.FullName
+        expected_version = $ExpectedVersion
+        product_version = $version
+        size_bytes = $item.Length
+        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $item.FullName).Hash
     }
 }
 
@@ -63,7 +83,8 @@ function Invoke-IsolatedInstaller {
     param(
         [string]$InstallerPath,
         [string]$AppRoot,
-        [string]$Label
+        [string]$Label,
+        [string]$LogPath
     )
     Write-Step "$Label silent install to isolated directory"
     $installArgs = @(
@@ -71,7 +92,8 @@ function Invoke-IsolatedInstaller {
         "/SUPPRESSMSGBOXES",
         "/NORESTART",
         "/NOICONS",
-        "/DIR=$AppRoot"
+        "/DIR=`"$AppRoot`"",
+        "/LOG=`"$LogPath`""
     )
     $process = Start-Process `
         -FilePath $InstallerPath `
@@ -98,7 +120,11 @@ function Save-InnoRegistration {
     foreach ($name in $item.GetValueNames()) {
         $values += [pscustomobject]@{
             Name = $name
-            Value = $item.GetValue($name)
+            Value = $item.GetValue(
+                $name,
+                $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
             Kind = $item.GetValueKind($name).ToString()
         }
     }
@@ -150,7 +176,7 @@ function Restore-InnoRegistration {
     $currentItem = Get-Item -LiteralPath $UninstallRegistryPath
     foreach ($name in $currentItem.GetValueNames()) {
         if (-not $savedNames.ContainsKey($name)) {
-            Remove-ItemProperty -LiteralPath $UninstallRegistryPath -Name $name -ErrorAction SilentlyContinue
+            Remove-ItemProperty -LiteralPath $UninstallRegistryPath -Name $name -ErrorAction Stop
         }
     }
 
@@ -165,12 +191,66 @@ function Restore-InnoRegistration {
     }
 }
 
+function Test-RegistryValueEqual {
+    param(
+        [object]$Left,
+        [object]$Right
+    )
+    $leftIsArray = $Left -is [System.Array]
+    $rightIsArray = $Right -is [System.Array]
+    if ($leftIsArray -or $rightIsArray) {
+        if (-not ($leftIsArray -and $rightIsArray)) {
+            return $false
+        }
+        if ($Left.Count -ne $Right.Count) {
+            return $false
+        }
+        for ($index = 0; $index -lt $Left.Count; $index++) {
+            if (-not [object]::Equals($Left[$index], $Right[$index])) {
+                return $false
+            }
+        }
+        return $true
+    }
+    return [object]::Equals($Left, $Right)
+}
+
+function Assert-InnoRegistrationRestored {
+    param([object]$Snapshot)
+
+    $current = Save-InnoRegistration
+    if ([bool]$current.Exists -ne [bool]$Snapshot.Exists) {
+        throw "Inno uninstall registration existence was not restored."
+    }
+    if (-not $Snapshot.Exists) {
+        return
+    }
+    if ($current.Values.Count -ne $Snapshot.Values.Count) {
+        throw "Inno uninstall registration value count was not restored."
+    }
+    $currentByName = @{}
+    foreach ($entry in $current.Values) {
+        $currentByName[$entry.Name] = $entry
+    }
+    foreach ($expected in $Snapshot.Values) {
+        if (-not $currentByName.ContainsKey($expected.Name)) {
+            throw "Inno uninstall registration value '$($expected.Name)' was not restored."
+        }
+        $actual = $currentByName[$expected.Name]
+        if ($actual.Kind -ne $expected.Kind -or
+            -not (Test-RegistryValueEqual -Left $actual.Value -Right $expected.Value)) {
+            throw "Inno uninstall registration value '$($expected.Name)' changed during QA."
+        }
+    }
+}
+
 if (-not (Test-Path -LiteralPath $DownloadRoot)) {
     New-Item -ItemType Directory -Path $DownloadRoot -Force | Out-Null
 }
 $QaRoot = [System.IO.Path]::GetFullPath($QaRoot)
-$qaRootIsManaged = $QaRoot.Equals($DownloadRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
-    $QaRoot.StartsWith($DownloadRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+$managedPrefix = $DownloadRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+$qaRootIsManaged = $QaRoot.StartsWith($managedPrefix, [System.StringComparison]::OrdinalIgnoreCase) -and
+    $QaRoot.Length -gt $managedPrefix.Length
 Assert-True -Condition $qaRootIsManaged -Message "QaRoot must stay under D:\codexDownload: $QaRoot"
 
 if (-not $PythonPath) {
@@ -184,8 +264,8 @@ foreach ($requiredFile in @($OldInstallerPath, $NewInstallerPath, $PythonPath)) 
 $OldInstallerPath = (Resolve-Path -LiteralPath $OldInstallerPath).Path
 $NewInstallerPath = (Resolve-Path -LiteralPath $NewInstallerPath).Path
 $PythonPath = (Resolve-Path -LiteralPath $PythonPath).Path
-Assert-InstallerVersion -Path $OldInstallerPath -ExpectedVersion "0.1.23"
-Assert-InstallerVersion -Path $NewInstallerPath -ExpectedVersion "0.1.24"
+$oldInstallerMetadata = Get-InstallerMetadata -Path $OldInstallerPath -ExpectedVersion $OldVersion
+$newInstallerMetadata = Get-InstallerMetadata -Path $NewInstallerPath -ExpectedVersion $NewVersion
 
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $runRoot = Join-Path $QaRoot "upgrade-$stamp-$PID"
@@ -193,8 +273,11 @@ $appRoot = Join-Path $runRoot "DouyinRecall"
 $dataRoot = Join-Path $appRoot "data"
 $dbPath = Join-Path $dataRoot "recall.db"
 $reportPath = Join-Path $runRoot "qa-upgrade-result.json"
+$oldInstallLogPath = Join-Path $runRoot "install-v$OldVersion.log"
+$newInstallLogPath = Join-Path $runRoot "upgrade-v$NewVersion.log"
+$uninstallLogPath = Join-Path $runRoot "uninstall-v$NewVersion.log"
 $seedPath = Join-Path $runRoot "seed-legacy-search-db.py"
-$verifyPath = Join-Path $runRoot "verify-v0.1.24-upgrade.py"
+$verifyPath = Join-Path $runRoot "verify-v$NewVersion-upgrade.py"
 $verifyUninstallPath = Join-Path $runRoot "verify-uninstall-data.py"
 $tempRoot = Join-Path $runRoot "temp"
 $hfCacheRoot = Join-Path $runRoot "hf-cache"
@@ -203,6 +286,9 @@ $originalTmp = $env:TMP
 $originalHfHome = $env:HF_HOME
 $originalSentenceTransformersHome = $env:SENTENCE_TRANSFORMERS_HOME
 $originalRegistration = Save-InnoRegistration
+$registrationRestored = $false
+$verificationPassed = $false
+$uninstallVerified = $false
 
 New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
@@ -490,6 +576,8 @@ app_root = Path(sys.argv[1]).resolve()
 db_path = Path(sys.argv[2]).resolve()
 backup_path = Path(sys.argv[3]).resolve()
 report_path = Path(sys.argv[4]).resolve()
+old_version = sys.argv[5]
+new_version = sys.argv[6]
 
 
 def columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -698,9 +786,9 @@ successful_jobs = conn.execute(
 ).fetchone()[0]
 assert successful_jobs == 4, successful_jobs
 report = {
-    "status": "passed",
-    "old_version": "0.1.23",
-    "new_version": "0.1.24",
+    "status": "verification_passed",
+    "old_version": old_version,
+    "new_version": new_version,
     "app_root": str(app_root),
     "database": str(db_path),
     "preinstall_backup": str(backup_path),
@@ -754,10 +842,11 @@ try {
     Invoke-IsolatedInstaller `
         -InstallerPath $OldInstallerPath `
         -AppRoot $appRoot `
-        -Label "v0.1.23"
+        -Label "v$OldVersion" `
+        -LogPath $oldInstallLogPath
     Assert-True `
         -Condition (Test-Path -LiteralPath (Join-Path $appRoot "src\db.py") -PathType Leaf) `
-        -Message "v0.1.23 install is missing src\db.py: $appRoot"
+        -Message "v$OldVersion install is missing src\db.py: $appRoot"
 
     Write-Step "Seed a populated legacy search schema"
     Invoke-PythonScript -ScriptPath $seedPath -Arguments @($dbPath)
@@ -765,11 +854,13 @@ try {
     Invoke-IsolatedInstaller `
         -InstallerPath $NewInstallerPath `
         -AppRoot $appRoot `
-        -Label "v0.1.24 in-place upgrade"
+        -Label "v$NewVersion in-place upgrade" `
+        -LogPath $newInstallLogPath
     $installedProject = Get-Content -Raw -LiteralPath (Join-Path $appRoot "pyproject.toml")
+    $expectedProjectVersion = 'version = "' + $NewVersion + '"'
     Assert-True `
-        -Condition $installedProject.Contains('version = "0.1.24"') `
-        -Message "In-place upgrade did not install v0.1.24 source."
+        -Condition $installedProject.Contains($expectedProjectVersion) `
+        -Message "In-place upgrade did not install v$NewVersion source."
 
     Write-Step "Verify installer-created pre-upgrade database backup"
     $preinstallBackups = @(
@@ -786,7 +877,8 @@ try {
     Write-Step "Run migrated app startup and wait for automatic background reindex"
     Invoke-PythonScript `
         -ScriptPath $verifyPath `
-        -Arguments @($appRoot, $dbPath, $preinstallBackup, $reportPath)
+        -Arguments @($appRoot, $dbPath, $preinstallBackup, $reportPath, $OldVersion, $NewVersion)
+    $verificationPassed = $true
 
     if (-not $SkipUninstall) {
         Write-Step "Run isolated uninstaller and verify user data is retained"
@@ -797,7 +889,12 @@ try {
         Assert-True `
             -Condition ($uninstallers.Count -gt 0) `
             -Message "No Inno uninstaller was found under $appRoot"
-        $uninstallArgs = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
+        $uninstallArgs = @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/LOG=`"$uninstallLogPath`""
+        )
         $uninstall = Start-Process `
             -FilePath $uninstallers[0].FullName `
             -ArgumentList $uninstallArgs `
@@ -811,18 +908,14 @@ try {
         Assert-True `
             -Condition (-not (Test-Path -LiteralPath (Join-Path $appRoot "src\db.py") -PathType Leaf)) `
             -Message "Uninstaller left installed application source in place."
-        $report = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
-        $report.uninstall_verified = $true
-        $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $reportPath -Encoding UTF8
+        $uninstallVerified = $true
     }
-
-    Write-Step "Upgrade QA passed"
-    Write-Host "QA root: $runRoot"
-    Write-Host "Report: $reportPath"
 }
 finally {
     try {
         Restore-InnoRegistration -Snapshot $originalRegistration
+        Assert-InnoRegistrationRestored -Snapshot $originalRegistration
+        $registrationRestored = $true
     }
     finally {
         $env:TEMP = $originalTemp
@@ -830,4 +923,29 @@ finally {
         $env:HF_HOME = $originalHfHome
         $env:SENTENCE_TRANSFORMERS_HOME = $originalSentenceTransformersHome
     }
+}
+
+if ($verificationPassed -and $registrationRestored) {
+    $report = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
+    $report.status = if ($uninstallVerified) { "passed" } else { "partial" }
+    $report.uninstall_verified = $uninstallVerified
+    $report | Add-Member -NotePropertyName uninstall_skipped -NotePropertyValue ([bool]$SkipUninstall)
+    $report | Add-Member -NotePropertyName registration_restored -NotePropertyValue $true
+    $report | Add-Member -NotePropertyName old_installer -NotePropertyValue $oldInstallerMetadata
+    $report | Add-Member -NotePropertyName new_installer -NotePropertyValue $newInstallerMetadata
+    $report | Add-Member -NotePropertyName installer_logs -NotePropertyValue ([ordered]@{
+        old_install = $oldInstallLogPath
+        new_install = $newInstallLogPath
+        uninstall = if ($uninstallVerified) { $uninstallLogPath } else { $null }
+    })
+    $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $reportPath -Encoding UTF8
+
+    if ($uninstallVerified) {
+        Write-Step "Upgrade QA passed"
+    }
+    else {
+        Write-Step "Upgrade verification passed; uninstall retention was explicitly skipped"
+    }
+    Write-Host "QA root: $runRoot"
+    Write-Host "Report: $reportPath"
 }

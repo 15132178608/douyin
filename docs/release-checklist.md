@@ -205,6 +205,14 @@ uv run python -m src.cli prune-backups --apply
 
 首次启动需要人工确认的项目：
 
+以下场景必须使用彼此隔离的安装现场并分别留存安装日志、关键截图、运行环境状态文件和进程/端口清理结果：
+
+1. GUI 全新安装，保持默认勾选运行环境准备，五阶段全部成功并能进入首次设置。
+2. GUI 全新安装，手动取消运行环境准备；安装完成，但不生成 prepared marker、不启动服务。
+3. 注入准备失败：分别验证恢复条件后的立即重试，以及取消并稍后处理；两条分支均不得遗留仍被占用的 owner lock 或工具子进程，并确认后续入口能重新取得该锁。
+4. 离线静默全新安装；退出码为 0，不出现 GUI、不强制下载、不启动浏览器或 Web 服务。
+5. 精确公开版 `v0.1.24` 到候选版 `v0.1.25` 原地升级；不执行 fresh-only 准备，保留数据库和升级前备份，后台索引完成后搜索恢复命中。
+
 - GUI 全新安装默认显示运行环境准备页；开始安装前可在任务页取消勾选，执行失败后可取消并稍后处理；静默安装和原地升级不会强制下载
 - 安装器能按 uv、Python、Chromium、数据库、状态检查更新 5 个阶段，并显示最新工具活动
 - 准备失败可选择立即重试或稍后处理；稍后处理仍完成安装且不会紧接着隐藏启动
@@ -296,15 +304,16 @@ uv run python scripts\preflight_summary.py
 2. 在合并后的 `main` 提交上创建并推送 annotated version tag。
 3. 等待标签工作流成功，并确认 Release 仍为 Draft。
 4. 将 Draft Release 中的 `DouyinRecallSetup.exe` 下载到 `D:\codexDownload` 下独立、清晰命名的 QA 目录。
-5. 对下载的确切 EXE 重新执行静默新装、上一正式版原地升级，并运行 `scripts\final_release_check.ps1 -InstallerPath <qa-directory>\DouyinRecallSetup.exe`。
+5. 对下载的确切 EXE 重新执行静默新装、上一正式版原地升级、本清单中的四条 GUI 新装关键分支（默认勾选、取消勾选、Retry、Defer），并运行 `scripts\final_release_check.ps1 -InstallerPath <qa-directory>\DouyinRecallSetup.exe`。
 6. 确认最终终检报告中的 `installer_artifact` 为 `validated=true`，ProductVersion 等于项目版本，路径和大小对应下载文件；再独立计算 SHA256，与报告和 Draft Release 的 asset digest 三方对照。
 7. 所有检查通过后，才把 Release 从 Draft 改为公开并标记 Latest。
 
 推荐核对命令：
 
 ```powershell
-gh release view v0.1.24 --json tagName,name,isDraft,isPrerelease,assets
-gh release download v0.1.24 --pattern DouyinRecallSetup.exe --dir <qa-directory>
+$VersionTag = "v<project-version>"
+gh release view $VersionTag --json tagName,name,isDraft,isPrerelease,assets
+gh release download $VersionTag --pattern DouyinRecallSetup.exe --dir <qa-directory>
 scripts\final_release_check.ps1 -InstallerPath <qa-directory>\DouyinRecallSetup.exe
 Get-FileHash -Algorithm SHA256 -LiteralPath <qa-directory>\DouyinRecallSetup.exe
 ```

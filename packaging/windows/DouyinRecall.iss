@@ -1,5 +1,5 @@
 #define MyAppName "Douyin Recall"
-#define MyAppVersion "0.1.24"
+#define MyAppVersion "0.1.25"
 #define MyAppPublisher "xiaojiang"
 
 #if Ver < EncodeVer(6, 5, 0)

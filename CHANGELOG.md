@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.25
+
+- Fresh GUI installs can prepare uv, production dependencies resolved from the bundled `uv.lock`, the exact Playwright browser set, the database, and final runtime status inside the installer while showing five real stages and current tool activity.
+- Runtime preparation failures can be retried immediately or deferred without aborting installation or triggering a hidden launch; silent installs and in-place upgrades do not force an online preparation step.
+- The launcher now presents one seven-stage startup page with elapsed time, trustworthy tool output, automatic Web redirect, and actionable failure details, while already-prepared daily starts remain hidden.
+- Runtime readiness is protected by a cross-process owner lock, exact Playwright revision/completion checks, readiness-based resume, fingerprinted prepared-state markers, forced repair of incomplete browser installs, and a Windows Job Object that prevents orphaned child tools.
+- Release checks now bind evidence to the exact external installer path, version, size, SHA256, and signature state and fail closed on missing or stale reports; the upgrade gate advances to the public-v0.1.24-to-v0.1.25 path.
+
+See [docs/releases/v0.1.25.md](docs/releases/v0.1.25.md).
+
 ## v0.1.24
 
 - Doctor now discovers Sentence Transformers and Hugging Face model caches from explicit environment variables, the Windows D-drive runtime cache, and the legacy project cache, while rejecting empty, metadata-only, locked, and incomplete cache content.

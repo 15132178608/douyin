@@ -51,6 +51,33 @@ if (-not (Test-Path $InstallerScript)) {
     throw "Missing installer script: $InstallerScript"
 }
 
+$ProjectText = Get-Content -Raw -LiteralPath (Join-Path $SourceRoot "pyproject.toml")
+$LockText = Get-Content -Raw -LiteralPath (Join-Path $SourceRoot "uv.lock")
+$InstallerText = Get-Content -Raw -LiteralPath $InstallerScript
+$ProjectVersionMatch = [regex]::Match($ProjectText, '(?m)^version\s*=\s*"([^"]+)"')
+$LockVersionMatch = [regex]::Match(
+    $LockText,
+    '(?ms)\[\[package\]\]\s*name\s*=\s*"douyin-recall"\s*version\s*=\s*"([^"]+)"'
+)
+$InstallerVersionMatch = [regex]::Match($InstallerText, '(?m)^#define MyAppVersion\s+"([^"]+)"')
+if (-not $ProjectVersionMatch.Success -or
+    -not $LockVersionMatch.Success -or
+    -not $InstallerVersionMatch.Success) {
+    throw "Could not read the project, lock, and installer versions before compiling."
+}
+$ProjectVersion = $ProjectVersionMatch.Groups[1].Value
+$LockVersion = $LockVersionMatch.Groups[1].Value
+$InstallerVersion = $InstallerVersionMatch.Groups[1].Value
+if ($ProjectVersion -ne $LockVersion -or $ProjectVersion -ne $InstallerVersion) {
+    throw "Version mismatch: pyproject.toml=$ProjectVersion, uv.lock=$LockVersion, DouyinRecall.iss=$InstallerVersion"
+}
+if ($env:GITHUB_REF_TYPE -eq "tag") {
+    $ExpectedTag = "v$ProjectVersion"
+    if ($env:GITHUB_REF_NAME -ne $ExpectedTag) {
+        throw "Version tag mismatch: expected $ExpectedTag, got '$($env:GITHUB_REF_NAME)'"
+    }
+}
+
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 $Iscc = Find-InnoSetupCompiler -ExplicitPath $InnoSetupCompiler

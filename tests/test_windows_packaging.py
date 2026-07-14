@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import unittest
 import uuid
@@ -338,14 +339,21 @@ class WindowsPackagingTests(unittest.TestCase):
 
     def test_inno_version_matches_project_version(self) -> None:
         project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
         script = read("DouyinRecall.iss")
 
         project_version = re.search(r'^version = "([^"]+)"', project, re.MULTILINE)
+        lock_version = re.search(
+            r'\[\[package\]\]\s+name = "douyin-recall"\s+version = "([^"]+)"',
+            lock,
+        )
         installer_version = re.search(r'^#define MyAppVersion "([^"]+)"', script, re.MULTILINE)
 
         self.assertIsNotNone(project_version)
+        self.assertIsNotNone(lock_version)
         self.assertIsNotNone(installer_version)
         self.assertEqual(project_version.group(1), installer_version.group(1))
+        self.assertEqual(project_version.group(1), lock_version.group(1))
 
     def test_launcher_prepares_runtime_and_opens_local_web_ui(self) -> None:
         launcher = read("start-douyin-recall.ps1")
@@ -1833,12 +1841,71 @@ exit 0
         self.assertIn("DouyinRecall.iss", build)
         self.assertIn("DouyinRecallSetup.exe", build)
         self.assertIn("packaging\\windows\\out", build)
+        self.assertIn("Version mismatch: pyproject.toml=", build)
+        self.assertIn("uv.lock=$LockVersion", build)
+        self.assertIn('$env:GITHUB_REF_TYPE -eq "tag"', build)
+        self.assertIn("Version tag mismatch:", build)
+
+    def test_build_script_rejects_version_and_tag_mismatches_before_compiling(self) -> None:
+        source_root = WINDOWS_TEST_ARTIFACTS / f"build-version-{uuid.uuid4().hex}"
+        source_root.mkdir(parents=True)
+        build_script = PACKAGING / "build-installer.ps1"
+        fake_compiler = Path(sys.executable)
+
+        def write_versions(version: str) -> None:
+            (source_root / "pyproject.toml").write_text(
+                f'[project]\nname = "douyin-recall"\nversion = "{version}"\n',
+                encoding="utf-8",
+            )
+            (source_root / "uv.lock").write_text(
+                f'[[package]]\nname = "douyin-recall"\nversion = "{version}"\n',
+                encoding="utf-8",
+            )
+
+        write_versions("9.9.9")
+        mismatch = run_powershell(
+            build_script,
+            "-SourceRoot",
+            str(source_root),
+            "-InnoSetupCompiler",
+            str(fake_compiler),
+            env=os.environ.copy(),
+        )
+        self.assertNotEqual(mismatch.returncode, 0)
+        self.assertIn("Version mismatch:", mismatch.stdout + mismatch.stderr)
+
+        write_versions(project_version())
+        tag_env = os.environ.copy()
+        tag_env.update({"GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v9.9.9"})
+        tag_mismatch = run_powershell(
+            build_script,
+            "-SourceRoot",
+            str(source_root),
+            "-InnoSetupCompiler",
+            str(fake_compiler),
+            env=tag_env,
+        )
+        self.assertNotEqual(tag_mismatch.returncode, 0)
+        self.assertIn("Version tag mismatch:", tag_mismatch.stdout + tag_mismatch.stderr)
 
     def test_installed_qa_restores_inno_registration_after_isolated_install(self) -> None:
         script = read_script("qa-installed-build.ps1")
 
-        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.24\\DouyinRecallSetup.exe", script)
-        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.24\\installed-qa", script)
+        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.25\\DouyinRecallSetup.exe", script)
+        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.25\\installed-qa", script)
+        self.assertIn('[string]$ExpectedVersion = "0.1.25"', script)
+        self.assertIn("function Assert-InstallerVersion", script)
+        self.assertIn("[string]::Equals($version, $Expected", script)
+        self.assertIn("Get-FileHash -Algorithm SHA256", script)
+        self.assertIn('status = "passed"', script)
+        self.assertIn('ConvertTo-Json -Depth 6', script)
+        self.assertIn("QaRoot must stay under D:\\codexDownload", script)
+        self.assertIn('"/LOG=`\"$installLogPath`\""', script)
+        self.assertIn("Assert-InnoRegistrationRestored", script)
+        self.assertIn("DoNotExpandEnvironmentNames", script)
+        self.assertIn("registration_restored = $true", script)
+        self.assertIn("$QaRoot.Length -gt $managedPrefix.Length", script)
+        self.assertIn("Remove-ItemProperty -LiteralPath $UninstallRegistryPath -Name $name -ErrorAction Stop", script)
         self.assertIn("$UninstallRegistryPath", script)
         self.assertIn("function Save-InnoRegistration", script)
         self.assertIn("function Restore-InnoRegistration", script)
@@ -1855,25 +1922,91 @@ exit 0
             script.index("Stop-PortOwner -LocalPort $Port"),
             script.index("Restore-InnoRegistration -Snapshot $originalRegistration"),
         )
+        self.assertLess(
+            script.rindex("Assert-InnoRegistrationRestored -Snapshot $originalRegistration"),
+            script.rindex('status = "passed"'),
+        )
+
+    def test_installer_qa_rejects_product_version_prefixes(self) -> None:
+        executable = Path(sys.executable).resolve()
+        probe = run_powershell_command(
+            "(Get-Item -LiteralPath '" + str(executable).replace("'", "''") +
+            "').VersionInfo.ProductVersion.Trim()",
+            cwd=ROOT,
+        )
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        actual_version = probe.stdout.strip().splitlines()[-1]
+        prefix = actual_version.rsplit(".", 1)[0]
+        if prefix == actual_version:
+            prefix = actual_version[:-1]
+        self.assertTrue(prefix)
+        self.assertTrue(actual_version.startswith(prefix))
+        qa_root = WINDOWS_TEST_ARTIFACTS / f"exact-version-{uuid.uuid4().hex}"
+
+        cases = (
+            (
+                SCRIPTS / "qa-installed-build.ps1",
+                (
+                    "-InstallerPath", str(executable),
+                    "-QaRoot", str(qa_root / "installed"),
+                    "-ExpectedVersion", prefix,
+                ),
+            ),
+            (
+                SCRIPTS / "qa-upgrade-build.ps1",
+                (
+                    "-OldInstallerPath", str(executable),
+                    "-NewInstallerPath", str(executable),
+                    "-QaRoot", str(qa_root / "upgrade"),
+                    "-OldVersion", prefix,
+                    "-NewVersion", actual_version,
+                    "-PythonPath", str(executable),
+                ),
+            ),
+        )
+        for script, arguments in cases:
+            completed = run_powershell(
+                script,
+                *arguments,
+                env=os.environ.copy(),
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn(
+                f"Expected installer version {prefix}",
+                completed.stdout + completed.stderr,
+            )
 
     def test_upgrade_qa_covers_previous_public_installer_migration_reindex_and_uninstall(self) -> None:
         script = read_script("qa-upgrade-build.ps1")
 
         self.assertIn("$OldInstallerPath", script)
         self.assertIn("$NewInstallerPath", script)
-        self.assertIn('ExpectedVersion "0.1.23"', script)
-        self.assertIn('ExpectedVersion "0.1.24"', script)
+        self.assertIn('[string]$OldVersion = "0.1.24"', script)
+        self.assertIn('[string]$NewVersion = "0.1.25"', script)
+        self.assertIn("ExpectedVersion $OldVersion", script)
+        self.assertIn("ExpectedVersion $NewVersion", script)
+        self.assertIn("[string]::Equals($version, $ExpectedVersion", script)
         self.assertGreaterEqual(script.count('"/NOICONS"'), 1)
         self.assertGreaterEqual(script.count("-AppRoot $appRoot"), 2)
-        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.24\\upgrade-qa", script)
+        self.assertIn("D:\\codexDownload\\douyin-release-v0.1.25\\upgrade-qa", script)
         self.assertIn('"seed-legacy-search-db.py"', script)
         self.assertIn('Seed a populated legacy search schema', script)
-        self.assertIn('"verify-v0.1.24-upgrade.py"', script)
-        self.assertIn('"old_version": "0.1.23"', script)
-        self.assertIn('"new_version": "0.1.24"', script)
-        self.assertIn('-Label "v0.1.23"', script)
-        self.assertIn('-Label "v0.1.24 in-place upgrade"', script)
-        self.assertIn("version = \"0.1.24\"", script)
+        self.assertIn('"verify-v$NewVersion-upgrade.py"', script)
+        self.assertIn('"old_version": old_version', script)
+        self.assertIn('"new_version": new_version', script)
+        self.assertIn('"status": "verification_passed"', script)
+        self.assertIn('-Label "v$OldVersion"', script)
+        self.assertIn('-Label "v$NewVersion in-place upgrade"', script)
+        self.assertIn("$expectedProjectVersion", script)
+        self.assertIn("Get-InstallerMetadata", script)
+        self.assertIn("old_installer", script)
+        self.assertIn("new_installer", script)
+        self.assertIn("installer_logs", script)
+        self.assertIn('"partial"', script)
+        self.assertIn("Assert-InnoRegistrationRestored", script)
+        self.assertIn("DoNotExpandEnvironmentNames", script)
+        self.assertIn("$QaRoot.Length -gt $managedPrefix.Length", script)
+        self.assertIn("Remove-ItemProperty -LiteralPath $UninstallRegistryPath -Name $name -ErrorAction Stop", script)
         self.assertIn("$env:TEMP = $tempRoot", script)
         self.assertIn("$env:TMP = $tempRoot", script)
         self.assertIn("$env:HF_HOME = $hfCacheRoot", script)
@@ -1902,7 +2035,11 @@ exit 0
         self.assertIn("Restore-InnoRegistration -Snapshot $originalRegistration", script)
         self.assertLess(
             script.index("$originalRegistration = Save-InnoRegistration"),
-            script.index("-InstallerPath $OldInstallerPath"),
+            script.index("    Invoke-IsolatedInstaller `"),
+        )
+        self.assertLess(
+            script.rindex("Assert-InnoRegistrationRestored -Snapshot $originalRegistration"),
+            script.rindex("$report.status ="),
         )
         self.assertNotIn("Remove-Item -Recurse", script)
         self.assertNotIn("rm -rf", script)
