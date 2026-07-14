@@ -205,10 +205,20 @@ uv run python -m src.cli prune-backups --apply
 
 首次启动需要人工确认的项目：
 
+- GUI 全新安装默认显示运行环境准备页；开始安装前可在任务页取消勾选，执行失败后可取消并稍后处理；静默安装和原地升级不会强制下载
+- 安装器能按 uv、Python、Chromium、数据库、状态检查更新 5 个阶段，并显示最新工具活动
+- 准备失败可选择立即重试或稍后处理；稍后处理仍完成安装且不会紧接着隐藏启动
 - 安装后能打开本地页面
 - 没有数据时进入首次设置向导
 - 环境检查、扫码绑定、同步、索引、完成入口文案清楚
 - 下载依赖或 Chromium 失败时能看到失败阶段和建议动作
+- 网络恢复后 `Douyin Recall Prepare Runtime` 会跳过已验证阶段、完成剩余步骤并刷新 fingerprint marker
+- `chrome-win` 与 `chrome-win64` 两种 Playwright 缓存布局都能命中 prepared fast path
+- 连续点击准备入口时只有一个 preparation owner；已准备好的日常启动不重复显示准备页
+- 共享缓存只有旧 Playwright revision（即使旧 Chromium、headless shell、FFmpeg、Winldd 都完整）时不能命中 prepared fast path，必须补齐当前 manifest revision
+- 当前 revision 目录只有 executable、没有 Playwright `INSTALLATION_COMPLETE` 时不能命中 ready；普通安装仍未满足后置校验时必须用 `--force` 自愈或明确失败
+- 已有有效 marker 时手动运行 Prepare Runtime，主启动仍需等待 owner；第二个准备进程返回非零 BUSY，且两者都不得覆盖 owner 状态
+- 进度页被短暂独占时，uv/Playwright 子进程与 preparation lock 的生命周期仍保持一致，不得出现锁已释放但工具仍在修改环境
 - 开始菜单中的维护中心、账号恢复、状态、停止服务、备份、恢复、诊断入口可打开
 
 ## 恢复和诊断包验收

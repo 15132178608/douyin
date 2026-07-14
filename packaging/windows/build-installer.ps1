@@ -41,7 +41,7 @@ function Find-InnoSetupCompiler {
         }
     }
 
-    throw "ISCC.exe was not found. Install Inno Setup 6, then rerun packaging\windows\build-installer.ps1."
+    throw "ISCC.exe was not found. Install Inno Setup 6.5 or later, then rerun packaging\windows\build-installer.ps1."
 }
 
 if (-not (Test-Path (Join-Path $SourceRoot "pyproject.toml"))) {

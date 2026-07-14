@@ -154,7 +154,9 @@ uv run recall digest --dry-run      # 预览 HTML
 
 首次同步和首次索引可能需要较长时间；索引阶段会下载本地模型。数据仍保存在本机 `data/` 目录，安装包不会上传你的数据库、登录资料或浏览器 profile。
 
-日常维护入口在 `/maintenance`：它会显示服务状态、最近同步、失败任务、抖音登录状态、SQLite 备份状态和版本更新状态，并提供“执行一次标准维护”“立即生成 SQLite 备份”“校验并准备恢复”和“导出诊断包”操作。如果最近的同步任务或抓取记录显示“用户未登录 / 登录态失效”，维护中心会提示登录态可能过期，并提供 `/auth` 重新扫码入口。恢复前会先做 SQLite 完整性和必要表检查，并要求输入确认文字；恢复时会先额外保存一份恢复前安全备份。也可以用 `recall verify-backup` 对 `data\exports` 下最新的普通备份，或安装前、恢复前、发布前三类受保护备份做只读恢复演练，确认文件可读取、完整性通过且必要表存在；维护中心的恢复列表目前只展示普通 `recall-backup-*.db`，受保护备份的限制和处理方式见数据说明。诊断包只包含脱敏环境、服务、任务和日志摘要，不包含 `.env`、数据库、浏览器 profile 或登录态。安装包启动脚本会先做启动前健康检查，再检查 `recall status`，避免重复启动多个本地 Web 服务；首次启动会打开本地 `data\runtime\startup-status.html` 状态页，展示检查本地环境、准备 Python、下载/安装 Playwright Chromium、初始化数据库和启动本地 Web 服务等步骤；如果首次启动卡在依赖下载、uv、Playwright 或数据库初始化，可以先点 `Douyin Recall Prepare Runtime` 单独重试准备步骤，它不会启动本地 Web 服务，也不会打开浏览器；启动失败窗口和本地状态页都会显示“失败阶段 / 可能原因 / 建议下一步”，Prepare Runtime 失败时也会显示失败的准备步骤；`recall status` 会额外显示 service audit、记录的 PID、端口 owner PID 和下一步建议，帮助判断该点 `Douyin Recall Stop Service`、`Douyin Recall Repair State`，还是先检查外部占用端口的进程；安装器升级前会尽量把现有 `data\recall.db` 复制到 `data\exports\pre-install-recall-*.db`；运行时下载和缓存会放到 `D:\codexDownload\douyinclaude-runtime`，并设置 `UV_LINK_MODE=copy` 避免跨盘缓存产生 hardlink warning。
+GUI 全新安装默认会在安装器内显示运行环境准备页，按 uv、Python 依赖、Playwright Chromium、数据库和状态检查 5 个阶段更新；工具有可信进度输出时会直接显示。开始安装前可以在任务页取消勾选该任务；若准备执行失败，可以选择取消并稍后处理。静默安装和原地升级也不会被强制联网阻塞。准备失败可立即重试或稍后从 `Douyin Recall Prepare Runtime` 继续；重试会按当前 Playwright manifest 校验 Chromium、headless shell、FFmpeg 和 Winldd 的精确 revision、安装完成标志和可执行文件，并跳过已经完整就绪的 Python/浏览器阶段。这里不包含 bge 模型下载，模型仍在首次索引时获取。
+
+日常维护入口在 `/maintenance`：它会显示服务状态、最近同步、失败任务、抖音登录状态、SQLite 备份状态和版本更新状态，并提供“执行一次标准维护”“立即生成 SQLite 备份”“校验并准备恢复”和“导出诊断包”操作。如果最近的同步任务或抓取记录显示“用户未登录 / 登录态失效”，维护中心会提示登录态可能过期，并提供 `/auth` 重新扫码入口。恢复前会先做 SQLite 完整性和必要表检查，并要求输入确认文字；恢复时会先额外保存一份恢复前安全备份。也可以用 `recall verify-backup` 对 `data\exports` 下最新的普通备份，或安装前、恢复前、发布前三类受保护备份做只读恢复演练，确认文件可读取、完整性通过且必要表存在；维护中心的恢复列表目前只展示普通 `recall-backup-*.db`，受保护备份的限制和处理方式见数据说明。诊断包只包含脱敏环境、服务、任务和日志摘要，不包含 `.env`、数据库、浏览器 profile 或登录态。安装包启动脚本会先做启动前健康检查，再检查 `recall status`，避免重复启动多个本地 Web 服务；环境未准备或 fingerprint 变化时，主入口会打开 `data\runtime\startup-status.html`，持续显示 7 个阶段、耗时和最新工具输出，服务就绪后由同一页面跳转到 Web；准备好的正常日常启动继续隐藏执行，但服务启动失败仍会打开可见失败页。准备任务并发时，启动入口只显示独立等待说明，不会复用旧成功页或覆盖 owner 状态。失败页会保留“失败阶段 / 可能原因 / 建议下一步 / 错误摘要”，`Douyin Recall Prepare Runtime` 则通过真实校验跳过已完成阶段，且不会启动本地 Web 服务；`recall status` 会额外显示 service audit、记录的 PID、端口 owner PID 和下一步建议，帮助判断该点 `Douyin Recall Stop Service`、`Douyin Recall Repair State`，还是先检查外部占用端口的进程；安装器升级前会尽量把现有 `data\recall.db` 复制到 `data\exports\pre-install-recall-*.db`；运行时下载和缓存会放到 `D:\codexDownload\douyinclaude-runtime`，并设置 `UV_LINK_MODE=copy` 避免跨盘缓存产生 hardlink warning。
 
 安装后，开始菜单会提供 `Douyin Recall Control` 控制入口，以及 `Douyin Recall Status`、`Douyin Recall Prepare Runtime`、`Douyin Recall Stop Service`、`Douyin Recall Maintenance`、`Douyin Recall Account Recovery`、`Douyin Recall Diagnostics`、`Douyin Recall Logs`、`Douyin Recall Health Check`、`Douyin Recall Repair State`、`Douyin Recall Backup Now`、`Douyin Recall Backups`、`Douyin Recall Restore Center`、`Douyin Recall Verify Backup` 快捷方式。`Douyin Recall Control` 打开时会先显示状态摘要，包括当前版本、服务状态、service audit、端口 owner、维护中心地址、日志目录和运行时缓存。平时想看状态、只准备运行时依赖、停止后台服务、打开维护中心、打开账号恢复、导出诊断包、查看日志、运行健康检查、清理陈旧服务记录、立即备份、打开备份目录或只读校验最新备份，可以直接点这些入口，不需要先记住 PowerShell 命令。准备入口会安装或定位 uv，执行 `uv sync`、`playwright install chromium`、`recall init-db` 和 `recall status`，但不会启动本地 Web 服务；恢复入口只会打开维护中心，仍需校验备份并输入确认文字；账号恢复入口会打开 `/auth`，由你手动重新扫码。
 
@@ -170,15 +172,16 @@ uv run recall digest --dry-run      # 预览 HTML
 .\packaging\windows\build-installer.ps1
 ```
 
-构建机需要先安装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)。生成的安装包在 `packaging\windows\out\DouyinRecallSetup.exe`。
+构建机需要先安装 [Inno Setup 6.5+](https://jrsoftware.org/isinfo.php)；运行环境进度页依赖逐行读取外部工具输出的接口。生成的安装包在 `packaging\windows\out\DouyinRecallSetup.exe`。
 
 安装包采用当前 Windows 用户目录安装，不需要管理员权限。首次启动会自动：
 
+- GUI 全新安装可在任务页取消勾选运行环境准备；执行失败后可取消并稍后处理；静默安装和原地升级跳过这一联网步骤
 - 复制 `.env.example` 为 `.env`
 - 准备本地 `data/` 目录和日志目录
 - 检查并安装 `uv`
-- 执行 `uv sync`
-- 执行 `uv run playwright install chromium`
+- 校验并按需执行 `uv sync`
+- 校验并按需执行 `uv run playwright install chromium`
 - 初始化 SQLite 数据库
 - 启动本地 Web 服务并打开 `http://127.0.0.1:8000`
 

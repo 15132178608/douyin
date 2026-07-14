@@ -10,7 +10,9 @@
 
 安装包会先运行启动前健康检查：确认安装目录、日志目录和 `D:\codexDownload\douyinclaude-runtime` 可写；如果本机还没有 uv，还会检查 uv 下载入口是否可访问。失败时会在启动窗口直接显示中文原因和修复建议。
 
-首次启动会自动准备 Python 依赖、Playwright Chromium 浏览器和本地模型。下载和缓存统一放在：
+首次安装默认会在安装器里准备 Python 依赖和 Playwright Chromium 浏览器，并显示 5 个真实阶段、当前工具输出和阶段进度。开始安装前可以在任务页取消勾选这个任务；如果准备执行失败，也可以在提示框里取消并稍后处理。静默安装和原地升级不会强制联网准备。以后从开始菜单运行 `Douyin Recall Prepare Runtime` 可以继续完成。首次搜索索引所需的本地模型是在扫码同步后的索引阶段下载，不属于安装器准备进度。
+
+运行时下载和缓存统一放在：
 
 ```text
 D:\codexDownload\douyinclaude-runtime
@@ -22,7 +24,7 @@ D:\codexDownload\douyinclaude-runtime
 
 安装包启动脚本会设置 `UV_LINK_MODE=copy`。这是为了避免缓存目录在 D 盘、安装目录在 C 盘时，`uv` 因跨盘 hardlink 不可用而打印 warning；它不会改变下载目录，也不会影响数据目录。
 
-如果首次启动卡在 uv、Python 依赖、Playwright Chromium 或数据库初始化，可以点击开始菜单里的 `Douyin Recall Prepare Runtime`。这个入口只准备运行时：安装或定位 uv、执行 `uv sync`、`playwright install chromium`、`python -m src.cli init-db` 和 `python -m src.cli status`；它不会启动本地 Web 服务，也不会打开浏览器。网络恢复后可以反复运行它。启动脚本和 Prepare Runtime 都会显示步骤级进度；看到“首次运行可能需要几分钟”时，通常是在下载或准备依赖。Prepare Runtime 成功结束后会打印准备摘要，包括已完成步骤、安装目录、运行时缓存、浏览器缓存、日志目录和下一步启动入口。
+如果安装器里的准备步骤失败，可以选择“重试”立即再试，或选择“取消”稍后处理；稍后处理仍会完成程序安装，但不会紧接着隐藏启动应用。开始菜单里的 `Douyin Recall Prepare Runtime` 只准备运行时：安装或定位 uv、校验/执行 `uv sync`、按当前 Playwright manifest 校验或安装 Chromium、headless shell、FFmpeg 和 Winldd、运行 `python -m src.cli init-db` 和 `python -m src.cli status`；它不会启动本地 Web 服务，也不会打开浏览器。网络恢复后再次运行时，已通过精确 revision、`INSTALLATION_COMPLETE` 和可执行文件校验的 Python/浏览器阶段会跳过，只继续未完成阶段；普通浏览器安装返回成功但后置校验仍不完整时，会用 `--force` 修复并再次校验。成功后会原子刷新与 `pyproject.toml`、`uv.lock` 对应的 fingerprint marker。
 
 启动脚本会在本地写入一个准备状态文件，供失败排查时查看：
 
@@ -30,9 +32,9 @@ D:\codexDownload\douyinclaude-runtime
 data\runtime\startup-status.html
 ```
 
-正常启动不会再自动打开这个准备页，也不会显示 PowerShell 进度窗口。安装完成或点击 `Douyin Recall` 后，主快捷方式会先通过隐藏的 `wscript.exe` 启动器调用后台脚本，脚本会在后台准备依赖并启动本地 Web 服务，只有确认 `http://127.0.0.1:<端口>` 已经可访问后才打开最终页面。如果启动失败，错误会写入 `data\logs\start-douyin-recall.log` 和 `startup-status.html`，可通过 `Douyin Recall Control`、`Douyin Recall Health Check` 或 `Douyin Recall Logs` 查看。
+已准备好的正常日常启动仍保持隐藏，不显示 PowerShell 窗口，也不会重复打开准备页。运行环境尚未准备或 fingerprint 已变化时，主快捷方式会打开 `startup-status.html`：页面持续显示 7 个阶段、已运行时间和最新可信工具输出；服务就绪后，同一页面自动跳转到 `http://127.0.0.1:<端口>`，避免重复标签页。即使运行环境已准备，服务启动失败时仍会打开失败页并保留失败阶段、可能原因、错误摘要和建议动作，不再表现为“点击后没反应”。
 
-从 v0.1.18 开始，启动失败窗口会直接显示 `失败阶段`、`可能原因` 和 `建议下一步`。如果失败发生在 `uv sync`、`playwright install chromium`、`python -m src.cli init-db` 或 `python -m src.cli serve`，提示会指向对应的重试入口、日志或健康检查。`Douyin Recall Prepare Runtime` 失败时也会显示 `Prepare failed at step:`、`Likely cause:` 和 `Recommended next step:`，用于确认是依赖、浏览器、数据库还是最终状态检查卡住。
+如果失败发生在 `uv sync`、`playwright install chromium`、`python -m src.cli init-db` 或 `python -m src.cli serve`，页面和控制台会指向对应的重试入口、日志或健康检查。`Douyin Recall Prepare Runtime` 还会输出稳定的 `DR_PROGRESS` 阶段记录，安装器据此更新进度；无法获得统一字节总量时不会伪造全局下载百分比。准备流程使用独占锁，重复点击只允许一个进程修改环境和 marker；第二个准备入口会明确报告 busy，第二个主启动则打开独立等待说明，不会覆盖 owner 的状态或复用旧成功页。
 
 ## 启动失败先看哪里
 
@@ -49,6 +51,16 @@ data\logs\serve.out.log
 data\logs\serve.err.log
 ```
 
+运行环境准备的阶段记录、工具输出和失败建议在：
+
+```text
+data\logs\prepare-runtime.log
+data\logs\runtime-python.out.log
+data\logs\runtime-python.err.log
+data\logs\runtime-browser.out.log
+data\logs\runtime-browser.err.log
+```
+
 如果是安装包默认安装路径，完整目录通常在：
 
 ```text
@@ -59,7 +71,7 @@ C:\Users\<你的用户名>\AppData\Local\Programs\DouyinRecall\data\logs
 
 安装后也可以直接用开始菜单入口，不必先打开 PowerShell：
 
-- `Douyin Recall Control`：打开控制菜单，并先显示状态摘要，包括当前版本、服务状态、service audit、端口 owner、维护中心地址、日志目录和运行时缓存。
+- `Douyin Recall Control`：打开控制菜单，并先显示状态摘要，包括当前版本、服务状态、service audit、端口 owner、上次运行环境准备状态/失败阶段、维护中心地址、日志目录和运行时缓存。
 - `Douyin Recall Status`：查看服务状态、PID、访问地址、端口 owner 和安全下一步。
 - `Douyin Recall Prepare Runtime`：只重试运行时准备步骤；不会启动本地 Web 服务，也不会打开浏览器。
 - `Douyin Recall Stop Service`：停止由本项目记录的本地 Web 服务，适合处理忘记关闭导致后台占用的问题。

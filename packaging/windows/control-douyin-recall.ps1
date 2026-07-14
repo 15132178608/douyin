@@ -1,6 +1,7 @@
 param(
     [ValidateSet("menu", "start", "prepare", "stop", "status", "maintenance", "auth", "diagnose", "logs", "update", "health", "repair", "backup", "backups", "restore", "verify-backup", "rollback-check")]
-    [string]$Action = "menu"
+    [string]$Action = "menu",
+    [switch]$NonInteractive
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,26 +17,48 @@ catch {
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 $env:UV_NO_DEV = "1"
+$env:NO_COLOR = "1"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
 $DataRoot = Join-Path $AppRoot "data"
 $LogsDir = Join-Path $DataRoot "logs"
+$RuntimeDir = Join-Path $DataRoot "runtime"
 $ExportsDir = Join-Path $AppRoot "data\exports"
 $ReleaseChecksDir = Join-Path $AppRoot "data\release-checks"
 $EnvPath = Join-Path $AppRoot ".env"
+$EnvExamplePath = Join-Path $AppRoot ".env.example"
 $ProjectPath = Join-Path $AppRoot "pyproject.toml"
 $ServerStatePath = Join-Path $AppRoot "data\runtime\server.json"
 $ServerPidPath = Join-Path $AppRoot "data\runtime\server.pid"
 $StartScript = Join-Path $ScriptDir "start-douyin-recall.ps1"
+$RuntimeCommonScript = Join-Path $ScriptDir "runtime-preparation-common.ps1"
+$RuntimePreparedPath = Join-Path $RuntimeDir "runtime-prepared.json"
+$PreparationStatePath = Join-Path $RuntimeDir "runtime-preparation.json"
+$PreparationLockPath = Join-Path $RuntimeDir "runtime-preparation.lock"
+$PrepareLog = Join-Path $LogsDir "prepare-runtime.log"
+$PyProjectPath = Join-Path $AppRoot "pyproject.toml"
+$UvLockPath = Join-Path $AppRoot "uv.lock"
+$VenvPython = Join-Path $AppRoot ".venv\Scripts\python.exe"
+$PlaywrightBrowsersJsonPath = Join-Path $AppRoot ".venv\Lib\site-packages\playwright\driver\package\browsers.json"
 $DownloadRoot = "D:\codexDownload\douyinclaude-runtime"
 $UvDownloadDir = Join-Path $DownloadRoot "uv"
 $UvCacheDir = Join-Path $DownloadRoot "uv-cache"
 $PlaywrightBrowsersDir = Join-Path $DownloadRoot "ms-playwright"
 $UvInstallScriptUrl = "https://astral.sh/uv/install.ps1"
+if (-not (Test-Path -LiteralPath $RuntimeCommonScript)) {
+    throw "Missing runtime preparation helper: $RuntimeCommonScript"
+}
+. $RuntimeCommonScript
 $script:CurrentPrepareStep = ""
+$script:CurrentPrepareStepKey = ""
 $script:PrepareStepTotal = 5
 $script:PrepareStepIndex = 0
+$script:PrepareStartedAt = Get-Date
+$script:PreparationLockStream = $null
+$script:PreparationBusy = $false
+$script:CompletedPrepareSteps = @()
+$script:PreparationJobHandle = [IntPtr]::Zero
 
 function Write-Header {
     param([string]$Title)
@@ -48,6 +71,7 @@ function Initialize-RuntimeEnvironment {
     Set-Location $AppRoot
     New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
     New-Item -ItemType Directory -Path $DownloadRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $UvDownloadDir -Force | Out-Null
     New-Item -ItemType Directory -Path $UvCacheDir -Force | Out-Null
@@ -55,6 +79,48 @@ function Initialize-RuntimeEnvironment {
     $env:UV_CACHE_DIR = $UvCacheDir
     $env:UV_LINK_MODE = "copy"
     $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightBrowsersDir
+}
+
+function Write-PrepareLog {
+    param([string]$Message)
+
+    try {
+        New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
+        $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ssK"
+        Add-Content -LiteralPath $PrepareLog -Value "[$timestamp] $Message" -Encoding UTF8
+    }
+    catch {
+        # Preparation logging must not replace the original failure.
+    }
+}
+
+function Write-PrepareStateBestEffort {
+    param(
+        [string]$Status,
+        [string]$Summary,
+        [string]$Detail = "",
+        [string]$ErrorSummary = "",
+        [string]$RecommendedAction = ""
+    )
+
+    try {
+        Write-RecallPreparationState `
+            -Path $PreparationStatePath `
+            -Status $Status `
+            -StepKey $script:CurrentPrepareStepKey `
+            -StepLabel $script:CurrentPrepareStep `
+            -StepIndex $script:PrepareStepIndex `
+            -StepTotal $script:PrepareStepTotal `
+            -Summary $Summary `
+            -Detail $Detail `
+            -ErrorSummary $ErrorSummary `
+            -RecommendedAction $RecommendedAction `
+            -StartedAt $script:PrepareStartedAt `
+            -CompletedSteps $script:CompletedPrepareSteps
+    }
+    catch {
+        Write-PrepareLog "Could not persist runtime preparation state: $($_.Exception.Message)"
+    }
 }
 
 function Find-Uv {
@@ -109,6 +175,7 @@ function Invoke-RecallCommand {
 
 function Invoke-PrepareStep {
     param(
+        [string]$Key,
         [string]$Name,
         [string]$CommandText,
         [scriptblock]$Command,
@@ -116,15 +183,24 @@ function Invoke-PrepareStep {
     )
 
     $script:CurrentPrepareStep = "$Name ($CommandText)"
-    Write-PrepareProgress -Name $Name -CommandText $CommandText -LongRunning:$LongRunning
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$CommandText failed with exit code $LASTEXITCODE"
+    $script:CurrentPrepareStepKey = $Key
+    Write-PrepareProgress -Key $Key -Name $Name -CommandText $CommandText -LongRunning:$LongRunning
+    & $Command 2>&1 | ForEach-Object {
+        $line = [string]$_
+        Write-Output $line
+        Write-PrepareLog $line
     }
+    $exitCode = $LASTEXITCODE
+    if ($null -ne $exitCode -and $exitCode -ne 0) {
+        throw "$CommandText failed with exit code $exitCode"
+    }
+    Write-PrepareProtocol -Event "DONE" -Key $Key -Label $Name
+    Write-PrepareStateBestEffort -Status "running" -Summary "$Name completed" -Detail $CommandText
 }
 
 function Write-PrepareProgress {
     param(
+        [string]$Key,
         [string]$Name,
         [string]$CommandText,
         [switch]$LongRunning
@@ -138,6 +214,39 @@ function Write-PrepareProgress {
     if ($LongRunning) {
         Write-Host "This step can take several minutes on first run."
     }
+    Write-PrepareProtocol -Event "BEGIN" -Key $Key -Label $Name
+    Write-PrepareStateBestEffort -Status "running" -Summary $Name -Detail $CommandText
+}
+
+function Write-PrepareProtocol {
+    param(
+        [string]$Event,
+        [string]$Key,
+        [string]$Label
+    )
+
+    if ($Event -in @("DONE", "SKIP") -and $Key -notin $script:CompletedPrepareSteps) {
+        $script:CompletedPrepareSteps += $Key
+    }
+    $safeKey = ($Key -replace '\|', '/')
+    $safeLabel = ($Label -replace '\|', '/')
+    $line = "DR_PROGRESS|$Event|$script:PrepareStepIndex|$script:PrepareStepTotal|$safeKey|$safeLabel"
+    Write-Output $line
+    Write-PrepareLog $line
+}
+
+function Write-SkippedPrepareStep {
+    param(
+        [string]$Key,
+        [string]$Name,
+        [string]$Reason
+    )
+
+    $script:CurrentPrepareStep = "$Name ($Reason)"
+    $script:CurrentPrepareStepKey = $Key
+    Write-PrepareProgress -Key $Key -Name $Name -CommandText $Reason
+    Write-PrepareProtocol -Event "SKIP" -Key $Key -Label $Name
+    Write-PrepareStateBestEffort -Status "running" -Summary "$Name already ready" -Detail $Reason
 }
 
 function Write-PrepareFailureHint {
@@ -180,6 +289,10 @@ function Write-PrepareFailureHint {
     Write-Host "Runtime cache: $DownloadRoot"
     Write-Host "Logs: $LogsDir"
     Write-Host "Diagnostics: uv run python -m src.cli diagnose"
+    Write-PrepareLog "Prepare failed at step: $step"
+    Write-PrepareLog "Likely cause: $likely"
+    Write-PrepareLog "Recommended next step: $recommended"
+    Write-PrepareLog "Error summary: $ErrorMessage"
 }
 
 function Write-PrepareCompletionSummary {
@@ -485,6 +598,15 @@ function Get-ControlSummary {
         $serviceStatus = "web reachable, but PID record is missing"
     }
     $audit = Get-ServiceAudit
+    $preparationState = $null
+    if (Test-Path -LiteralPath $PreparationStatePath) {
+        try {
+            $preparationState = Get-Content -LiteralPath $PreparationStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+        catch {
+            Write-PrepareLog "Could not read runtime preparation state: $($_.Exception.Message)"
+        }
+    }
 
     return [pscustomobject]@{
         Version = Get-InstalledVersion
@@ -495,6 +617,7 @@ function Get-ControlSummary {
         DownloadRoot = $DownloadRoot
         RecordedPid = $recordedPid
         Audit = $audit
+        PreparationState = $preparationState
     }
 }
 
@@ -516,6 +639,18 @@ function Write-ControlSummary {
     Write-Host "Maintenance: $($summary.MaintenanceUrl)"
     Write-Host "Logs: $($summary.LogsDir)"
     Write-Host "Runtime cache: $($summary.DownloadRoot)"
+    if ($null -ne $summary.PreparationState) {
+        Write-Host "Last runtime preparation: $($summary.PreparationState.status)"
+        if ($summary.PreparationState.current_step) {
+            Write-Host "Preparation stage: $($summary.PreparationState.current_step)"
+        }
+        if ($summary.PreparationState.updated_at) {
+            Write-Host "Preparation updated: $($summary.PreparationState.updated_at)"
+        }
+        if ($summary.PreparationState.status -eq "failed") {
+            Write-Host "Preparation retry: Douyin Recall Prepare Runtime"
+        }
+    }
 
     if ($summary.ServiceStatus -eq "running" -or $summary.ServiceStatus -eq "process exists, but local web is not responding yet") {
         Write-Host "Stop entry: Douyin Recall Stop Service"
@@ -526,6 +661,9 @@ function Write-ControlSummary {
 }
 
 function Wait-BeforeExit {
+    if ($NonInteractive) {
+        return
+    }
     Read-Host "Press Enter to close" | Out-Null
 }
 
@@ -538,11 +676,51 @@ function Start-DouyinRecall {
     & $StartScript
 }
 
+function Test-PythonEnvironmentCurrent {
+    param([string]$UvPath)
+
+    if (-not (Test-Path -LiteralPath $VenvPython)) {
+        return $false
+    }
+    & $UvPath "sync" "--check" "--no-dev" "--color" "never" *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Prepare-Runtime {
+    $script:PreparationLockStream = $null
+    $script:PreparationBusy = $false
+    $script:CompletedPrepareSteps = @()
     try {
         $script:PrepareStepIndex = 0
         $script:CurrentPrepareStep = "Runtime environment"
+        $script:CurrentPrepareStepKey = "environment"
+        $script:PrepareStartedAt = Get-Date
         Initialize-RuntimeEnvironment
+        $script:PreparationLockStream = Enter-RecallPreparationLock -Path $PreparationLockPath
+        if ($null -eq $script:PreparationLockStream) {
+            $busyMessage = "Another runtime preparation is already running. Wait for it to finish, then retry if needed. State: $PreparationStatePath"
+            Write-PrepareProtocol -Event "BUSY" -Key "environment" -Label "Runtime preparation already running"
+            Write-Host $busyMessage -ForegroundColor Yellow
+            Write-PrepareLog $busyMessage
+            $script:PreparationBusy = $true
+            throw $busyMessage
+        }
+        $script:PreparationJobHandle = New-RecallKillOnCloseJob
+        $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
+        Add-RecallProcessToJob `
+            -JobHandle $script:PreparationJobHandle `
+            -ProcessHandle $currentProcess.Handle
+        Write-PrepareLog "Attached Prepare Runtime to a kill-on-close process job."
+        if (Test-Path -LiteralPath $RuntimePreparedPath) {
+            Remove-Item -LiteralPath $RuntimePreparedPath -Force
+            Write-PrepareLog "Invalidated the previous runtime-prepared marker before preparation."
+        }
+        if (-not (Test-Path -LiteralPath $EnvPath)) {
+            if (-not (Test-Path -LiteralPath $EnvExamplePath)) {
+                throw "Missing .env.example in $AppRoot"
+            }
+            Copy-Item -LiteralPath $EnvExamplePath -Destination $EnvPath
+        }
         Write-Header "Prepare runtime"
         Write-Host "Start Menu entry: Douyin Recall Prepare Runtime"
         Write-Host "This action prepares dependencies only and does not start the local web service."
@@ -551,27 +729,72 @@ function Prepare-Runtime {
         Write-Host "You can rerun this action after network or dependency download failures."
 
         $script:CurrentPrepareStep = "uv discovery and install"
-        Write-PrepareProgress -Name "uv discovery and install" -CommandText "Find or install uv" -LongRunning
+        $script:CurrentPrepareStepKey = "uv"
+        Write-PrepareProgress -Key "uv" -Name "uv discovery and install" -CommandText "Find or install uv" -LongRunning
         $uv = Find-OrInstall-Uv
+        Write-PrepareProtocol -Event "DONE" -Key "uv" -Label "uv discovery and install"
 
-        Invoke-PrepareStep -Name "Python dependencies" -CommandText "uv sync" -LongRunning -Command {
-            & $uv "sync" "--no-dev"
+        if (Test-PythonEnvironmentCurrent -UvPath $uv) {
+            Write-SkippedPrepareStep -Key "python" -Name "Python dependencies" -Reason "uv sync --check reports the environment is current"
         }
-        Invoke-PrepareStep -Name "Browser runtime" -CommandText "playwright install chromium" -LongRunning -Command {
-            & $uv "run" "playwright" "install" "chromium"
+        else {
+            Invoke-PrepareStep -Key "python" -Name "Python dependencies" -CommandText "uv sync" -LongRunning -Command {
+                & $uv "sync" "--no-dev" "--color" "never"
+            }
         }
-        Invoke-PrepareStep -Name "Local database" -CommandText "python -m src.cli init-db" -Command {
+
+        if (Test-RecallPlaywrightChromiumReady `
+            -PlaywrightBrowsersDir $PlaywrightBrowsersDir `
+            -PlaywrightBrowsersJsonPath $PlaywrightBrowsersJsonPath) {
+            Write-SkippedPrepareStep -Key "browser" -Name "Browser runtime" -Reason "Playwright Chromium is already present"
+        }
+        else {
+            Invoke-PrepareStep -Key "browser" -Name "Browser runtime" -CommandText "playwright install chromium" -LongRunning -Command {
+                & $uv "run" "playwright" "install" "chromium"
+                $installExitCode = $LASTEXITCODE
+                if ($installExitCode -eq 0 -and -not (Test-RecallPlaywrightChromiumReady `
+                    -PlaywrightBrowsersDir $PlaywrightBrowsersDir `
+                    -PlaywrightBrowsersJsonPath $PlaywrightBrowsersJsonPath)) {
+                    Write-Output "Browser post-install validation was incomplete; retrying with playwright install --force chromium."
+                    & $uv "run" "playwright" "install" "--force" "chromium"
+                }
+                if (-not (Test-RecallPlaywrightChromiumReady `
+                    -PlaywrightBrowsersDir $PlaywrightBrowsersDir `
+                    -PlaywrightBrowsersJsonPath $PlaywrightBrowsersJsonPath)) {
+                    throw "playwright install chromium completed, but the required browser components failed exact post-install validation"
+                }
+            }
+        }
+
+        Invoke-PrepareStep -Key "database" -Name "Local database" -CommandText "python -m src.cli init-db" -Command {
             & $uv "run" "python" "-m" "src.cli" "init-db"
         }
-        Invoke-PrepareStep -Name "Service status" -CommandText "python -m src.cli status" -Command {
+        Invoke-PrepareStep -Key "status" -Name "Service status" -CommandText "python -m src.cli status" -Command {
             & $uv "run" "python" "-m" "src.cli" "status"
         }
 
+        Write-RecallRuntimePreparedMarker `
+            -RuntimePreparedPath $RuntimePreparedPath `
+            -PyProjectPath $PyProjectPath `
+            -UvLockPath $UvLockPath
+        Write-PrepareStateBestEffort -Status "ready" -Summary "Runtime preparation completed" -Detail "Dependencies, Chromium, and the local database are ready."
+        Write-PrepareProtocol -Event "COMPLETE" -Key "complete" -Label "Runtime preparation completed"
         Write-PrepareCompletionSummary
     }
     catch {
+        if ($script:PreparationBusy) {
+            throw
+        }
+        Write-PrepareProtocol -Event "FAILED" -Key $script:CurrentPrepareStepKey -Label $script:CurrentPrepareStep
         Write-PrepareFailureHint -ErrorMessage $_.Exception.Message
+        Write-PrepareStateBestEffort -Status "failed" -Summary "Runtime preparation failed" -Detail $script:CurrentPrepareStep -ErrorSummary $_.Exception.Message -RecommendedAction "Retry Douyin Recall Prepare Runtime after addressing the reported cause."
         throw
+    }
+    finally {
+        Exit-RecallPreparationLock -LockStream $script:PreparationLockStream
+        $script:PreparationLockStream = $null
+        # Do not close PreparationJobHandle here: this process belongs to the job.
+        # Windows closes the handle on process exit, killing only unexpected descendants.
     }
 }
 

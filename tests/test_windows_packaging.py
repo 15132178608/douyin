@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
+import subprocess
+import time
 import unittest
+import uuid
 from pathlib import Path
 
 
@@ -12,6 +18,95 @@ WORKFLOW = ROOT / ".github" / "workflows" / "windows-installer.yml"
 PR_CI_WORKFLOW = ROOT / ".github" / "workflows" / "pr-ci.yml"
 RELEASE_NOTES_DIR = ROOT / "docs" / "releases"
 WINDOWS_TROUBLESHOOTING = ROOT / "docs" / "windows-troubleshooting.md"
+WINDOWS_TEST_ARTIFACTS = Path(r"D:\codexDownload\douyin-installer-progress-retry-tests")
+FAKE_RUNTIME_UV = r"""@echo off
+setlocal
+if not "%FAKE_UV_CALL_LOG%"=="" echo %*>> "%FAKE_UV_CALL_LOG%"
+if "%1|%2"=="sync|--check" goto sync_check
+if "%1"=="sync" goto sync
+if "%1|%2|%3|%4"=="run|playwright|install|chromium" goto browser
+if "%1|%2|%3|%4|%5"=="run|playwright|install|--force|chromium" goto browser_force
+if "%1|%2|%3|%4|%5"=="run|python|-m|src.cli|init-db" goto database
+if "%1|%2|%3|%4|%5"=="run|python|-m|src.cli|status" goto status
+echo fake uv received unsupported arguments: %* 1>&2
+exit /b 90
+:sync_check
+if /I "%FAKE_UV_FORCE_SYNC%"=="1" exit /b 1
+if exist "%CD%\.venv\Scripts\python.exe" exit /b 0
+exit /b 1
+:sync
+if /I "%FAKE_UV_FAIL_STAGE%"=="python" (
+  echo simulated Python dependency failure 1>&2
+  exit /b 41
+)
+if /I not "%FAKE_UV_BLOCK_STAGE%"=="python" goto sync_after_block
+echo started> "%CD%\fake-uv-child-started.txt"
+:wait_sync_release
+if exist "%CD%\fake-uv-child-release.txt" goto sync_released
+powershell.exe -NoProfile -Command "Start-Sleep -Milliseconds 100"
+goto wait_sync_release
+:sync_released
+echo completed> "%CD%\fake-uv-child-completed.txt"
+:sync_after_block
+if not exist "%CD%\.venv\Scripts" mkdir "%CD%\.venv\Scripts"
+if not exist "%CD%\.venv\Lib\site-packages\playwright\driver\package" mkdir "%CD%\.venv\Lib\site-packages\playwright\driver\package"
+echo fixture> "%CD%\.venv\Scripts\python.exe"
+> "%CD%\.venv\Lib\site-packages\playwright\driver\package\browsers.json" echo {"browsers":[{"name":"chromium","revision":"fixture"},{"name":"chromium-headless-shell","revision":"fixture"},{"name":"ffmpeg","revision":"fixture"},{"name":"winldd","revision":"fixture"}]}
+echo Resolved and installed fake Python dependencies
+exit /b 0
+:browser
+set "FAKE_BROWSER_FORCE=0"
+goto browser_common
+:browser_force
+set "FAKE_BROWSER_FORCE=1"
+:browser_common
+if /I "%FAKE_UV_FAIL_STAGE%"=="browser" (
+  echo simulated Playwright Chromium failure 1>&2
+  exit /b 42
+)
+if not exist "%PLAYWRIGHT_BROWSERS_PATH%\chromium-fixture\chrome-win64" mkdir "%PLAYWRIGHT_BROWSERS_PATH%\chromium-fixture\chrome-win64"
+if not exist "%PLAYWRIGHT_BROWSERS_PATH%\chromium_headless_shell-fixture\chrome-headless-shell-win64" mkdir "%PLAYWRIGHT_BROWSERS_PATH%\chromium_headless_shell-fixture\chrome-headless-shell-win64"
+if not exist "%PLAYWRIGHT_BROWSERS_PATH%\ffmpeg-fixture" mkdir "%PLAYWRIGHT_BROWSERS_PATH%\ffmpeg-fixture"
+if not exist "%PLAYWRIGHT_BROWSERS_PATH%\winldd-fixture" mkdir "%PLAYWRIGHT_BROWSERS_PATH%\winldd-fixture"
+if /I "%FAKE_UV_BROWSER_ALWAYS_INCOMPLETE%"=="1" (
+  echo fixture> "%PLAYWRIGHT_BROWSERS_PATH%\chromium-fixture\chrome-win64\chrome.exe"
+  echo Simulated incomplete browser install with exit code 0
+  exit /b 0
+)
+if /I "%FAKE_UV_LEAVE_BROWSER_INCOMPLETE_ONCE%|%FAKE_BROWSER_FORCE%"=="1|0" if not exist "%CD%\fake-browser-incomplete-once.txt" (
+  echo fixture> "%PLAYWRIGHT_BROWSERS_PATH%\chromium-fixture\chrome-win64\chrome.exe"
+  echo incomplete> "%CD%\fake-browser-incomplete-once.txt"
+  echo Simulated incomplete browser install with exit code 0
+  exit /b 0
+)
+echo fixture> "%PLAYWRIGHT_BROWSERS_PATH%\chromium-fixture\chrome-win64\chrome.exe"
+echo fixture> "%PLAYWRIGHT_BROWSERS_PATH%\chromium_headless_shell-fixture\chrome-headless-shell-win64\chrome-headless-shell.exe"
+echo fixture> "%PLAYWRIGHT_BROWSERS_PATH%\ffmpeg-fixture\ffmpeg-win64.exe"
+echo fixture> "%PLAYWRIGHT_BROWSERS_PATH%\winldd-fixture\PrintDeps.exe"
+echo complete> "%PLAYWRIGHT_BROWSERS_PATH%\chromium-fixture\INSTALLATION_COMPLETE"
+echo complete> "%PLAYWRIGHT_BROWSERS_PATH%\chromium_headless_shell-fixture\INSTALLATION_COMPLETE"
+echo complete> "%PLAYWRIGHT_BROWSERS_PATH%\ffmpeg-fixture\INSTALLATION_COMPLETE"
+echo complete> "%PLAYWRIGHT_BROWSERS_PATH%\winldd-fixture\INSTALLATION_COMPLETE"
+echo Downloading Chromium 10%% of 100 MiB
+echo Chromium download complete
+exit /b 0
+:database
+if /I "%FAKE_UV_FAIL_STAGE%"=="database" (
+  echo simulated database failure 1>&2
+  exit /b 43
+)
+if not exist "%CD%\data" mkdir "%CD%\data"
+echo fixture> "%CD%\data\recall.db"
+echo Initialized fake database
+exit /b 0
+:status
+if /I "%FAKE_UV_FAIL_STAGE%"=="status" (
+  echo simulated status failure 1>&2
+  exit /b 44
+)
+echo Local web service is stopped
+exit /b 0
+"""
 RELEASE_TOOL_MODULES = [
     "installed_smoke",
     "release_gate",
@@ -43,6 +138,183 @@ def project_version() -> str:
     match = re.search(r'^version = "([^"]+)"', project, re.MULTILINE)
     assert match is not None
     return match.group(1)
+
+
+def create_runtime_preparation_fixture() -> tuple[Path, dict[str, str]]:
+    case = WINDOWS_TEST_ARTIFACTS / f"case-路径-{uuid.uuid4().hex}"
+    windows_dir = case / "packaging" / "windows"
+    windows_dir.mkdir(parents=True)
+    runtime_root = WINDOWS_TEST_ARTIFACTS / f"runtime-cache-{uuid.uuid4().hex}"
+
+    control = read("control-douyin-recall.ps1").replace(
+        r"D:\codexDownload\douyinclaude-runtime",
+        str(runtime_root),
+    )
+    (windows_dir / "control-douyin-recall.ps1").write_text(control, encoding="ascii")
+
+    launcher = read("start-douyin-recall.ps1").lstrip("\ufeff").replace(
+        r"D:\codexDownload\douyinclaude-runtime",
+        str(runtime_root),
+    )
+    (windows_dir / "start-douyin-recall.ps1").write_text(
+        launcher,
+        encoding="utf-8-sig",
+    )
+    for helper_name in (
+        "runtime-preparation-common.ps1",
+        "runtime-tool-runner.ps1",
+        "runtime-tool-worker.ps1",
+    ):
+        shutil.copy2(PACKAGING / helper_name, windows_dir)
+    fake_uv_cmd = case / "fake-runtime-uv.cmd"
+    fake_uv_cmd.write_text(FAKE_RUNTIME_UV, encoding="ascii")
+
+    (case / ".env.example").write_text("WEB_PORT=18765\n", encoding="utf-8")
+    (case / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (case / "uv.lock").write_text("fixture-lock\n", encoding="utf-8")
+    call_log = case / "fake-uv-calls.log"
+    env = os.environ.copy()
+    env.update(
+        {
+            "UV_EXE": str(fake_uv_cmd),
+            "FAKE_UV_CALL_LOG": str(call_log),
+            "FAKE_UV_FAIL_STAGE": "",
+            "FAKE_UV_BLOCK_STAGE": "",
+            "FAKE_UV_FORCE_SYNC": "",
+            "FAKE_UV_LEAVE_BROWSER_INCOMPLETE_ONCE": "",
+            "FAKE_UV_BROWSER_ALWAYS_INCOMPLETE": "",
+            "FAKE_RUNTIME_ROOT": str(runtime_root),
+        }
+    )
+    return case, env
+
+
+def run_powershell(script: Path, *arguments: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            *arguments,
+        ],
+        cwd=script.parents[2],
+        env=env,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+
+def wait_for_test_path(path: Path, process: subprocess.Popen[bytes], timeout: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        if process.poll() is not None:
+            raise AssertionError(f"helper process exited before creating {path}: {process.returncode}")
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {path}")
+
+
+def run_powershell_command(command: str, *, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", command],
+        cwd=cwd,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+
+def find_runtime_runner_identity(
+    owner_pid: int, *, cwd: Path, timeout: float = 15.0
+) -> tuple[int, int]:
+    deadline = time.monotonic() + timeout
+    command = (
+        f'$runner = Get-CimInstance Win32_Process -Filter "ParentProcessId = {owner_pid}" | '
+        "Where-Object { $_.Name -ieq 'powershell.exe' -and "
+        "$_.CommandLine -like '*runtime-tool-runner.ps1*' } | "
+        "Select-Object -First 1; "
+        "if ($null -eq $runner) { exit 1 }; "
+        "$process = Get-Process -Id $runner.ProcessId -ErrorAction Stop; "
+        "Write-Output \"$($process.Id)|$($process.StartTime.ToUniversalTime().Ticks)\""
+    )
+    while time.monotonic() < deadline:
+        result = run_powershell_command(command, cwd=cwd)
+        parts = result.stdout.strip().split("|")
+        if result.returncode == 0 and len(parts) == 2 and all(part.isdigit() for part in parts):
+            return int(parts[0]), int(parts[1])
+        time.sleep(0.05)
+    raise AssertionError(f"timed out finding runtime runner for owner pid {owner_pid}")
+
+
+def find_child_process_identity(
+    owner_pid: int, *, cwd: Path, timeout: float = 15.0
+) -> tuple[int, int]:
+    deadline = time.monotonic() + timeout
+    command = (
+        f'$child = Get-CimInstance Win32_Process -Filter "ParentProcessId = {owner_pid}" | '
+        "Where-Object { $_.Name -ieq 'cmd.exe' } | Select-Object -First 1; "
+        "if ($null -eq $child) { exit 1 }; "
+        "$process = Get-Process -Id $child.ProcessId -ErrorAction Stop; "
+        "Write-Output \"$($process.Id)|$($process.StartTime.ToUniversalTime().Ticks)\""
+    )
+    while time.monotonic() < deadline:
+        result = run_powershell_command(command, cwd=cwd)
+        parts = result.stdout.strip().split("|")
+        if result.returncode == 0 and len(parts) == 2 and all(part.isdigit() for part in parts):
+            return int(parts[0]), int(parts[1])
+        time.sleep(0.05)
+    raise AssertionError(f"timed out finding child process for owner pid {owner_pid}")
+
+
+def process_identity_exists(process_id: int, started_at_ticks: int, *, cwd: Path) -> bool:
+    result = run_powershell_command(
+        f"$process = Get-Process -Id {process_id} -ErrorAction SilentlyContinue; "
+        "if ($null -eq $process) { exit 1 }; "
+        f"if ($process.StartTime.ToUniversalTime().Ticks -eq {started_at_ticks}) "
+        "{ exit 0 } else { exit 1 }",
+        cwd=cwd,
+    )
+    return result.returncode == 0
+
+
+def stop_process_if_identity_matches(
+    process_id: int, started_at_ticks: int, *, cwd: Path
+) -> None:
+    result = run_powershell_command(
+        f"$process = Get-Process -Id {process_id} -ErrorAction SilentlyContinue; "
+        "if ($null -eq $process) { exit 0 }; "
+        f"if ($process.StartTime.ToUniversalTime().Ticks -ne {started_at_ticks}) {{ exit 0 }}; "
+        "Stop-Process -InputObject $process -Force -ErrorAction Stop",
+        cwd=cwd,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stdout + result.stderr)
+
+
+def wait_for_process_exit(
+    process_id: int,
+    *,
+    cwd: Path,
+    started_at_ticks: int,
+    timeout: float = 15.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not process_identity_exists(process_id, started_at_ticks, cwd=cwd):
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"process {process_id} remained alive")
 
 
 class WindowsPackagingTests(unittest.TestCase):
@@ -122,14 +394,29 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("准备 Playwright Chromium", launcher)
         self.assertIn("初始化本地数据库", launcher)
 
-    def test_launcher_keeps_runtime_preparation_page_hidden_during_normal_startup(self) -> None:
+    def test_launcher_only_opens_progress_page_for_unprepared_or_failed_startup(self) -> None:
         launcher = read("start-douyin-recall.ps1")
+        runner = read("runtime-tool-runner.ps1")
+        worker = read("runtime-tool-worker.ps1")
 
         self.assertIn("$StartupStatusPath", launcher)
         self.assertIn("function Write-StartupStatusPage", launcher)
         self.assertIn("function Update-StartupStatus", launcher)
-        self.assertNotIn("function Show-StartupStatusPage", launcher)
-        self.assertNotIn("Start-Process $StartupStatusPath", launcher)
+        self.assertIn("function Show-StartupStatusPage", launcher)
+        self.assertIn("param([string]$Path = $StartupStatusPath)", launcher)
+        self.assertIn("Start-Process $Path", launcher)
+        self.assertIn("$StartupWaitStatusPath", launcher)
+        self.assertIn("[switch]$NoOpen", launcher)
+        self.assertIn("First-run progress page will redirect", launcher)
+        self.assertIn("-RedirectUrl $redirectUrl", launcher)
+        self.assertLess(
+            launcher.index("Enter-RecallPreparationLock -Path $PreparationLockPath"),
+            launcher.index("if (Test-RuntimePrepared)"),
+        )
+        self.assertLess(
+            launcher.index("Enter-RecallPreparationLock -Path $PreparationLockPath"),
+            launcher.index("Show-StartupStatusPage", launcher.index("try {\n    Set-Location")),
+        )
         self.assertNotIn("-OpenPage", launcher)
         self.assertIn("正在准备 Douyin Recall", launcher)
         self.assertIn("检查本地环境", launcher)
@@ -143,6 +430,34 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("D:\\codexDownload\\douyinclaude-runtime", launcher)
         self.assertIn("uv run python -m src.cli diagnose", launcher)
         self.assertIn("Douyin Recall Prepare Runtime", launcher)
+        self.assertIn("Get-LatestToolOutput", launcher)
+        self.assertIn("Invoke-StartupTool", launcher)
+        self.assertIn("最新输出", launcher)
+        self.assertIn("Could not refresh startup progress", launcher)
+        self.assertIn("$process.Kill()", launcher)
+        self.assertIn("runtime-$Key.child.json", launcher)
+        self.assertIn("owner_started_at_ticks", launcher)
+        self.assertIn("started_at_ticks", launcher)
+        self.assertIn("$runnerProtocolCompleted = $true", launcher)
+        self.assertNotIn("$runnerCompleted = ($exitCode -ge 0)", launcher)
+        self.assertIn("runtime-$Key.runner.json", launcher)
+        self.assertIn("runtime-$Key.worker.json", launcher)
+        self.assertIn("$RuntimeToolRunnerScript", launcher)
+        self.assertIn("$RuntimeToolWorkerScript", launcher)
+        self.assertNotIn("-EncodedCommand", launcher)
+        self.assertIn("function Test-RunnerOwnerAlive", runner)
+        self.assertIn("actualStartedAtTicks -eq $expectedStartedAtTicks", runner)
+        self.assertNotIn("TotalSeconds", runner)
+        self.assertNotIn("taskkill", runner.lower())
+        self.assertIn("worker_script_path", runner)
+        self.assertIn("-SpecPath", runner)
+        self.assertNotIn("-EncodedCommand", runner)
+        self.assertIn("tool_exit_code_path", worker)
+        self.assertNotIn("taskkill", launcher.lower())
+        self.assertIn("finally {", launcher)
+        self.assertIn("$script:OwnsPreparationLock", launcher)
+        self.assertIn("$StartupFailureStatusPath", launcher)
+        self.assertIn("Browser opening suppressed by -NoOpen", launcher)
 
     def test_launcher_waits_for_web_endpoint_before_opening_browser(self) -> None:
         launcher = read("start-douyin-recall.ps1")
@@ -170,15 +485,19 @@ class WindowsPackagingTests(unittest.TestCase):
 
     def test_launcher_has_fast_path_for_existing_or_prepared_runtime(self) -> None:
         launcher = read("start-douyin-recall.ps1")
+        common = read("runtime-preparation-common.ps1")
 
         self.assertIn("$RuntimePreparedPath", launcher)
         self.assertIn("$VenvPython", launcher)
-        self.assertIn("[System.Security.Cryptography.SHA256]::Create()", launcher)
-        self.assertNotIn("Get-FileHash", launcher)
+        self.assertIn("[System.Security.Cryptography.SHA256]::Create()", common)
+        self.assertNotIn("Get-FileHash", common)
         self.assertIn("function Test-RuntimePrepared", launcher)
         self.assertIn("function Write-RuntimePreparedMarker", launcher)
         self.assertIn("function Start-RecallServiceProcess", launcher)
         self.assertIn("运行环境已准备，跳过 uv sync 和 Playwright 安装", launcher)
+        self.assertIn("Invalidated the previous runtime-prepared marker before full preparation", launcher)
+        self.assertIn('install", "--force", "chromium"', launcher)
+        self.assertIn("failed exact post-install validation", launcher)
         self.assertIn("function Stop-StaleDouyinRecallServiceOnPort", launcher)
         self.assertIn("$LauncherPath", launcher)
         self.assertIn("LastWriteTimeUtc", launcher)
@@ -188,6 +507,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Stop-Process -Id $owner.ProcessId -Force", launcher)
         self.assertIn("Douyin Recall is already running; opening browser without runtime preparation", launcher)
         self.assertIn("Start-RecallServiceProcess -UsePreparedRuntime", launcher)
+        self.assertNotIn("falling back to full preparation", launcher)
         self.assertLess(
             launcher.index("if (Test-WebReady -Url $url -TimeoutSec 1)"),
             launcher.index("Stop-StaleDouyinRecallServiceOnPort -Port $port"),
@@ -332,6 +652,14 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Douyin Recall Prepare Runtime", control)
         self.assertIn("Douyin Recall Prepare Runtime", script)
         self.assertIn('-Action ""prepare""', script)
+        self.assertIn("[switch]$NonInteractive", control)
+        self.assertIn("DR_PROGRESS|$Event|", control)
+        self.assertIn("Write-RecallRuntimePreparedMarker", control)
+        self.assertIn("Test-RecallPlaywrightChromiumReady", control)
+        self.assertIn("playwright install --force chromium", control)
+        self.assertIn("failed exact post-install validation", control)
+        self.assertIn("$script:CompletedPrepareSteps", control)
+        self.assertIn("runtime-preparation.lock", control)
         self.assertNotIn("Remove-Item -Recurse", control)
         self.assertNotIn("rm -rf", control)
 
@@ -363,6 +691,819 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Next step: Use Douyin Recall to start the web UI when needed.", control)
         self.assertIn("Stop entry: Douyin Recall Stop Service", control)
 
+    def test_runtime_preparation_common_supports_current_chromium_and_strict_marker(self) -> None:
+        common = read("runtime-preparation-common.ps1")
+
+        self.assertIn('"chrome-win\\chrome.exe"', common)
+        self.assertIn('"chrome-win64\\chrome.exe"', common)
+        self.assertIn('"chrome-headless-shell-win64\\chrome-headless-shell.exe"', common)
+        self.assertIn('"ffmpeg-win64.exe"', common)
+        self.assertIn('"PrintDeps.exe"', common)
+        self.assertIn('"INSTALLATION_COMPLETE"', common)
+        self.assertIn("-PathType Leaf", common)
+        self.assertIn("PlaywrightBrowsersJsonPath", common)
+        self.assertIn('"chromium-$revision"', common)
+        self.assertIn("function Test-RecallRuntimePrepared", common)
+        self.assertIn("if (-not (Test-Path -LiteralPath $RuntimePreparedPath))", common)
+        self.assertIn("schema_version", common)
+        self.assertIn("Get-RecallRuntimeFingerprint", common)
+        self.assertIn("Runtime fingerprint input is missing", common)
+        self.assertIn("[System.IO.File]::Replace", common)
+        self.assertIn("[System.IO.FileShare]::None", common)
+
+    def test_inno_installer_shows_fresh_runtime_progress_with_retry_or_defer(self) -> None:
+        script = read("DouyinRecall.iss")
+
+        self.assertIn("#if Ver < EncodeVer(6, 5, 0)", script)
+        self.assertIn('Name: "prepareruntime"', script)
+        self.assertIn("ShouldOfferRuntimePreparationTask", script)
+        self.assertIn("CreateOutputProgressPage", script)
+        self.assertIn("ExecAndLogOutput", script)
+        self.assertIn("GetExceptionMessage", script)
+        self.assertIn("EventName = 'BUSY'", script)
+        self.assertIn('\'" -Action "prepare" -NonInteractive\'', script)
+        self.assertIn("DR_PROGRESS|", script)
+        self.assertIn("MB_RETRYCANCEL", script)
+        self.assertIn("RuntimePreparationDeferred", script)
+        self.assertIn("ShouldLaunchAfterInstall", script)
+        self.assertIn("CurStep = ssPostInstall", script)
+        self.assertIn("not WizardSilent()", script)
+        self.assertIn("not RuntimePreparationIsUpgrade", script)
+        self.assertIn("WizardIsTaskSelected('prepareruntime')", script)
+        self.assertLess(
+            script.index("CurStep = ssInstall"),
+            script.index("CurStep = ssPostInstall"),
+        )
+
+    @unittest.skipUnless(os.name == "nt", "runtime preparation harness requires Windows")
+    def test_prepare_runtime_failure_retries_only_unready_stage(self) -> None:
+        case, env = create_runtime_preparation_fixture()
+        control = case / "packaging" / "windows" / "control-douyin-recall.ps1"
+
+        env["FAKE_UV_FAIL_STAGE"] = "browser"
+        failed = run_powershell(control, "-Action", "prepare", "-NonInteractive", env=env)
+        self.assertEqual(failed.returncode, 1, failed.stdout + failed.stderr)
+        self.assertIn("DR_PROGRESS|FAILED|3|5|browser", failed.stdout)
+
+        env["FAKE_UV_FAIL_STAGE"] = ""
+        retried = run_powershell(control, "-Action", "prepare", "-NonInteractive", env=env)
+        self.assertEqual(retried.returncode, 0, retried.stdout + retried.stderr)
+        self.assertIn("DR_PROGRESS|SKIP|2|5|python", retried.stdout)
+        self.assertIn("DR_PROGRESS|COMPLETE|5|5|complete", retried.stdout)
+
+        calls = (case / "fake-uv-calls.log").read_text(encoding="utf-8")
+        self.assertEqual(calls.count("sync --no-dev --color never"), 1)
+        self.assertEqual(calls.count("run playwright install chromium"), 2)
+        marker = json.loads(
+            (case / "data" / "runtime" / "runtime-prepared.json").read_text(
+                encoding="utf-8-sig"
+            )
+        )
+        state = json.loads(
+            (case / "data" / "runtime" / "runtime-preparation.json").read_text(
+                encoding="utf-8-sig"
+            )
+        )
+        self.assertEqual(marker["schema_version"], 1)
+        self.assertEqual(state["status"], "ready")
+        self.assertEqual(
+            state["completed_steps"],
+            ["uv", "python", "browser", "database", "status"],
+        )
+
+    @unittest.skipUnless(os.name == "nt", "runtime preparation harness requires Windows")
+    def test_prepare_runtime_force_repairs_incomplete_browser_install(self) -> None:
+        case, env = create_runtime_preparation_fixture()
+        control = case / "packaging" / "windows" / "control-douyin-recall.ps1"
+        env["FAKE_UV_LEAVE_BROWSER_INCOMPLETE_ONCE"] = "1"
+
+        result = run_powershell(control, "-Action", "prepare", "-NonInteractive", env=env)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = (case / "fake-uv-calls.log").read_text(encoding="utf-8")
+        self.assertIn("run playwright install chromium", calls)
+        self.assertIn("run playwright install --force chromium", calls)
+        self.assertTrue((case / "data" / "runtime" / "runtime-prepared.json").exists())
+
+    @unittest.skipUnless(os.name == "nt", "runtime preparation harness requires Windows")
+    def test_prepare_runtime_does_not_report_browser_done_before_failed_postcondition(self) -> None:
+        case, env = create_runtime_preparation_fixture()
+        control = case / "packaging" / "windows" / "control-douyin-recall.ps1"
+        env["FAKE_UV_BROWSER_ALWAYS_INCOMPLETE"] = "1"
+
+        result = run_powershell(control, "-Action", "prepare", "-NonInteractive", env=env)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("DR_PROGRESS|FAILED|3|5|browser", result.stdout)
+        self.assertNotIn("DR_PROGRESS|DONE|3|5|browser", result.stdout)
+        state = json.loads(
+            (case / "data" / "runtime" / "runtime-preparation.json").read_text(
+                encoding="utf-8-sig"
+            )
+        )
+        self.assertNotIn("browser", state["completed_steps"])
+        self.assertFalse((case / "data" / "runtime" / "runtime-prepared.json").exists())
+
+    @unittest.skipUnless(os.name == "nt", "runtime marker invalidation harness requires Windows")
+    def test_launcher_invalidates_old_marker_before_repairing_missing_component(self) -> None:
+        case, env = create_runtime_preparation_fixture()
+        control = case / "packaging" / "windows" / "control-douyin-recall.ps1"
+        launcher = case / "packaging" / "windows" / "start-douyin-recall.ps1"
+        prepared = run_powershell(control, "-Action", "prepare", "-NonInteractive", env=env)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+
+        marker_path = case / "data" / "runtime" / "runtime-prepared.json"
+        chromium_exe = (
+            Path(env["FAKE_RUNTIME_ROOT"])
+            / "ms-playwright"
+            / "chromium-fixture"
+            / "chrome-win64"
+            / "chrome.exe"
+        )
+        self.assertTrue(marker_path.exists())
+        chromium_exe.unlink()
+        env["FAKE_UV_FAIL_STAGE"] = "database"
+
+        failed = run_powershell(launcher, "-Silent", "-NoOpen", env=env)
+
+        self.assertEqual(failed.returncode, 1, failed.stdout + failed.stderr)
+        self.assertFalse(marker_path.exists())
+        state = json.loads(
+            (case / "data" / "runtime" / "runtime-preparation.json").read_text(
+                encoding="utf-8-sig"
+            )
+        )
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["current_step"], "database")
+
+    @unittest.skipUnless(os.name == "nt", "Playwright readiness probe requires Windows")
+    def test_browser_readiness_rejects_stale_revision_and_missing_headless(self) -> None:
+        case, env = create_runtime_preparation_fixture()
+        windows_dir = case / "packaging" / "windows"
+        browser_cache = case / "browser-cache"
+        manifest_path = (
+            case
+            / ".venv"
+            / "Lib"
+            / "site-packages"
+            / "playwright"
+            / "driver"
+            / "package"
+            / "browsers.json"
+        )
+        manifest_path.parent.mkdir(parents=True)
+
+        def write_manifest(headless_revision: str = "current") -> None:
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "browsers": [
+                            {"name": "chromium", "revision": "current"},
+                            {"name": "chromium-headless-shell", "revision": headless_revision},
+                            {"name": "ffmpeg", "revision": "current"},
+                            {"name": "winldd", "revision": "current"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        def create_components(revision: str, *, include_chromium: bool = True) -> None:
+            components = [
+                (
+                    browser_cache / f"chromium_headless_shell-{revision}",
+                    Path("chrome-headless-shell-win64") / "chrome-headless-shell.exe",
+                ),
+                (browser_cache / f"ffmpeg-{revision}", Path("ffmpeg-win64.exe")),
+                (browser_cache / f"winldd-{revision}", Path("PrintDeps.exe")),
+            ]
+            if include_chromium:
+                components.append(
+                    (browser_cache / f"chromium-{revision}", Path("chrome-win64") / "chrome.exe")
+                )
+            for browser_dir, relative_path in components:
+                path = browser_dir / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture", encoding="ascii")
+                (browser_dir / "INSTALLATION_COMPLETE").write_text(
+                    "complete", encoding="ascii"
+                )
+
+        probe = windows_dir / "probe-browser-readiness.ps1"
+        probe.write_text(
+            r'''param([string]$BrowserCache, [string]$ManifestPath)
+. "$PSScriptRoot\runtime-preparation-common.ps1"
+if (Test-RecallPlaywrightChromiumReady -PlaywrightBrowsersDir $BrowserCache -PlaywrightBrowsersJsonPath $ManifestPath) {
+    exit 0
+}
+exit 1
+''',
+            encoding="utf-8-sig",
+        )
+
+        write_manifest()
+        create_components("stale")
+        create_components("current", include_chromium=False)
+        stale_only = run_powershell(probe, str(browser_cache), str(manifest_path), env=env)
+        self.assertEqual(stale_only.returncode, 1, stale_only.stdout + stale_only.stderr)
+
+        current_chromium = browser_cache / "chromium-current" / "chrome-win64" / "chrome.exe"
+        current_chromium.parent.mkdir(parents=True)
+        current_chromium.write_text("fixture", encoding="ascii")
+        incomplete = run_powershell(probe, str(browser_cache), str(manifest_path), env=env)
+        self.assertEqual(incomplete.returncode, 1, incomplete.stdout + incomplete.stderr)
+        (browser_cache / "chromium-current" / "INSTALLATION_COMPLETE").write_text(
+            "complete", encoding="ascii"
+        )
+        ready = run_powershell(probe, str(browser_cache), str(manifest_path), env=env)
+        self.assertEqual(ready.returncode, 0, ready.stdout + ready.stderr)
+
+        write_manifest(headless_revision="missing-headless")
+        missing_headless = run_powershell(probe, str(browser_cache), str(manifest_path), env=env)
+        self.assertEqual(missing_headless.returncode, 1, missing_headless.stdout + missing_headless.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "runtime preparation lock harness requires Windows")
+    def test_prepare_owner_blocks_launcher_and_second_prepare_without_state_corruption(self) -> None:
+        case, env = create_runtime_preparation_fixture()
+        control = case / "packaging" / "windows" / "control-douyin-recall.ps1"
+        launcher = case / "packaging" / "windows" / "start-douyin-recall.ps1"
+
+        prepared = run_powershell(control, "-Action", "prepare", "-NonInteractive", env=env)
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        state_path = case / "data" / "runtime" / "runtime-preparation.json"
+        marker_path = case / "data" / "runtime" / "runtime-prepared.json"
+        self.assertTrue(marker_path.exists())
+        owner_env = env.copy()
+        owner_env["FAKE_UV_FORCE_SYNC"] = "1"
+        owner_env["FAKE_UV_BLOCK_STAGE"] = "python"
+        child_started = case / "fake-uv-child-started.txt"
+        child_release = case / "fake-uv-child-release.txt"
+        owner_stdout = (case / "owner-prepare-stdout.log").open("wb")
+        owner_stderr = (case / "owner-prepare-stderr.log").open("wb")
+        owner_process = subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(control),
+                "-Action",
+                "prepare",
+                "-NonInteractive",
+            ],
+            cwd=case,
+            env=owner_env,
+            stdout=owner_stdout,
+            stderr=owner_stderr,
+        )
+        try:
+            wait_for_test_path(child_started, owner_process)
+            self.assertFalse(marker_path.exists())
+            owner_state_bytes = state_path.read_bytes()
+            owner_state = json.loads(owner_state_bytes.decode("utf-8-sig"))
+            self.assertEqual(owner_state["status"], "running")
+            self.assertEqual(owner_state["current_step"], "python")
+            stale_page = case / "data" / "runtime" / "startup-status.html"
+            stale_page.write_text(
+                "<meta http-equiv='refresh' content='0;url=http://stale.invalid'>STALE_SUCCESS_SENTINEL",
+                encoding="utf-8",
+            )
+
+            followed = run_powershell(launcher, "-Silent", "-NoOpen", env=env)
+            self.assertEqual(followed.returncode, 0, followed.stdout + followed.stderr)
+            self.assertEqual(stale_page.read_text(encoding="utf-8"), "<meta http-equiv='refresh' content='0;url=http://stale.invalid'>STALE_SUCCESS_SENTINEL")
+            waiting_page = case / "data" / "runtime" / "startup-status-waiting.html"
+            waiting_html = waiting_page.read_text(encoding="utf-8-sig")
+            self.assertIn("已有运行环境准备任务正在进行", waiting_html)
+            self.assertNotIn("stale.invalid", waiting_html)
+            self.assertEqual(state_path.read_bytes(), owner_state_bytes)
+            start_log = (case / "data" / "logs" / "start-douyin-recall.log").read_text(
+                encoding="utf-8-sig"
+            )
+            suppressed_lines = [
+                line for line in start_log.splitlines() if "opening suppressed by -NoOpen" in line
+            ]
+            self.assertTrue(suppressed_lines)
+            self.assertTrue(
+                all("startup-status-waiting.html" in line for line in suppressed_lines)
+            )
+            self.assertFalse(marker_path.exists())
+
+            busy = run_powershell(control, "-Action", "prepare", "-NonInteractive", env=env)
+            self.assertEqual(busy.returncode, 1, busy.stdout + busy.stderr)
+            self.assertIn("DR_PROGRESS|BUSY|", busy.stdout)
+            self.assertEqual(state_path.read_bytes(), owner_state_bytes)
+            calls = (case / "fake-uv-calls.log").read_text(encoding="utf-8")
+            self.assertEqual(calls.count("sync --no-dev --color never"), 2)
+
+            child_release.write_text("release", encoding="ascii")
+            owner_process.wait(timeout=15)
+            self.assertEqual(owner_process.returncode, 0)
+            self.assertTrue(marker_path.exists())
+            final_state = json.loads(state_path.read_text(encoding="utf-8-sig"))
+            self.assertEqual(final_state["status"], "ready")
+            self.assertEqual(
+                final_state["completed_steps"],
+                ["uv", "python", "browser", "database", "status"],
+            )
+        finally:
+            child_release.write_text("release", encoding="ascii")
+            if owner_process.poll() is None:
+                try:
+                    owner_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    owner_process.terminate()
+                    owner_process.wait(timeout=5)
+            owner_stdout.close()
+            owner_stderr.close()
+
+    @unittest.skipUnless(os.name == "nt", "startup process lifecycle harness requires Windows")
+    def test_status_write_failure_keeps_child_and_preparation_lock_owned(self) -> None:
+        case, env = create_runtime_preparation_fixture()
+        launcher = case / "packaging" / "windows" / "start-douyin-recall.ps1"
+        windows_dir = case / "packaging" / "windows"
+        env["FAKE_UV_BLOCK_STAGE"] = "python"
+        env["FAKE_UV_FAIL_STAGE"] = "browser"
+        child_started = case / "fake-uv-child-started.txt"
+        child_release = case / "fake-uv-child-release.txt"
+        child_completed = case / "fake-uv-child-completed.txt"
+        status_path = case / "data" / "runtime" / "startup-status.html"
+        status_locked = case / "status-locked.txt"
+        status_release = case / "status-release.txt"
+        lock_path = case / "data" / "runtime" / "runtime-preparation.lock"
+
+        status_locker = windows_dir / "hold-startup-status.ps1"
+        status_locker.write_text(
+            r'''param([string]$StatusPath, [string]$LockedPath, [string]$ReleasePath)
+$ErrorActionPreference = "Stop"
+$stream = $null
+while ($null -eq $stream) {
+    try {
+        $stream = [System.IO.File]::Open($StatusPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    }
+    catch [System.IO.IOException] {
+        Start-Sleep -Milliseconds 50
+    }
+}
+try {
+    Set-Content -LiteralPath $LockedPath -Value "locked" -Encoding UTF8
+    while (-not (Test-Path -LiteralPath $ReleasePath)) {
+        Start-Sleep -Milliseconds 100
+    }
+}
+finally {
+    $stream.Dispose()
+}
+''',
+            encoding="utf-8-sig",
+        )
+        lock_probe = windows_dir / "probe-runtime-lock.ps1"
+        lock_probe.write_text(
+            r'''param([string]$LockPath)
+. "$PSScriptRoot\runtime-preparation-common.ps1"
+$stream = Enter-RecallPreparationLock -Path $LockPath
+if ($null -eq $stream) { exit 1 }
+Exit-RecallPreparationLock -LockStream $stream
+exit 0
+''',
+            encoding="utf-8-sig",
+        )
+
+        stdout_path = case / "launcher-stdout.log"
+        stderr_path = case / "launcher-stderr.log"
+        launcher_process: subprocess.Popen[bytes] | None = None
+        locker_process: subprocess.Popen[bytes] | None = None
+        stdout_handle = stdout_path.open("wb")
+        stderr_handle = stderr_path.open("wb")
+        try:
+            launcher_process = subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(launcher),
+                    "-Silent",
+                    "-NoOpen",
+                ],
+                cwd=case,
+                env=env,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+            )
+            wait_for_test_path(child_started, launcher_process)
+            locker_process = subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(status_locker),
+                    str(status_path),
+                    str(status_locked),
+                    str(status_release),
+                ],
+                cwd=case,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            wait_for_test_path(status_locked, locker_process)
+            start_log_path = case / "data" / "logs" / "start-douyin-recall.log"
+            deadline = time.monotonic() + 8
+            saw_refresh_failure = False
+            while time.monotonic() < deadline:
+                if start_log_path.exists():
+                    start_log_text = start_log_path.read_text(
+                        encoding="utf-8-sig", errors="replace"
+                    )
+                    if "Could not refresh startup progress" in start_log_text:
+                        saw_refresh_failure = True
+                        break
+                self.assertIsNone(launcher_process.poll())
+                time.sleep(0.1)
+            self.assertTrue(saw_refresh_failure)
+            self.assertIsNone(launcher_process.poll())
+            self.assertFalse(child_completed.exists())
+            locked_probe = run_powershell(lock_probe, str(lock_path), env=env)
+            self.assertEqual(locked_probe.returncode, 1, locked_probe.stdout + locked_probe.stderr)
+
+            status_release.write_text("release", encoding="ascii")
+            locker_process.wait(timeout=5)
+            child_release.write_text("release", encoding="ascii")
+            launcher_process.wait(timeout=20)
+            self.assertTrue(child_completed.exists())
+            self.assertEqual(launcher_process.returncode, 1)
+            released_probe = run_powershell(lock_probe, str(lock_path), env=env)
+            self.assertEqual(released_probe.returncode, 0, released_probe.stdout + released_probe.stderr)
+            start_log = start_log_path.read_text(encoding="utf-8-sig")
+            self.assertIn("Could not refresh startup progress", start_log)
+        finally:
+            status_release.write_text("release", encoding="ascii")
+            child_release.write_text("release", encoding="ascii")
+            if locker_process is not None and locker_process.poll() is None:
+                try:
+                    locker_process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    locker_process.terminate()
+                    locker_process.wait(timeout=5)
+            if launcher_process is not None and launcher_process.poll() is None:
+                try:
+                    launcher_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    launcher_process.terminate()
+                    launcher_process.wait(timeout=5)
+            stdout_handle.close()
+            stderr_handle.close()
+
+    @unittest.skipUnless(os.name == "nt", "runner crash harness requires Windows")
+    def test_runner_crash_cleans_recorded_child_before_unlocking(self) -> None:
+        case, env = create_runtime_preparation_fixture()
+        launcher = case / "packaging" / "windows" / "start-douyin-recall.ps1"
+        windows_dir = case / "packaging" / "windows"
+        env["FAKE_UV_BLOCK_STAGE"] = "python"
+        child_started = case / "fake-uv-child-started.txt"
+        child_release = case / "fake-uv-child-release.txt"
+        child_identity_path = case / "data" / "logs" / "runtime-python.child.json"
+        lock_path = case / "data" / "runtime" / "runtime-preparation.lock"
+        lock_probe = windows_dir / "probe-runtime-lock-after-runner-crash.ps1"
+        lock_probe.write_text(
+            r'''param([string]$LockPath)
+. "$PSScriptRoot\runtime-preparation-common.ps1"
+$stream = Enter-RecallPreparationLock -Path $LockPath
+if ($null -eq $stream) { exit 1 }
+Exit-RecallPreparationLock -LockStream $stream
+exit 0
+''',
+            encoding="utf-8-sig",
+        )
+        stdout_handle = (case / "runner-crash-launcher.out.log").open("wb")
+        stderr_handle = (case / "runner-crash-launcher.err.log").open("wb")
+        launcher_process = subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(launcher),
+                "-Silent",
+                "-NoOpen",
+            ],
+            cwd=case,
+            env=env,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+        )
+        child_process_id = 0
+        child_started_at_ticks = 0
+        runner_process_id = 0
+        runner_started_at_ticks = 0
+        try:
+            wait_for_test_path(child_started, launcher_process)
+            wait_for_test_path(child_identity_path, launcher_process)
+            child_identity = json.loads(child_identity_path.read_text(encoding="utf-8-sig"))
+            child_process_id = int(child_identity["pid"])
+            child_started_at_ticks = int(child_identity["started_at_ticks"])
+            runner_process_id, runner_started_at_ticks = find_runtime_runner_identity(
+                launcher_process.pid, cwd=case
+            )
+            self.assertTrue(
+                process_identity_exists(child_process_id, child_started_at_ticks, cwd=case)
+            )
+
+            stop_process_if_identity_matches(
+                runner_process_id, runner_started_at_ticks, cwd=case
+            )
+            launcher_process.wait(timeout=20)
+
+            self.assertEqual(launcher_process.returncode, 1)
+            wait_for_process_exit(
+                child_process_id, cwd=case, started_at_ticks=child_started_at_ticks
+            )
+            released_probe = run_powershell(lock_probe, str(lock_path), env=env)
+            self.assertEqual(released_probe.returncode, 0, released_probe.stdout + released_probe.stderr)
+            start_log = (case / "data" / "logs" / "start-douyin-recall.log").read_text(
+                encoding="utf-8-sig"
+            )
+            self.assertIn("Cleaning runtime process tree", start_log)
+        finally:
+            child_release.write_text("release", encoding="ascii")
+            if launcher_process.poll() is None:
+                launcher_process.terminate()
+                launcher_process.wait(timeout=5)
+            for process_id, started_at_ticks in (
+                (runner_process_id, runner_started_at_ticks),
+                (child_process_id, child_started_at_ticks),
+            ):
+                if process_id and started_at_ticks:
+                    stop_process_if_identity_matches(process_id, started_at_ticks, cwd=case)
+            stdout_handle.close()
+            stderr_handle.close()
+
+    @unittest.skipUnless(os.name == "nt", "worker crash harness requires Windows")
+    def test_worker_crash_cleans_tool_process_before_unlocking(self) -> None:
+        case, env = create_runtime_preparation_fixture()
+        launcher = case / "packaging" / "windows" / "start-douyin-recall.ps1"
+        windows_dir = case / "packaging" / "windows"
+        env["FAKE_UV_BLOCK_STAGE"] = "python"
+        child_started = case / "fake-uv-child-started.txt"
+        child_release = case / "fake-uv-child-release.txt"
+        child_completed = case / "fake-uv-child-completed.txt"
+        child_identity_path = case / "data" / "logs" / "runtime-python.child.json"
+        lock_path = case / "data" / "runtime" / "runtime-preparation.lock"
+        lock_probe = windows_dir / "probe-runtime-lock-after-worker-crash.ps1"
+        lock_probe.write_text(
+            r'''param([string]$LockPath)
+. "$PSScriptRoot\runtime-preparation-common.ps1"
+$stream = Enter-RecallPreparationLock -Path $LockPath
+if ($null -eq $stream) { exit 1 }
+Exit-RecallPreparationLock -LockStream $stream
+exit 0
+''',
+            encoding="utf-8-sig",
+        )
+        stdout_handle = (case / "worker-crash-launcher.out.log").open("wb")
+        stderr_handle = (case / "worker-crash-launcher.err.log").open("wb")
+        launcher_process = subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(launcher),
+                "-Silent",
+                "-NoOpen",
+            ],
+            cwd=case,
+            env=env,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+        )
+        worker_process_id = 0
+        worker_started_at_ticks = 0
+        tool_process_id = 0
+        tool_started_at_ticks = 0
+        try:
+            wait_for_test_path(child_started, launcher_process)
+            wait_for_test_path(child_identity_path, launcher_process)
+            child_identity = json.loads(child_identity_path.read_text(encoding="utf-8-sig"))
+            worker_process_id = int(child_identity["pid"])
+            worker_started_at_ticks = int(child_identity["started_at_ticks"])
+            tool_process_id, tool_started_at_ticks = find_child_process_identity(
+                worker_process_id, cwd=case
+            )
+
+            stop_process_if_identity_matches(
+                worker_process_id, worker_started_at_ticks, cwd=case
+            )
+            launcher_process.wait(timeout=20)
+
+            self.assertEqual(launcher_process.returncode, 1)
+            wait_for_process_exit(
+                tool_process_id, cwd=case, started_at_ticks=tool_started_at_ticks
+            )
+            self.assertFalse(child_completed.exists())
+            released_probe = run_powershell(lock_probe, str(lock_path), env=env)
+            self.assertEqual(released_probe.returncode, 0, released_probe.stdout + released_probe.stderr)
+        finally:
+            child_release.write_text("release", encoding="ascii")
+            if launcher_process.poll() is None:
+                launcher_process.terminate()
+                launcher_process.wait(timeout=5)
+            for process_id, started_at_ticks in (
+                (worker_process_id, worker_started_at_ticks),
+                (tool_process_id, tool_started_at_ticks),
+            ):
+                if process_id and started_at_ticks:
+                    stop_process_if_identity_matches(process_id, started_at_ticks, cwd=case)
+            stdout_handle.close()
+            stderr_handle.close()
+
+    @unittest.skipUnless(os.name == "nt", "launcher crash harness requires Windows")
+    def test_runner_stops_child_when_launcher_owner_exits(self) -> None:
+        case, env = create_runtime_preparation_fixture()
+        launcher = case / "packaging" / "windows" / "start-douyin-recall.ps1"
+        windows_dir = case / "packaging" / "windows"
+        env["FAKE_UV_BLOCK_STAGE"] = "python"
+        child_started = case / "fake-uv-child-started.txt"
+        child_release = case / "fake-uv-child-release.txt"
+        child_completed = case / "fake-uv-child-completed.txt"
+        child_identity_path = case / "data" / "logs" / "runtime-python.child.json"
+        lock_path = case / "data" / "runtime" / "runtime-preparation.lock"
+        lock_probe = windows_dir / "probe-runtime-lock-after-launcher-crash.ps1"
+        lock_probe.write_text(
+            r'''param([string]$LockPath)
+. "$PSScriptRoot\runtime-preparation-common.ps1"
+$stream = Enter-RecallPreparationLock -Path $LockPath
+if ($null -eq $stream) { exit 1 }
+Exit-RecallPreparationLock -LockStream $stream
+exit 0
+''',
+            encoding="utf-8-sig",
+        )
+        stdout_handle = (case / "launcher-crash.out.log").open("wb")
+        stderr_handle = (case / "launcher-crash.err.log").open("wb")
+        launcher_process = subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(launcher),
+                "-Silent",
+                "-NoOpen",
+            ],
+            cwd=case,
+            env=env,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+        )
+        child_process_id = 0
+        child_started_at_ticks = 0
+        runner_process_id = 0
+        runner_started_at_ticks = 0
+        try:
+            wait_for_test_path(child_started, launcher_process)
+            wait_for_test_path(child_identity_path, launcher_process)
+            child_identity = json.loads(child_identity_path.read_text(encoding="utf-8-sig"))
+            child_process_id = int(child_identity["pid"])
+            child_started_at_ticks = int(child_identity["started_at_ticks"])
+            runner_process_id, runner_started_at_ticks = find_runtime_runner_identity(
+                launcher_process.pid, cwd=case
+            )
+            self.assertTrue(
+                process_identity_exists(child_process_id, child_started_at_ticks, cwd=case)
+            )
+
+            launcher_process.kill()
+            launcher_process.wait(timeout=10)
+            wait_for_process_exit(
+                child_process_id, cwd=case, started_at_ticks=child_started_at_ticks
+            )
+            wait_for_process_exit(
+                runner_process_id, cwd=case, started_at_ticks=runner_started_at_ticks
+            )
+
+            self.assertFalse(child_completed.exists())
+            released_probe = run_powershell(lock_probe, str(lock_path), env=env)
+            self.assertEqual(released_probe.returncode, 0, released_probe.stdout + released_probe.stderr)
+        finally:
+            child_release.write_text("release", encoding="ascii")
+            if launcher_process.poll() is None:
+                launcher_process.terminate()
+                launcher_process.wait(timeout=5)
+            for process_id, started_at_ticks in (
+                (runner_process_id, runner_started_at_ticks),
+                (child_process_id, child_started_at_ticks),
+            ):
+                if process_id and started_at_ticks:
+                    stop_process_if_identity_matches(process_id, started_at_ticks, cwd=case)
+            stdout_handle.close()
+            stderr_handle.close()
+
+    @unittest.skipUnless(os.name == "nt", "prepare runtime crash harness requires Windows")
+    def test_prepare_runtime_owner_crash_kills_tool_before_unlocking(self) -> None:
+        case, env = create_runtime_preparation_fixture()
+        control = case / "packaging" / "windows" / "control-douyin-recall.ps1"
+        windows_dir = case / "packaging" / "windows"
+        env["FAKE_UV_BLOCK_STAGE"] = "python"
+        child_started = case / "fake-uv-child-started.txt"
+        child_release = case / "fake-uv-child-release.txt"
+        child_completed = case / "fake-uv-child-completed.txt"
+        lock_path = case / "data" / "runtime" / "runtime-preparation.lock"
+        lock_probe = windows_dir / "probe-runtime-lock-after-control-crash.ps1"
+        lock_probe.write_text(
+            r'''param([string]$LockPath)
+. "$PSScriptRoot\runtime-preparation-common.ps1"
+$stream = Enter-RecallPreparationLock -Path $LockPath
+if ($null -eq $stream) { exit 1 }
+Exit-RecallPreparationLock -LockStream $stream
+exit 0
+''',
+            encoding="utf-8-sig",
+        )
+        stdout_handle = (case / "control-crash.out.log").open("wb")
+        stderr_handle = (case / "control-crash.err.log").open("wb")
+        control_process = subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(control),
+                "-Action",
+                "prepare",
+                "-NonInteractive",
+            ],
+            cwd=case,
+            env=env,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+        )
+        tool_process_id = 0
+        tool_started_at_ticks = 0
+        try:
+            wait_for_test_path(child_started, control_process)
+            tool_process_id, tool_started_at_ticks = find_child_process_identity(
+                control_process.pid, cwd=case
+            )
+
+            control_process.kill()
+            control_process.wait(timeout=10)
+
+            wait_for_process_exit(
+                tool_process_id, cwd=case, started_at_ticks=tool_started_at_ticks
+            )
+            self.assertFalse(child_completed.exists())
+            released_probe = run_powershell(lock_probe, str(lock_path), env=env)
+            self.assertEqual(released_probe.returncode, 0, released_probe.stdout + released_probe.stderr)
+        finally:
+            child_release.write_text("release", encoding="ascii")
+            if control_process.poll() is None:
+                control_process.terminate()
+                control_process.wait(timeout=5)
+            if tool_process_id and tool_started_at_ticks:
+                stop_process_if_identity_matches(
+                    tool_process_id, tool_started_at_ticks, cwd=case
+                )
+            stdout_handle.close()
+            stderr_handle.close()
+
+    @unittest.skipUnless(os.name == "nt", "startup failure harness requires Windows")
+    def test_hidden_first_start_persists_visible_failure_details(self) -> None:
+        case, env = create_runtime_preparation_fixture()
+        launcher = case / "packaging" / "windows" / "start-douyin-recall.ps1"
+        env["FAKE_UV_FAIL_STAGE"] = "python"
+
+        result = run_powershell(
+            launcher,
+            "-Silent",
+            "-NoOpen",
+            env=env,
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        state = json.loads(
+            (case / "data" / "runtime" / "runtime-preparation.json").read_text(
+                encoding="utf-8-sig"
+            )
+        )
+        html = (case / "data" / "runtime" / "startup-status.html").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["current_step"], "python")
+        self.assertIn("准备失败", html)
+        self.assertIn("Python 依赖下载或本地虚拟环境准备失败", html)
+        self.assertIn("Douyin Recall Prepare Runtime", html)
+        self.assertTrue((case / "data" / "logs" / "runtime-python.err.log").exists())
+
     def test_control_script_is_ascii_for_windows_powershell_5(self) -> None:
         control = read("control-douyin-recall.ps1")
 
@@ -370,6 +1511,14 @@ class WindowsPackagingTests(unittest.TestCase):
             control.encode("ascii")
         except UnicodeEncodeError as exc:
             self.fail(f"control script must stay ASCII for Windows PowerShell 5.1 parsing: {exc}")
+
+    def test_runtime_tool_helpers_are_ascii_for_windows_powershell_5(self) -> None:
+        for helper_name in ("runtime-tool-runner.ps1", "runtime-tool-worker.ps1"):
+            helper = read(helper_name)
+            try:
+                helper.encode("ascii")
+            except UnicodeEncodeError as exc:
+                self.fail(f"{helper_name} must stay ASCII for Windows PowerShell 5.1: {exc}")
 
     def test_control_script_runs_health_check_and_safe_stale_state_repair(self) -> None:
         control = read("control-douyin-recall.ps1")
@@ -502,6 +1651,10 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("Maintenance:", control)
         self.assertIn("Logs:", control)
         self.assertIn("Runtime cache:", control)
+        self.assertIn("Last runtime preparation:", control)
+        self.assertIn("Preparation stage:", control)
+        self.assertIn("Preparation retry: Douyin Recall Prepare Runtime", control)
+        self.assertIn("runtime-preparation.json", control)
         self.assertIn("Stop entry: Douyin Recall Stop Service", control)
         self.assertIn("Start entry: Douyin Recall", control)
         self.assertLess(control.index("Write-ControlSummary"), control.index("Write-Host \"Douyin Recall Control\""))
@@ -878,9 +2031,15 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("uv run python -m src.cli stop", doc)
         self.assertIn("uv run python -m src.cli diagnose", doc)
         self.assertIn("启动前健康检查", doc)
-        self.assertIn("正常启动不会再自动打开这个准备页", doc)
-        self.assertIn("不会显示 PowerShell 进度窗口", doc)
-        self.assertIn("只有确认 `http://127.0.0.1:<端口>` 已经可访问后才打开最终页面", doc)
+        self.assertIn("安装器里准备 Python 依赖和 Playwright Chromium", doc)
+        self.assertIn("5 个真实阶段", doc)
+        self.assertIn("已准备好的正常日常启动仍保持隐藏", doc)
+        self.assertIn("运行环境尚未准备或 fingerprint 已变化时", doc)
+        self.assertIn("服务启动失败时仍会打开失败页", doc)
+        self.assertIn("同一页面自动跳转到 `http://127.0.0.1:<端口>`", doc)
+        self.assertIn("选择“重试”立即再试", doc)
+        self.assertIn("已通过精确 revision", doc)
+        self.assertIn("prepare-runtime.log", doc)
         self.assertIn("Douyin Recall Control", doc)
         self.assertIn("Douyin Recall Stop Service", doc)
         self.assertIn("状态摘要", doc)
