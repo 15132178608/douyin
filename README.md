@@ -4,7 +4,7 @@
 
 > **当前定位**：个人本地工具。用 SQLite + bge-m3 向量检索 + KMeans 自动分类 + FastAPI/HTMX 抖音黑 web UI，把自己的抖音收藏和喜欢整理成可搜索、可回忆、可清理的私人内容库。
 >
-> 详细设计见 [`douyin-recall-spec.md`](./douyin-recall-spec.md)；架构看 [`docs/architecture.md`](./docs/architecture.md)；路线图看 [`docs/roadmap.md`](./docs/roadmap.md)。
+> 当前实现看 [`docs/architecture.md`](./docs/architecture.md)，后续计划看 [`docs/roadmap.md`](./docs/roadmap.md)；[`douyin-recall-spec.md`](./douyin-recall-spec.md) 是项目启动时的历史规格，不再代表当前实现。
 
 > [!IMPORTANT]
 > 当前是 alpha / 个人本地开放源码版本。它会在本地保存抖音登录态、收藏/喜欢数据、头像缓存和 SQLite 数据库；默认只建议在自己的电脑上使用。公网部署和多人使用不是当前产品方向。
@@ -35,10 +35,10 @@
 | **M3** 混合检索 | ✅ | bge-m3 1024 维 + FTS5 中文分词 + RRF 融合 + 距离阈值 |
 | **M4** 时间轴 + 备注 | ✅ | 年-月分组 + HTMX 内联编辑 + 单条重索引 |
 | **M5** 自动分类 | ✅ | KMeans + silhouette 自动选 K + TF-IDF 命名 + UI 可改名 |
-| **取消收藏 / 取消喜欢** | ✅ | 持久化 CDP bridge worker，API 调用代替点击 |
+| **取消收藏 / 取消喜欢** | ✅ | SQLite job queue 入队，后台 worker 通过 CDP/API 执行并重试 |
 | **Web UI 抖音黑** | ✅ | 玻璃质感 nav + cyan-pink 渐变品牌 + 卡片瀑布动画 |
-| **页面内播放** | ✅ | `/<id>/stream` 路由 + 玻璃质感播放按钮 + modal 弹窗 |
-| **多用户骨架（实验）** | 🚧 暂缓 | users / invite_codes / web_sessions / per-user profile 已就位，但当前产品定位仍是个人本地工具 |
+| **页面内播放** | ✅ | `/favorites/{favorite_id}/stream` 与 likes 对应路由 + modal 弹窗 |
+| **本地多账号与用户隔离基础** | ✅ | users / invite_codes / web_sessions、内容复合主键、用户级索引/任务/profile 和本地账号新增/切换已就位；公网多人服务仍暂缓 |
 | **后台 jobs 队列** | ✅ | SQLite 队列 + Web worker + 重试退避 + stale running 恢复 + `/jobs` 状态页 |
 | **导出 / 备份** | ✅ | `recall export` 支持 JSON / Markdown / SQLite backup |
 | **每周自动化** | ✅ | Windows 计划任务脚本：crawl + index + digest + backup |
@@ -154,11 +154,13 @@ uv run recall digest --dry-run      # 预览 HTML
 
 首次同步和首次索引可能需要较长时间；索引阶段会下载本地模型。数据仍保存在本机 `data/` 目录，安装包不会上传你的数据库、登录资料或浏览器 profile。
 
-日常维护入口在 `/maintenance`：它会显示服务状态、最近同步、失败任务、抖音登录状态、SQLite 备份状态和版本更新状态，并提供“执行一次标准维护”“立即生成 SQLite 备份”“校验并准备恢复”和“导出诊断包”操作。如果最近的同步任务或抓取记录显示“用户未登录 / 登录态失效”，维护中心会提示登录态可能过期，并提供 `/auth` 重新扫码入口。恢复前会先做 SQLite 完整性和必要表检查，并要求输入确认文字；恢复时会先额外保存一份恢复前安全备份。也可以用 `recall verify-backup` 做只读恢复演练，确认 `data\exports` 下最新的 `recall-backup-*.db` 或 `pre-install-recall-*.db` 能被读取、完整性通过且必要表存在。诊断包只包含脱敏环境、服务、任务和日志摘要，不包含 `.env`、数据库、浏览器 profile 或登录态。安装包启动脚本会先做启动前健康检查，再检查 `recall status`，避免重复启动多个本地 Web 服务；首次启动会打开本地 `data\runtime\startup-status.html` 状态页，展示检查本地环境、准备 Python、下载/安装 Playwright Chromium、初始化数据库和启动本地 Web 服务等步骤；如果首次启动卡在依赖下载、uv、Playwright 或数据库初始化，可以先点 `Douyin Recall Prepare Runtime` 单独重试准备步骤，它不会启动本地 Web 服务，也不会打开浏览器；启动失败窗口和本地状态页都会显示“失败阶段 / 可能原因 / 建议下一步”，Prepare Runtime 失败时也会显示失败的准备步骤；`recall status` 会额外显示 service audit、记录的 PID、端口 owner PID 和下一步建议，帮助判断该点 `Douyin Recall Stop Service`、`Douyin Recall Repair State`，还是先检查外部占用端口的进程；安装器升级前会尽量把现有 `data\recall.db` 复制到 `data\exports\pre-install-recall-*.db`；运行时下载和缓存会放到 `D:\codexDownload\douyinclaude-runtime`，并设置 `UV_LINK_MODE=copy` 避免跨盘缓存产生 hardlink warning。
+日常维护入口在 `/maintenance`：它会显示服务状态、最近同步、失败任务、抖音登录状态、SQLite 备份状态和版本更新状态，并提供“执行一次标准维护”“立即生成 SQLite 备份”“校验并准备恢复”和“导出诊断包”操作。如果最近的同步任务或抓取记录显示“用户未登录 / 登录态失效”，维护中心会提示登录态可能过期，并提供 `/auth` 重新扫码入口。恢复前会先做 SQLite 完整性和必要表检查，并要求输入确认文字；恢复时会先额外保存一份恢复前安全备份。也可以用 `recall verify-backup` 对 `data\exports` 下最新的普通备份，或安装前、恢复前、发布前三类受保护备份做只读恢复演练，确认文件可读取、完整性通过且必要表存在；维护中心的恢复列表目前只展示普通 `recall-backup-*.db`，受保护备份的限制和处理方式见数据说明。诊断包只包含脱敏环境、服务、任务和日志摘要，不包含 `.env`、数据库、浏览器 profile 或登录态。安装包启动脚本会先做启动前健康检查，再检查 `recall status`，避免重复启动多个本地 Web 服务；首次启动会打开本地 `data\runtime\startup-status.html` 状态页，展示检查本地环境、准备 Python、下载/安装 Playwright Chromium、初始化数据库和启动本地 Web 服务等步骤；如果首次启动卡在依赖下载、uv、Playwright 或数据库初始化，可以先点 `Douyin Recall Prepare Runtime` 单独重试准备步骤，它不会启动本地 Web 服务，也不会打开浏览器；启动失败窗口和本地状态页都会显示“失败阶段 / 可能原因 / 建议下一步”，Prepare Runtime 失败时也会显示失败的准备步骤；`recall status` 会额外显示 service audit、记录的 PID、端口 owner PID 和下一步建议，帮助判断该点 `Douyin Recall Stop Service`、`Douyin Recall Repair State`，还是先检查外部占用端口的进程；安装器升级前会尽量把现有 `data\recall.db` 复制到 `data\exports\pre-install-recall-*.db`；运行时下载和缓存会放到 `D:\codexDownload\douyinclaude-runtime`，并设置 `UV_LINK_MODE=copy` 避免跨盘缓存产生 hardlink warning。
 
 安装后，开始菜单会提供 `Douyin Recall Control` 控制入口，以及 `Douyin Recall Status`、`Douyin Recall Prepare Runtime`、`Douyin Recall Stop Service`、`Douyin Recall Maintenance`、`Douyin Recall Account Recovery`、`Douyin Recall Diagnostics`、`Douyin Recall Logs`、`Douyin Recall Health Check`、`Douyin Recall Repair State`、`Douyin Recall Backup Now`、`Douyin Recall Backups`、`Douyin Recall Restore Center`、`Douyin Recall Verify Backup` 快捷方式。`Douyin Recall Control` 打开时会先显示状态摘要，包括当前版本、服务状态、service audit、端口 owner、维护中心地址、日志目录和运行时缓存。平时想看状态、只准备运行时依赖、停止后台服务、打开维护中心、打开账号恢复、导出诊断包、查看日志、运行健康检查、清理陈旧服务记录、立即备份、打开备份目录或只读校验最新备份，可以直接点这些入口，不需要先记住 PowerShell 命令。准备入口会安装或定位 uv，执行 `uv sync`、`playwright install chromium`、`recall init-db` 和 `recall status`，但不会启动本地 Web 服务；恢复入口只会打开维护中心，仍需校验备份并输入确认文字；账号恢复入口会打开 `/auth`，由你手动重新扫码。
 
 如果安装后打不开、首次下载失败、SmartScreen 拦截或忘记关闭后台服务，启动窗口会显示失败阶段、可能原因、建议下一步、常用恢复命令和日志位置；完整处理步骤见 [`docs/windows-troubleshooting.md`](./docs/windows-troubleshooting.md)。
+
+当前卸载器不会主动递归删除运行时生成的 `.env`、`data/`、浏览器 profile、日志、备份或 `.venv`，所以正常卸载后安装目录可能继续保留这些数据。卸载、迁移或彻底清理前，请先停止服务并生成、校验一份 SQLite 备份；完整说明见 [`docs/data-backup-and-uninstall.md`](./docs/data-backup-and-uninstall.md)。
 
 维护者发布新版时，推送 `v*` 标签会自动生成 Release，并把 `DouyinRecallSetup.exe` 作为下载附件上传。
 
@@ -184,7 +186,7 @@ uv run recall digest --dry-run      # 预览 HTML
 
 ---
 
-## CLI 命令一览（22 个）
+## CLI 命令一览（25 个）
 
 | 命令 | 阶段 | 说明 |
 |---|---|---|
@@ -200,11 +202,14 @@ uv run recall digest --dry-run      # 预览 HTML
 | `serve` | M3/M4 | 启动 web UI |
 | `status` | 运维 | 查看本地 Web 服务是否正在运行、PID、端口 owner 和安全下一步 |
 | `stop` | 运维 | 停止由 `recall serve` 记录的本地 Web 服务 |
+| `repair-state` | 运维 | 仅在服务记录确实陈旧时，安全清理 `server.json` / `server.pid` |
 | `diagnose` | 运维 | 导出脱敏诊断包，排除 `.env`、数据库和浏览器登录态 |
 | `update` | 运维 | 检查 GitHub Release 最新安装包；不会自动下载或安装 |
 | `verify-backup` | 运维 | 只读校验最新或指定 SQLite 备份是否可恢复 |
-| `uncollect` | M5 | 通过抖音 API 取消收藏一条 |
-| `unlike` | M5 | 通过抖音 API 取消喜欢一条 |
+| `prune-backups` | 运维 | 预览普通 SQLite 备份保留策略；只有显式 `--apply` 才删除旧普通备份 |
+| `rollback-from-manifest` | 运维 | 校验发布 manifest 绑定的回滚点；只有显式 `--apply` 才执行恢复 |
+| `uncollect` | M5 | 通过抖音 API 取消收藏一条或多条 |
+| `unlike` | M5 | 通过抖音 API 取消喜欢一条或多条 |
 | `export` | 运维 | 导出 JSON / Markdown / SQLite 备份 |
 | `tag` | 体验增强 | 给指定条目生成/写入二级标签（本地 fallback 或 Ollama LLM） |
 | `backfill-raw` | 一次性 | 从 raw_json 反填新字段 |
@@ -245,11 +250,11 @@ python tests/test_parser.py
 
 ```
 src/
-  cli.py                  # 22 个 CLI 命令
+  cli.py                  # Click CLI 命令入口
   config.py               # pydantic-settings
   db.py                   # SQLite schema + 迁移
   models.py               # Favorite dataclass
-  tenancy.py              # 用户隔离 / 路径辅助（实验骨架）
+  tenancy.py              # user_id 规范化 + per-user 路径
   accounts.py             # users / invite / session 管理
   jobs.py                 # SQLite 后台任务队列
   exporter.py             # JSON / Markdown / SQLite 导出
@@ -260,7 +265,7 @@ src/
   categorize/             # KMeans / HDBSCAN + TF-IDF 命名
   recall/                 # 周报选取 + 邮件渲染
   tagging/                # 二级标签建议与写入
-  uncollector/            # CDP bridge 取消收藏
+  uncollector/            # CDP/API 取消收藏与喜欢执行器
   web/                    # FastAPI + HTMX 路由 + 模板
 
 docs/
@@ -280,8 +285,9 @@ scripts/
 
 - **[`docs/architecture.md`](./docs/architecture.md)** —— 模块依赖图、数据流、技术栈
 - **[`docs/roadmap.md`](./docs/roadmap.md)** —— 已完成里程碑 + 当前进行中 + 后续 3-6 个月
-- **[`docs/multi-tenant-roadmap.md`](./docs/multi-tenant-roadmap.md)** —— 多账号 / 多用户设计早期备忘（非当前优先方向）
-- **[`douyin-recall-spec.md`](./douyin-recall-spec.md)** —— 最原始的产品 spec
+- **[`docs/data-backup-and-uninstall.md`](./docs/data-backup-and-uninstall.md)** —— 数据位置、备份、恢复、卸载保留与彻底清理
+- **[`docs/multi-tenant-roadmap.md`](./docs/multi-tenant-roadmap.md)** —— 多账号 / 多用户迁移的历史决策记录；租户基础已落地，公网多人方向仍暂缓
+- **[`douyin-recall-spec.md`](./douyin-recall-spec.md)** —— 项目最初的历史产品规格；其中 checkbox、Schema 和“不做”清单不代表现状
 
 ## 许可证
 

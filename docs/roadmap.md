@@ -50,10 +50,9 @@
 - 新条目增量 assign_one 归到最近现有簇
 
 ### 取消收藏 / 取消喜欢
-- PersistentUncollectBridge：单 Playwright 进程跑后台 thread
-- 通过 CDP 调抖音 web /aweme/v1/web/aweme/collect API
-- 失败回退到 page click
-- 卡片 🗑 按钮 + hx-confirm + 卡片淡出
+- Web 动作先写入审计记录并进入 SQLite jobs 队列，由后台 worker 节流执行
+- PersistentUncollectWorker 按用户 profile 创建 Playwright 会话并调用抖音 Web API；每个后台 job 结束后关闭 worker，失败交给任务队列重试
+- 单条和批量取消收藏 / 喜欢共用同一任务链路，页面可查看任务状态
 
 ### 双内容线
 - favorites + likes 两套独立的：表、vec、fts、categories、recall_log、crawl_runs
@@ -69,13 +68,12 @@
 - 卡片瘦身：220px→180px、按钮 hover 浮在封面（不再触发整盘重排）
 - 玻璃质感播放按钮 + cyan→pink 渐变 hover
 
-### 多用户骨架（实验 / 暂缓）
-- src/tenancy.py：DEFAULT_USER_ID + normalize_user_id + per-user 路径
-- src/accounts.py：users / invite / web_sessions 管理
-- src/jobs.py：SQLite-backed 后台任务队列
-- middleware：cookie session 检查（`web_auth_required=true` 强制）
-- /login / /logout / /auth / create-invite CLI
-- 当前不作为主路线推进，只保留为未来多账号 / 多用户的技术储备
+### 本地多账号与会话隔离（已落地；公网多人服务暂缓）
+- `src/accounts.py`：users / invite / web_sessions 管理；middleware 按 cookie session 识别当前用户
+- 收藏与喜欢的核心数据使用 `(user_id, id)`，向量 / 全文索引、后台任务和相关日志按用户隔离
+- Playwright profile 使用 per-user 路径；`/auth` 支持本地账号添加与切换，CLI 提供 `--user` 入口
+- 分类表仍保留 `account_id` 历史命名；每用户 SMTP / `MAIL_TO`、正式权限模型和公网部署尚未完成
+- 这些能力服务本地多账号隔离，不代表产品转向 SaaS 或近期开放多人云服务
 
 ### 一次性修复 CLI
 - backfill-raw：从 raw_json 反填 video_created_at + digg_count
@@ -87,6 +85,10 @@
 - `recall export`：JSON / Markdown / SQLite backup
 - Web 维护中心：`/maintenance` 汇总服务状态、最近同步、索引、备份、登录态恢复提示、失败任务和版本更新状态，可手动入队标准维护、立即生成 SQLite 备份、校验并恢复已有备份、导出脱敏诊断包
 - 服务生命周期：`recall serve` 写 PID 状态、防重复启动；`recall status` / `recall stop` 管理本地 Web 服务，并通过 service audit 区分本项目服务、陈旧状态和外部端口占用；安装包启动脚本先检查运行状态，并把运行时下载和缓存放到 `D:\codexDownload\douyinclaude-runtime`；Windows 开始菜单提供控制入口、状态、运行时准备、停止、维护中心、账号恢复、诊断、日志、健康检查、陈旧状态修复、立即备份、备份目录、恢复中心和最新备份只读校验快捷方式，控制入口会先显示本地状态摘要和下一步建议；安装器升级前会尽量保存 `data\exports\pre-install-recall-*.db`
+- `doctor` 已覆盖服务审计、任务队列可读性、SMTP、头像缓存和模型缓存等检查；“队列可读”不等于真实 worker 存活，仍需补独立探针
+- 备份保留策略：维护中心 / 后台创建普通备份后默认保留最近 8 份，安装前、恢复前和发布前备份受保护；`prune-backups` 可预览或执行普通备份裁剪
+- 恢复后运行时刷新：恢复链路会重新初始化数据库与后台 worker，并区分数据恢复成功和运行时重启失败
+- 数据与卸载说明：已记录默认数据位置、备份校验、卸载保留边界和完整清理注意事项，见 [数据、备份与卸载](data-backup-and-uninstall.md)
 - 诊断包导出：`recall diagnose` 生成脱敏 zip，包含环境、服务、任务和日志摘要，排除 `.env`、数据库、浏览器 profile 和登录态
 - 更新检查：`recall update` 和维护中心显示本地版本、最新 GitHub Release 与安装包链接；只读检查，不自动安装
 - 分类整理：合并簇、单条移动到其他簇、未分类桶手动整理
@@ -118,27 +120,25 @@
 ### 高优：个人工具可安装、可启动
 1. **安装包首启体验**——依赖准备、Playwright 安装、数据库初始化已有本地状态页、步骤级进度和完成摘要，运行时下载缓存已收敛到 `D:\codexDownload\douyinclaude-runtime`，并已有独立重试入口和失败阶段提示；下一步继续做安装器级进度可视化
 2. **首次启动向导打磨**——登录态失效恢复入口已打通；下一步继续细化模型下载耗时提示和同步失败重试文案
-3. **doctor 命令扩展**——检查 web、jobs worker、SMTP、浏览器 profile、头像缓存目录、模型缓存
+3. **doctor 命令扩展**——现有服务审计、任务队列可读性、SMTP、头像 / 模型缓存检查继续保留；下一步增加“当前用户 profile 是否独立且健康”和“worker 是否真实存活”的明确检查
 
 ### 高优：个人数据安全
-4. **备份 / 恢复 UI**——一键备份、恢复前校验、确认恢复和最新备份只读恢复演练已进入维护链路；下一步补默认保留最近 N 份和更清晰的恢复后重启提示
-5. **诊断包导出**——已支持脱敏日志、环境、服务、任务状态导出；下一步补更多可读的失败原因解释
-6. **卸载说明**——程序卸载默认保留用户数据，并提醒如何手动备份/删除
+4. **诊断包导出**——已支持脱敏日志、环境、服务、任务状态导出；下一步补更多可读的失败原因解释
 
 ### 中优：核心体验稳定化
-7. **批量操作状态细化**——批量任务进度条、失败项重试按钮
-8. **二级标签批处理 UX**——从逐条 `recall tag` 升级成批量后台 job + Web 进度
-9. **分类整理 UX 打磨**——移动分类从 select 升级成更顺手的菜单
-10. **重复处理动作**——在 `/duplicates` 里一键保留收藏、移除喜欢或反过来
+5. **批量操作状态细化**——批量任务进度条、失败项重试按钮
+6. **二级标签批处理 UX**——从逐条 `recall tag` 升级成批量后台 job + Web 进度
+7. **分类整理 UX 打磨**——移动分类从 select 升级成更顺手的菜单
+8. **重复处理动作**——在 `/duplicates` 里一键保留收藏、移除喜欢或反过来
 
 ### 低优：探索性
-11. **半监督分类**：手动给 30-50 条打标，让模型学这个标签空间
-12. **跨账号迁移工具**：你换抖音号了，db 跟着搬
+9. **半监督分类**：手动给 30-50 条打标，让模型学这个标签空间
+10. **跨账号迁移工具**：你换抖音号了，db 跟着搬
 
 ### 长期：桌面产品化
-13. **Tauri / Electron 桌面壳**——隐藏命令行，托盘控制本地服务
-14. **自动更新**——从 GitHub Release 检查新版并引导升级
-15. **安装包签名**——降低 SmartScreen 和杀软误报
+11. **Tauri / Electron 桌面壳**——隐藏命令行，托盘控制本地服务
+12. **自动下载、安装与原地升级**——当前 GitHub Release 只读检查和安装包链接已经完成；未来再实现自动下载、执行安装和升级失败回滚
+13. **安装包签名**——降低 SmartScreen 和杀软误报
 
 ---
 
